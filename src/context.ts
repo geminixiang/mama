@@ -12,7 +12,8 @@
 
 import type { UserMessage } from "@mariozechner/pi-ai";
 import { type SessionManager, type SessionMessageEntry, SettingsManager } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
+import { readFile } from "fs/promises";
 import { join } from "path";
 
 // ============================================================================
@@ -39,11 +40,11 @@ interface LogMessage {
  * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
  * @returns Number of messages synced
  */
-export function syncLogToSessionManager(
+export async function syncLogToSessionManager(
 	sessionManager: SessionManager,
 	channelDir: string,
 	excludeSlackTs?: string,
-): number {
+): Promise<number> {
 	const logFile = join(channelDir, "log.jsonl");
 
 	if (!existsSync(logFile)) return 0;
@@ -90,7 +91,7 @@ export function syncLogToSessionManager(
 	}
 
 	// Read log.jsonl and find user messages not in context
-	const logContent = readFileSync(logFile, "utf-8");
+	const logContent = await readFile(logFile, "utf-8");
 	const logLines = logContent.trim().split("\n").filter(Boolean);
 
 	const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];

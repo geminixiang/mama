@@ -8,7 +8,7 @@ import {
 	SlackBot as SlackBotClass,
 	type SlackEvent,
 } from "./adapters/slack/index.js";
-import { type AgentRunner, getOrCreateRunner } from "./agent.js";
+import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -91,27 +91,74 @@ await validateSandbox(sandbox);
 interface ChannelState {
 	running: boolean;
 	runner: AgentRunner;
-	store: ChannelStore;
 	stopRequested: boolean;
 	stopMessageTs?: string;
+	lastAccessedAt: number;
 }
 
 const channelStates = new Map<string, ChannelState>();
 
-function getState(channelId: string, sessionKey?: string): ChannelState {
+/** Maximum number of cached sessions */
+const MAX_SESSIONS = 500;
+/** Idle timeout before a non-running session can be evicted (1 hour) */
+const IDLE_TIMEOUT_MS = 3600000;
+
+async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
 	const key = sessionKey ?? channelId;
 	let state = channelStates.get(key);
 	if (!state) {
 		const channelDir = join(workingDir, channelId);
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, key, channelId, channelDir, workingDir),
-			store: new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! }),
+			runner: await createRunner(sandbox, key, channelId, channelDir, workingDir),
 			stopRequested: false,
+			lastAccessedAt: Date.now(),
 		};
 		channelStates.set(key, state);
+	} else {
+		state.lastAccessedAt = Date.now();
 	}
 	return state;
+}
+
+/**
+ * Evict idle sessions from channelStates to bound memory usage.
+ * Called after each handleEvent completes.
+ *
+ * Eviction rules:
+ * - Never evict sessions that are currently running
+ * - Evict sessions idle for more than IDLE_TIMEOUT_MS
+ * - If still over MAX_SESSIONS, evict oldest idle sessions first
+ */
+function evictIdleSessions(): void {
+	const now = Date.now();
+
+	// First pass: evict sessions that are idle and past the timeout
+	for (const [key, state] of channelStates) {
+		if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
+			channelStates.delete(key);
+		}
+	}
+
+	// Second pass: if still over capacity, evict oldest idle sessions
+	if (channelStates.size > MAX_SESSIONS) {
+		// Collect all non-running sessions with their last access time
+		const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
+		for (const [key, state] of channelStates) {
+			if (!state.running) {
+				idleSessions.push({ key, lastAccessedAt: state.lastAccessedAt });
+			}
+		}
+
+		// Sort oldest first
+		idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
+
+		// Evict until under capacity
+		const toEvict = channelStates.size - MAX_SESSIONS;
+		for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
+			channelStates.delete(idleSessions[i].key);
+		}
+	}
 }
 
 // ============================================================================
@@ -138,7 +185,7 @@ const handler: MomHandler = {
 
 	async handleEvent(event: SlackEvent, slack: SlackBot, isEvent?: boolean): Promise<void> {
 		const sessionKey = `${event.channel}:${event.thread_ts ?? event.ts}`;
-		const state = getState(event.channel, sessionKey);
+		const state = await getState(event.channel, sessionKey);
 
 		// Start run
 		state.running = true;
@@ -168,6 +215,8 @@ const handler: MomHandler = {
 			log.logWarning(`[${event.channel}] Run error`, err instanceof Error ? err.message : String(err));
 		} finally {
 			state.running = false;
+			state.lastAccessedAt = Date.now();
+			evictIdleSessions();
 		}
 	},
 };

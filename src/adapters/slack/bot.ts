@@ -1,6 +1,7 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
@@ -447,12 +448,12 @@ export class SlackBot {
 	// Private - Backfill
 	// ==========================================================================
 
-	private getExistingTimestamps(channelId: string): Set<string> {
+	private async getExistingTimestamps(channelId: string): Promise<Set<string>> {
 		const logPath = join(this.workingDir, channelId, "log.jsonl");
 		const timestamps = new Set<string>();
 		if (!existsSync(logPath)) return timestamps;
 
-		const content = readFileSync(logPath, "utf-8");
+		const content = await readFile(logPath, "utf-8");
 		const lines = content.trim().split("\n").filter(Boolean);
 		for (const line of lines) {
 			try {
@@ -464,7 +465,7 @@ export class SlackBot {
 	}
 
 	private async backfillChannel(channelId: string): Promise<number> {
-		const existingTs = this.getExistingTimestamps(channelId);
+		const existingTs = await this.getExistingTimestamps(channelId);
 
 		// Find the biggest ts in log.jsonl
 		let latestTs: string | undefined;

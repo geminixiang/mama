@@ -13,7 +13,7 @@ import {
 	type Skill,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync } from "fs";
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
@@ -52,14 +52,14 @@ function getImageMimeType(filename: string): string | undefined {
 	return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function getMemory(channelDir: string): string {
+async function getMemory(channelDir: string): Promise<string> {
 	const parts: string[] = [];
 
 	// Read workspace-level memory (shared across all channels)
 	const workspaceMemoryPath = join(channelDir, "..", "MEMORY.md");
 	if (existsSync(workspaceMemoryPath)) {
 		try {
-			const content = readFileSync(workspaceMemoryPath, "utf-8").trim();
+			const content = (await readFile(workspaceMemoryPath, "utf-8")).trim();
 			if (content) {
 				parts.push(`### Global Workspace Memory\n${content}`);
 			}
@@ -72,7 +72,7 @@ function getMemory(channelDir: string): string {
 	const channelMemoryPath = join(channelDir, "MEMORY.md");
 	if (existsSync(channelMemoryPath)) {
 		try {
-			const content = readFileSync(channelMemoryPath, "utf-8").trim();
+			const content = (await readFile(channelMemoryPath, "utf-8")).trim();
 			if (content) {
 				parts.push(`### Channel-Specific Memory\n${content}`);
 			}
@@ -375,40 +375,21 @@ function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>
 	return lines.join("\n");
 }
 
-// Cache runners per session key
-const sessionRunners = new Map<string, AgentRunner>();
-
 /**
- * Get or create an AgentRunner for a session.
- * Runners are cached - one per sessionKey, persistent across messages.
+ * Create a new AgentRunner for a channel.
+ * Sets up the session and subscribes to events once.
+ *
+ * Runner caching is handled by the caller (channelStates in main.ts).
+ * This is a stateless factory function.
  */
-export function getOrCreateRunner(
+export async function createRunner(
 	sandboxConfig: SandboxConfig,
 	sessionKey: string,
 	channelId: string,
 	channelDir: string,
 	workspaceDir: string,
-): AgentRunner {
-	const existing = sessionRunners.get(sessionKey);
-	if (existing) return existing;
-
+): Promise<AgentRunner> {
 	const agentConfig = loadAgentConfig(workspaceDir);
-	const runner = createRunner(sandboxConfig, sessionKey, channelId, channelDir, agentConfig);
-	sessionRunners.set(sessionKey, runner);
-	return runner;
-}
-
-/**
- * Create a new AgentRunner for a channel.
- * Sets up the session and subscribes to events once.
- */
-function createRunner(
-	sandboxConfig: SandboxConfig,
-	sessionKey: string,
-	channelId: string,
-	channelDir: string,
-	agentConfig: AgentConfig,
-): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
@@ -422,7 +403,7 @@ function createRunner(
 	const model = (getModel as any)(agentConfig.provider, agentConfig.model);
 
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
-	const memory = getMemory(channelDir);
+	const memory = await getMemory(channelDir);
 	const skills = loadMamaSkills(channelDir, workspacePath);
 	const emptyPlatform: PlatformInfo = { name: "slack", formattingGuide: "", channels: [], users: [] };
 	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, emptyPlatform, skills);
@@ -669,7 +650,7 @@ function createRunner(
 
 			// Sync messages from log.jsonl that arrived while we were offline or busy
 			// Exclude the current message (it will be added via prompt())
-			const syncedCount = syncLogToSessionManager(sessionManager, channelDir, message.id);
+			const syncedCount = await syncLogToSessionManager(sessionManager, channelDir, message.id);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}
@@ -683,7 +664,7 @@ function createRunner(
 			}
 
 			// Update system prompt with fresh memory, channel/user info, and skills
-			const memory = getMemory(channelDir);
+			const memory = await getMemory(channelDir);
 			const skills = loadMamaSkills(channelDir, workspacePath);
 			const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, platform, skills);
 			session.agent.setSystemPrompt(systemPrompt);
