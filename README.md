@@ -1,11 +1,11 @@
 # mama
 
-A Slack bot that delegates messages to an AI coding agent. Built as an extension of the `mom` package from [badlogic/pi-mono](https://github.com/badlogic/pi-mono), MIT licensed.
+An AI agent bot for Slack, Telegram, and Discord. Built as an extension of the `mom` package from [badlogic/pi-mono](https://github.com/badlogic/pi-mono), MIT licensed.
 
 ## Features
 
-- **Slack integration** — responds to `@mentions` in channels and direct messages
-- **Thread sessions** — each Slack thread gets its own isolated conversation context
+- **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
+- **Thread sessions** — each thread / reply chain gets its own isolated conversation context
 - **Concurrent threads** — multiple threads in the same channel run independently
 - **Sandbox execution** — run agent commands on host or inside a Docker container
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
@@ -16,7 +16,7 @@ A Slack bot that delegates messages to an AI coding agent. Built as an extension
 ## Requirements
 
 - Node.js >= 20
-- A Slack app with Socket Mode enabled ([setup guide](docs/slack-bot-minimal-guide.md))
+- One of the platform integrations below
 
 ## Installation
 
@@ -31,7 +31,15 @@ npm install
 npm run build
 ```
 
-## Usage
+---
+
+## Quick Start
+
+### Slack
+
+1. Create a Slack app with **Socket Mode** enabled ([setup guide](docs/slack-bot-minimal-guide.md)).
+2. Add the `app_mentions:read`, `chat:write`, `files:write`, and `im:history` OAuth scopes.
+3. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
 
 ```bash
 export MOM_SLACK_APP_TOKEN=xapp-...
@@ -40,15 +48,58 @@ export MOM_SLACK_BOT_TOKEN=xoxb-...
 mama [--sandbox=host|docker:<container>] <working-directory>
 ```
 
-### Options
+The bot responds when `@mentioned` in any channel or via DM. Each Slack thread is a separate session.
+
+---
+
+### Telegram
+
+1. Message [@BotFather](https://t.me/BotFather) → `/newbot` to create a bot and get the **Bot Token**.
+2. Optionally disable privacy mode (`/setprivacy → Disable`) so the bot can read group messages without being `@mentioned`.
+
+```bash
+export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
+
+mama [--sandbox=host|docker:<container>] <working-directory>
+```
+
+- **Private chats** — every message is forwarded to the bot automatically.
+- **Group chats** — the bot only responds when `@mentioned` by username.
+- **Reply chains** — replying to a previous message continues the same session.
+- Say `stop` or `/stop` to cancel a running task.
+
+---
+
+### Discord
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
+2. Under **Bot**, enable **Message Content Intent** (required to read message text).
+3. Under **OAuth2 → URL Generator**, select scopes `bot` + permissions `Send Messages`, `Read Message History`, `Attach Files`. Invite the bot to your server with the generated URL.
+4. Copy the **Bot Token**.
+
+```bash
+export MOM_DISCORD_BOT_TOKEN=MTI...
+
+mama [--sandbox=host|docker:<container>] <working-directory>
+```
+
+- **Server channels** — the bot responds when `@mentioned`.
+- **DMs** — every message is forwarded automatically.
+- **Threads** — messages inside a Discord thread share a single session.
+- **Reply chains** — replying to a message continues that session.
+- Say `stop` or `/stop` to cancel a running task.
+
+---
+
+## Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--sandbox=host` | ✓ | Run commands directly on host |
 | `--sandbox=docker:<name>` | | Run commands inside a Docker container |
-| `--download <channel-id>` | | Download channel history to stdout and exit |
+| `--download <channel-id>` | | Download channel history to stdout and exit (Slack only) |
 
-### Download channel history
+### Download channel history (Slack)
 
 ```bash
 mama --download C0123456789
@@ -72,7 +123,7 @@ Create `settings.json` in your working directory to override defaults:
 | `provider` | `anthropic` | AI provider (env: `MOM_AI_PROVIDER`) |
 | `model` | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`) |
 | `thinkingLevel` | `off` | `off` / `low` / `medium` / `high` |
-| `sessionScope` | `thread` | `thread` (per Slack thread) or `channel` |
+| `sessionScope` | `thread` | `thread` (per thread/reply chain) or `channel` |
 
 ## Working Directory Layout
 
