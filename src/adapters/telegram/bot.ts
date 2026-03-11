@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { basename, join } from "path";
-import TelegramBotAPI from "node-telegram-bot-api";
+import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { createTelegramAdapters } from "./context.js";
@@ -52,7 +52,7 @@ class ChannelQueue {
 // ============================================================================
 
 export class TelegramBot implements Bot {
-	private client: TelegramBotAPI;
+	private client: GrammyBot;
 	private handler: BotHandler;
 	private workingDir: string;
 	private botUserId: string | null = null;
@@ -63,7 +63,10 @@ export class TelegramBot implements Bot {
 	constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
 		this.handler = handler;
 		this.workingDir = config.workingDir;
-		this.client = new TelegramBotAPI(config.token, { polling: false });
+		this.client = new GrammyBot(config.token);
+		this.client.catch((err) => {
+			log.logWarning("Telegram error", err instanceof Error ? err.message : String(err));
+		});
 	}
 
 	// ==========================================================================
@@ -71,15 +74,18 @@ export class TelegramBot implements Bot {
 	// ==========================================================================
 
 	async start(): Promise<void> {
-		const me = await this.client.getMe();
+		const me = await this.client.api.getMe();
 		this.botUserId = String(me.id);
 		this.botUsername = me.username ?? null;
 		this.startupTime = Date.now();
 
-		// Start polling after recording startup time so we can ignore old messages
-		await this.client.startPolling({ restart: false });
-
 		this.setupEventHandlers();
+
+		// Start polling in background (bot.start() runs indefinitely)
+		this.client.start().catch((err) => {
+			log.logWarning("Telegram polling error", err instanceof Error ? err.message : String(err));
+		});
+
 		log.logConnected();
 		log.logInfo(`Telegram bot started as @${this.botUsername ?? this.botUserId}`);
 	}
@@ -91,13 +97,10 @@ export class TelegramBot implements Bot {
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
 		try {
-			await this.client.editMessageText(text, {
-				chat_id: parseInt(channel),
-				message_id: parseInt(ts),
+			await this.client.api.editMessageText(parseInt(channel), parseInt(ts), text, {
 				parse_mode: "HTML",
 			});
 		} catch (err) {
-			// Telegram throws if message content is the same - ignore that
 			const msg = err instanceof Error ? err.message : String(err);
 			if (!msg.includes("message is not modified")) {
 				throw err;
@@ -134,12 +137,12 @@ export class TelegramBot implements Bot {
 	// ==========================================================================
 
 	async postMessageRaw(chatId: number, text: string): Promise<number> {
-		const result = await this.client.sendMessage(chatId, text, { parse_mode: "HTML" });
+		const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
 		return result.message_id;
 	}
 
 	async postReply(chatId: number, replyToMessageId: number, text: string): Promise<number> {
-		const result = await this.client.sendMessage(chatId, text, {
+		const result = await this.client.api.sendMessage(chatId, text, {
 			parse_mode: "HTML",
 			reply_parameters: { message_id: replyToMessageId },
 		});
@@ -147,17 +150,17 @@ export class TelegramBot implements Bot {
 	}
 
 	async deleteMessageRaw(chatId: number, messageId: number): Promise<void> {
-		await this.client.deleteMessage(chatId, messageId);
+		await this.client.api.deleteMessage(chatId, messageId);
 	}
 
 	async sendTyping(chatId: number): Promise<void> {
-		await this.client.sendChatAction(chatId, "typing");
+		await this.client.api.sendChatAction(chatId, "typing");
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
 		const fileName = title ?? basename(filePath);
 		const fileContent = readFileSync(filePath);
-		await this.client.sendDocument(parseInt(channel), fileContent, {}, { filename: fileName });
+		await this.client.api.sendDocument(parseInt(channel), new InputFile(fileContent, fileName));
 	}
 
 	logToFile(channel: string, entry: object): void {
@@ -202,7 +205,9 @@ export class TelegramBot implements Bot {
 	}
 
 	private setupEventHandlers(): void {
-		this.client.on("message", (msg) => {
+		this.client.on("message", (ctx) => {
+			const msg = ctx.message;
+
 			// Skip messages from before startup (Telegram replays recent messages on poll start)
 			if (msg.date * 1000 < this.startupTime) return;
 			// Skip bot messages

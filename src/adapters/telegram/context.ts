@@ -17,14 +17,12 @@ export function createTelegramAdapters(
 	platform: PlatformInfo;
 } {
 	let messageId: number | null = null;
-	const threadMessageIds: number[] = [];
 	let accumulatedText = "";
 	let isWorking = true;
 	const workingIndicator = " ...";
 	let updatePromise = Promise.resolve();
 
 	const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
-	const isThreaded = !!event.thread_ts;
 	const replyToId = event.thread_ts ? parseInt(event.thread_ts) : null;
 
 	const message: ChatMessage = {
@@ -103,21 +101,8 @@ export function createTelegramAdapters(
 			await updatePromise;
 		},
 
-		respondInThread: async (text: string) => {
-			updatePromise = updatePromise.then(async () => {
-				try {
-					const anchor = replyToId ?? messageId;
-					if (anchor !== null) {
-						const threadText = truncate(text, MAX_LENGTH, "\n\n<i>(truncated)</i>");
-						const id = await bot.postReply(parseInt(event.channel), anchor, threadText);
-						threadMessageIds.push(id);
-					}
-				} catch (err) {
-					log.logWarning("Telegram respondInThread error", err instanceof Error ? err.message : String(err));
-				}
-			});
-			await updatePromise;
-		},
+		// Telegram has no threads — discard thread-only messages (e.g. usage summary)
+		respondInThread: async (_text: string) => {},
 
 		setTyping: async (isTyping: boolean) => {
 			if (isTyping && messageId === null) {
@@ -163,14 +148,6 @@ export function createTelegramAdapters(
 
 		deleteResponse: async () => {
 			updatePromise = updatePromise.then(async () => {
-				for (let i = threadMessageIds.length - 1; i >= 0; i--) {
-					try {
-						await bot.deleteMessageRaw(parseInt(event.channel), threadMessageIds[i]);
-					} catch {
-						// Ignore errors
-					}
-				}
-				threadMessageIds.length = 0;
 				if (messageId !== null) {
 					try {
 						await bot.deleteMessageRaw(parseInt(event.channel), messageId);
