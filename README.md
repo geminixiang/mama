@@ -1,5 +1,8 @@
 # mama
 
+[![npm version](https://img.shields.io/npm/v/@geminixiang/mama.svg)](https://www.npmjs.com/package/@geminixiang/mama)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 An AI agent bot for Slack, Telegram, and Discord. Built as an extension of the `mom` package from [badlogic/pi-mono](https://github.com/badlogic/pi-mono), MIT licensed.
 
 ## Features
