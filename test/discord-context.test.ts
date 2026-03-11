@@ -134,23 +134,24 @@ describe("respond() — threaded", () => {
 // ============================================================================
 
 describe("respondInThread()", () => {
-	test("non-threaded: anchors to bot's main message id", async () => {
+	// Discord threads not used here — respondInThread is a no-op
+	test("non-threaded: does nothing", async () => {
 		const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("BOT_MSG") });
 		const event = makeEvent({ thread_ts: undefined });
 		const { responseCtx } = createDiscordAdapters(event, bot);
 		await responseCtx.respond("main");
 		await responseCtx.respondInThread("detail");
-		expect(bot.postInThread).toHaveBeenCalledWith("CH001", "BOT_MSG", expect.stringContaining("detail"));
+		expect(bot.postInThread).not.toHaveBeenCalled();
 	});
 
-	test("threaded: anchors to thread_ts", async () => {
+	test("threaded: does nothing", async () => {
 		const bot = makeDiscordBot({ postInThread: vi.fn().mockResolvedValue("THREAD_MSG") });
 		const event = makeEvent({ ts: "MSG003", thread_ts: "THREAD001" });
 		const { responseCtx } = createDiscordAdapters(event, bot);
 		await responseCtx.respond("main");
 		vi.clearAllMocks();
 		await responseCtx.respondInThread("detail");
-		expect(bot.postInThread).toHaveBeenCalledWith("CH001", "THREAD001", expect.stringContaining("detail"));
+		expect(bot.postInThread).not.toHaveBeenCalled();
 	});
 
 	test("non-threaded: does nothing if no main message posted yet", async () => {
@@ -167,22 +168,24 @@ describe("respondInThread()", () => {
 // ============================================================================
 
 describe("setTyping()", () => {
-	test("sends typing indicator and posts initial message", async () => {
+	// Discord uses persistent typing indicator interval, no initial message
+	test("sends typing indicator (persistent)", async () => {
 		const bot = makeDiscordBot();
 		const event = makeEvent({ ts: "MSG001", thread_ts: undefined });
 		const { responseCtx } = createDiscordAdapters(event, bot);
 		await responseCtx.setTyping(true);
 		expect(bot.sendTyping).toHaveBeenCalledWith("CH001");
-		expect(bot.postReply).toHaveBeenCalledWith("CH001", "MSG001", expect.stringContaining("Thinking"));
+		// Does NOT post initial message - that's done on first respond()
+		expect(bot.postReply).not.toHaveBeenCalled();
 	});
 
-	test("threaded: posts in thread", async () => {
+	test("threaded: sends typing indicator", async () => {
 		const bot = makeDiscordBot();
 		const event = makeEvent({ ts: "MSG003", thread_ts: "THREAD001" });
 		const { responseCtx } = createDiscordAdapters(event, bot);
 		await responseCtx.setTyping(true);
-		expect(bot.postInThread).toHaveBeenCalledWith("CH001", "THREAD001", expect.stringContaining("Thinking"));
-		expect(bot.postReply).not.toHaveBeenCalled();
+		expect(bot.sendTyping).toHaveBeenCalledWith("CH001");
+		expect(bot.postInThread).not.toHaveBeenCalled();
 	});
 
 	test("setTyping(false) does nothing", async () => {
@@ -206,12 +209,14 @@ describe("setTyping()", () => {
 		expect(bot.sendTyping).not.toHaveBeenCalled();
 	});
 
-	test("event: shows filename in initial text", async () => {
+	test("event: sends typing indicator", async () => {
 		const bot = makeDiscordBot();
 		const event = makeEvent({ text: "[EVENT:deploy.json:immediate:immediate] run deploy" });
 		const { responseCtx } = createDiscordAdapters(event, bot, /* isEvent= */ true);
 		await responseCtx.setTyping(true);
-		expect(bot.postReply).toHaveBeenCalledWith("CH001", "MSG001", expect.stringContaining("deploy.json"));
+		expect(bot.sendTyping).toHaveBeenCalledWith("CH001");
+		// Does NOT post initial message
+		expect(bot.postReply).not.toHaveBeenCalled();
 	});
 });
 
@@ -280,7 +285,8 @@ describe("text truncation", () => {
 // ============================================================================
 
 describe("deleteResponse()", () => {
-	test("deletes main message and all thread messages", async () => {
+	// Discord threads not used here — only deletes main message
+	test("deletes main message", async () => {
 		const bot = makeDiscordBot({
 			postReply: vi.fn().mockResolvedValue("MAIN_MSG"),
 			postInThread: vi.fn().mockResolvedValue("THREAD_MSG"),
@@ -288,10 +294,9 @@ describe("deleteResponse()", () => {
 		const event = makeEvent({ thread_ts: undefined });
 		const { responseCtx } = createDiscordAdapters(event, bot);
 		await responseCtx.respond("main");
-		await responseCtx.respondInThread("detail");
 		await responseCtx.deleteResponse();
-		expect(bot.deleteMessageRaw).toHaveBeenCalledWith("CH001", "THREAD_MSG");
 		expect(bot.deleteMessageRaw).toHaveBeenCalledWith("CH001", "MAIN_MSG");
+		expect(bot.deleteMessageRaw).toHaveBeenCalledTimes(1);
 	});
 
 	test("does nothing if no message was created", async () => {

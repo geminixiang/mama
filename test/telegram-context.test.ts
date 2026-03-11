@@ -131,24 +131,24 @@ describe("respond() — threaded (reply to parent message)", () => {
 // ============================================================================
 
 describe("respondInThread()", () => {
-	test("non-threaded: anchors to main bot message", async () => {
+	// Telegram has no threads — respondInThread is a no-op
+	test("non-threaded: does nothing", async () => {
 		const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
 		const event = makeEvent({ thread_ts: undefined });
 		const { responseCtx } = createTelegramAdapters(event, bot);
 		await responseCtx.respond("main");
 		await responseCtx.respondInThread("detail");
-		expect(bot.postReply).toHaveBeenCalledWith(123456, 2001, expect.stringContaining("detail"));
+		expect(bot.postReply).not.toHaveBeenCalled();
 	});
 
-	test("threaded: anchors to parent message id (replyToId)", async () => {
+	test("threaded: does nothing", async () => {
 		const bot = makeTelegramBot({ postReply: vi.fn().mockResolvedValue(3001) });
 		const event = makeEvent({ ts: "1003", thread_ts: "1001" });
 		const { responseCtx } = createTelegramAdapters(event, bot);
 		await responseCtx.respond("main");
 		vi.clearAllMocks();
 		await responseCtx.respondInThread("detail");
-		// Anchored to replyToId (1001), not the bot's reply message
-		expect(bot.postReply).toHaveBeenCalledWith(123456, 1001, expect.stringContaining("detail"));
+		expect(bot.postReply).not.toHaveBeenCalled();
 	});
 
 	test("non-threaded: does nothing if no main message posted yet", async () => {
@@ -277,7 +277,8 @@ describe("text truncation", () => {
 // ============================================================================
 
 describe("deleteResponse()", () => {
-	test("deletes main message and all thread messages", async () => {
+	// Telegram has no threads — only deletes main message
+	test("deletes main message", async () => {
 		const bot = makeTelegramBot({
 			postMessageRaw: vi.fn().mockResolvedValue(2001),
 			postReply: vi.fn().mockResolvedValue(3001),
@@ -285,10 +286,9 @@ describe("deleteResponse()", () => {
 		const event = makeEvent({ thread_ts: undefined });
 		const { responseCtx } = createTelegramAdapters(event, bot);
 		await responseCtx.respond("main");
-		await responseCtx.respondInThread("detail");
 		await responseCtx.deleteResponse();
-		expect(bot.deleteMessageRaw).toHaveBeenCalledWith(123456, 3001);
 		expect(bot.deleteMessageRaw).toHaveBeenCalledWith(123456, 2001);
+		expect(bot.deleteMessageRaw).toHaveBeenCalledTimes(1);
 	});
 
 	test("does nothing if no message was created", async () => {
