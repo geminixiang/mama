@@ -1,33 +1,33 @@
 export interface ChatMessage {
-	id: string;
-	sessionKey: string;
-	userId: string;
-	userName?: string;
-	text: string;
-	attachments?: { name: string; localPath: string }[];
+  id: string;
+  sessionKey: string;
+  userId: string;
+  userName?: string;
+  text: string;
+  attachments?: { name: string; localPath: string }[];
 }
 
 export interface ChatResponseContext {
-	respond(text: string): Promise<void>;
-	replaceResponse(text: string): Promise<void>;
-	respondInThread(text: string): Promise<void>;
-	setTyping(isTyping: boolean): Promise<void>;
-	setWorking(working: boolean): Promise<void>;
-	uploadFile(filePath: string, title?: string): Promise<void>;
-	deleteResponse(): Promise<void>;
+  respond(text: string): Promise<void>;
+  replaceResponse(text: string): Promise<void>;
+  respondInThread(text: string): Promise<void>;
+  setTyping(isTyping: boolean): Promise<void>;
+  setWorking(working: boolean): Promise<void>;
+  uploadFile(filePath: string, title?: string): Promise<void>;
+  deleteResponse(): Promise<void>;
 }
 
 export interface PlatformInfo {
-	name: string;
-	formattingGuide: string;
-	channels: { id: string; name: string }[];
-	users: { id: string; userName: string; displayName: string }[];
+  name: string;
+  formattingGuide: string;
+  channels: { id: string; name: string }[];
+  users: { id: string; userName: string; displayName: string }[];
 }
 
 export interface ChatAdapter {
-	start(): Promise<void>;
-	stop(): Promise<void>;
-	getPlatformInfo(): PlatformInfo;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  getPlatformInfo(): PlatformInfo;
 }
 
 // ============================================================================
@@ -38,19 +38,19 @@ export interface ChatAdapter {
  * A platform-agnostic event (message/mention) that triggers the agent.
  */
 export interface BotEvent {
-	type: string;
-	/** Platform-specific channel/chat identifier */
-	channel: string;
-	/** Message timestamp or ID as string */
-	ts: string;
-	/** Parent message ID for threaded replies (optional) */
-	thread_ts?: string;
-	/** User ID */
-	user: string;
-	/** Message text (already stripped of bot mentions) */
-	text: string;
-	/** Downloaded attachments */
-	attachments?: { name: string; localPath: string }[];
+  type: string;
+  /** Platform-specific channel/chat identifier */
+  channel: string;
+  /** Message timestamp or ID as string */
+  ts: string;
+  /** Parent message ID for threaded replies (optional) */
+  thread_ts?: string;
+  /** User ID */
+  user: string;
+  /** Message text (already stripped of bot mentions) */
+  text: string;
+  /** Downloaded attachments */
+  attachments?: { name: string; localPath: string }[];
 }
 
 /**
@@ -58,18 +58,18 @@ export interface BotEvent {
  * used by the central handler in main.ts and by EventsWatcher.
  */
 export interface Bot {
-	start(): Promise<void>;
-	postMessage(channel: string, text: string): Promise<string>;
-	updateMessage(channel: string, ts: string, text: string): Promise<void>;
-	enqueueEvent(event: BotEvent): boolean;
-	getPlatformInfo(): PlatformInfo;
+  start(): Promise<void>;
+  postMessage(channel: string, text: string): Promise<string>;
+  updateMessage(channel: string, ts: string, text: string): Promise<void>;
+  enqueueEvent(event: BotEvent): boolean;
+  getPlatformInfo(): PlatformInfo;
 }
 
 /** Pre-created platform adapters passed to the handler */
 export interface BotAdapters {
-	message: ChatMessage;
-	responseCtx: ChatResponseContext;
-	platform: PlatformInfo;
+  message: ChatMessage;
+  responseCtx: ChatResponseContext;
+  platform: PlatformInfo;
 }
 
 /**
@@ -77,9 +77,9 @@ export interface BotAdapters {
  * Each bot creates platform-specific adapters before calling handleEvent.
  */
 export interface BotHandler {
-	isRunning(sessionKey: string): boolean;
-	handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
-	handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  isRunning(sessionKey: string): boolean;
+  handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
+  handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
 }
 
 /** @deprecated Use BotHandler */

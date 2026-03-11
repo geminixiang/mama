@@ -7,18 +7,18 @@ import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
 
 export function createMamaTools(executor: Executor): {
-	tools: AgentTool<any>[];
-	setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
+  tools: AgentTool<any>[];
+  setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
 } {
-	const { tool: attachTool, setUploadFunction } = createAttachTool();
-	return {
-		tools: [
-			createReadTool(executor),
-			createBashTool(executor),
-			createEditTool(executor),
-			createWriteTool(executor),
-			attachTool,
-		],
-		setUploadFunction,
-	};
+  const { tool: attachTool, setUploadFunction } = createAttachTool();
+  return {
+    tools: [
+      createReadTool(executor),
+      createBashTool(executor),
+      createEditTool(executor),
+      createWriteTool(executor),
+      attachTool,
+    ],
+    setUploadFunction,
+  };
 }

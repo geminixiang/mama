@@ -96,11 +96,11 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 
 ## Options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--sandbox=host` | ✓ | Run commands directly on host |
-| `--sandbox=docker:<name>` | | Run commands inside a Docker container |
-| `--download <channel-id>` | | Download channel history to stdout and exit (Slack only) |
+| Option                    | Default | Description                                              |
+| ------------------------- | ------- | -------------------------------------------------------- |
+| `--sandbox=host`          | ✓       | Run commands directly on host                            |
+| `--sandbox=docker:<name>` |         | Run commands inside a Docker container                   |
+| `--download <channel-id>` |         | Download channel history to stdout and exit (Slack only) |
 
 ### Download channel history (Slack)
 
@@ -121,12 +121,12 @@ Create `settings.json` in your working directory to override defaults:
 }
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `provider` | `anthropic` | AI provider (env: `MOM_AI_PROVIDER`) |
-| `model` | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`) |
-| `thinkingLevel` | `off` | `off` / `low` / `medium` / `high` |
-| `sessionScope` | `thread` | `thread` (per thread/reply chain) or `channel` |
+| Field           | Default             | Description                                    |
+| --------------- | ------------------- | ---------------------------------------------- |
+| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)           |
+| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)               |
+| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`              |
+| `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel` |
 
 ## Working Directory Layout
 
