@@ -19,7 +19,7 @@ import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
 import type { AgentConfig } from "./config.js";
 import { loadAgentConfig } from "./config.js";
-import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { createMamaSettingsManager, syncLogToSessionManager, type TimeRange } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { createMamaTools } from "./tools/index.js";
@@ -378,6 +378,125 @@ function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>
 	return lines.join("\n");
 }
 
+// ============================================================================
+// Time keyword detection for smart history sync
+// ============================================================================
+
+/**
+ * Time keywords to detect in user messages
+ */
+const TIME_KEYWORDS = [
+	"yesterday",
+	"last week",
+	"last month",
+	"last monday",
+	"last tuesday",
+	"last wednesday",
+	"last thursday",
+	"last friday",
+	"last saturday",
+	"last sunday",
+	"上週",
+	"上個月",
+	"昨天",
+	"上週一",
+	"上週二",
+	"上週三",
+	"上週四",
+	"上週五",
+	"last year",
+	"去年",
+	"一週前",
+	"一個月前",
+	"兩天前",
+	"三天前",
+];
+
+/**
+ * Detect time keyword in user message
+ */
+function detectTimeKeyword(text: string): string | null {
+	for (const keyword of TIME_KEYWORDS) {
+		if (text.toLowerCase().includes(keyword.toLowerCase())) {
+			return keyword;
+		}
+	}
+	return null;
+}
+
+/**
+ * Parse detected time keyword into a TimeRange
+ */
+function parseTimeRange(keyword: string): TimeRange {
+	const now = new Date();
+	const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const oneDay = 24 * 60 * 60 * 1000;
+
+	switch (keyword.toLowerCase()) {
+		case "yesterday":
+		case "昨天": {
+			const yesterday = new Date(today.getTime() - oneDay);
+			return { start: yesterday.getTime(), end: yesterday.getTime() + oneDay - 1 };
+		}
+		case "last week":
+		case "一週前":
+		case "last monday":
+		case "last tuesday":
+		case "last wednesday":
+		case "last thursday":
+		case "last friday":
+		case "last saturday":
+		case "last sunday":
+		case "上週":
+		case "上週一":
+		case "上週二":
+		case "上週三":
+		case "上週四":
+		case "上週五":
+		case "上週六":
+		case "上週日": {
+			// Find last occurrence of the day of week
+			const days = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+			const dayMatch = keyword.match(/last\s+(\w+)/i) || keyword.match(/上週(\w+)/);
+			let targetDay = today.getDay();
+			if (dayMatch) {
+				const dayName = dayMatch[1].toLowerCase();
+				targetDay = days.findIndex((d) => dayName.startsWith(d));
+			}
+			const daysAgo = today.getDay() - targetDay + 7;
+			const lastWeek = new Date(today.getTime() - daysAgo * oneDay);
+			return { start: lastWeek.getTime(), end: lastWeek.getTime() + oneDay - 1 };
+		}
+		case "last month":
+		case "上個月":
+		case "一個月前": {
+			const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+			const daysInLastMonth = new Date(lastMonth.getFullYear(), lastMonth.getMonth() + 1, 0).getDate();
+			return { start: lastMonth.getTime(), end: lastMonth.getTime() + daysInLastMonth * oneDay - 1 };
+		}
+		case "last year":
+		case "去年": {
+			const lastYear = new Date(today.getFullYear() - 1, 0, 1);
+			return { start: lastYear.getTime(), end: lastYear.getTime() + 365 * oneDay - 1 };
+		}
+		case "兩天前": {
+			const twoDaysAgo = new Date(today.getTime() - 2 * oneDay);
+			return { start: twoDaysAgo.getTime(), end: twoDaysAgo.getTime() + oneDay - 1 };
+		}
+		case "三天前": {
+			const threeDaysAgo = new Date(today.getTime() - 3 * oneDay);
+			return { start: threeDaysAgo.getTime(), end: threeDaysAgo.getTime() + oneDay - 1 };
+		}
+		default:
+		// Default to 2 days if unknown
+		return { start: today.getTime() - 2 * oneDay, end: Date.now() };
+	}
+}
+
+// ============================================================================
+// Agent runner
+// ============================================================================
+
 /**
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
@@ -653,7 +772,18 @@ export async function createRunner(
 
 			// Sync messages from log.jsonl that arrived while we were offline or busy
 			// Exclude the current message (it will be added via prompt())
-			const syncedCount = await syncLogToSessionManager(sessionManager, channelDir, message.id);
+			// Detect time keyword in user message to expand sync range if needed
+			const detectedTime = detectTimeKeyword(message.text);
+			let timeRange: TimeRange | undefined;
+
+			// If time keyword detected, calculate the range
+			if (detectedTime) {
+				timeRange = parseTimeRange(detectedTime);
+				log.logInfo(`[${channelId}] Detected time keyword "${detectedTime}", expanding sync to range`);
+			}
+
+			// Sync messages from log.jsonl (default 2 days, or expanded if time keyword found)
+			const syncedCount = await syncLogToSessionManager(sessionManager, channelDir, message.id, timeRange);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}

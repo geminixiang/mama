@@ -20,6 +20,19 @@ import { join } from "path";
 // Sync log.jsonl to SessionManager
 // ============================================================================
 
+/**
+ * Time range for filtering log messages
+ */
+export interface TimeRange {
+	start: number; // Unix timestamp in ms
+	end: number;
+}
+
+/**
+ * Default number of days to sync when no time range is specified
+ */
+const DEFAULT_SYNC_DAYS = 2;
+
 interface LogMessage {
 	date?: string;
 	ts?: string;
@@ -38,13 +51,19 @@ interface LogMessage {
  * @param sessionManager - The SessionManager to sync to
  * @param channelDir - Path to channel directory containing log.jsonl
  * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
+ * @param timeRange - Optional time range to filter log entries (defaults to last 2 days)
  * @returns Number of messages synced
  */
 export async function syncLogToSessionManager(
 	sessionManager: SessionManager,
 	channelDir: string,
 	excludeSlackTs?: string,
+	timeRange?: TimeRange,
 ): Promise<number> {
+	// Calculate default time range (last 2 days) if not provided
+	const now = Date.now();
+	const defaultStart = now - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000;
+	const range = timeRange ?? { start: defaultStart, end: now };
 	const logFile = join(channelDir, "log.jsonl");
 
 	if (!existsSync(logFile)) return 0;
@@ -91,6 +110,10 @@ export async function syncLogToSessionManager(
 			const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]: ${logMsg.text || ""}`;
 
 			const msgTime = new Date(date).getTime() || Date.now();
+
+			// Skip messages outside the time range
+			if (msgTime < range.start || msgTime > range.end) continue;
+
 			const userMessage: UserMessage = {
 				role: "user",
 				content: [{ type: "text", text: messageText }],
