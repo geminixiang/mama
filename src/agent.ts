@@ -17,7 +17,6 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
-import type { AgentConfig } from "./config.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";

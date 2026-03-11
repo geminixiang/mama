@@ -30,7 +30,7 @@ export function createDiscordAdapters(
 		}
 	}
 
-	const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+	const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 	const isThreaded = !!event.thread_ts;
 
 	const message: ChatMessage = {

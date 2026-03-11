@@ -188,7 +188,7 @@ const handler: BotHandler = {
 		}
 	},
 
-	async handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void> {
+	async handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, _isEvent?: boolean): Promise<void> {
 		// Don't accept new events during shutdown
 		if (isShuttingDown) {
 			log.logInfo(`[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`);
