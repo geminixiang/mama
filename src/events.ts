@@ -2,7 +2,7 @@ import { Cron } from "croner";
 import { existsSync, type FSWatcher, mkdirSync, readdirSync, statSync, unlinkSync, watch } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import type { SlackBot, SlackEvent } from "./adapters/slack/index.js";
+import type { Bot, BotEvent } from "./adapter.js";
 import * as log from "./log.js";
 
 // ============================================================================
@@ -50,7 +50,7 @@ export class EventsWatcher {
 
 	constructor(
 		private eventsDir: string,
-		private slack: SlackBot,
+		private bot: Bot,
 	) {
 		this.startTime = Date.now();
 	}
@@ -332,8 +332,8 @@ export class EventsWatcher {
 
 		const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
 
-		// Create synthetic SlackEvent - use channelId as ts for stable session key
-		const syntheticEvent: SlackEvent = {
+		// Create synthetic BotEvent - use channelId as ts for stable session key
+		const syntheticEvent: BotEvent = {
 			type: "mention",
 			channel: event.channelId,
 			user: "EVENT",
@@ -342,7 +342,7 @@ export class EventsWatcher {
 		};
 
 		// Enqueue for processing
-		const enqueued = this.slack.enqueueEvent(syntheticEvent);
+		const enqueued = this.bot.enqueueEvent(syntheticEvent);
 
 		if (enqueued && deleteAfter) {
 			// Delete file after successful enqueue (immediate and one-shot)
@@ -377,7 +377,7 @@ export class EventsWatcher {
 /**
  * Create and start an events watcher.
  */
-export function createEventsWatcher(workspaceDir: string, slack: SlackBot): EventsWatcher {
+export function createEventsWatcher(workspaceDir: string, bot: Bot): EventsWatcher {
 	const eventsDir = join(workspaceDir, "events");
-	return new EventsWatcher(eventsDir, slack);
+	return new EventsWatcher(eventsDir, bot);
 }
