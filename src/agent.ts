@@ -131,6 +131,7 @@ function buildSystemPrompt(
 	sandboxConfig: SandboxConfig,
 	platform: PlatformInfo,
 	skills: Skill[],
+	maxUsersInPrompt: number,
 ): string {
 	const channelPath = `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
@@ -141,10 +142,12 @@ function buildSystemPrompt(
 			? platform.channels.map((c) => `${c.id}\t#${c.name}`).join("\n")
 			: "(no channels loaded)";
 
-	// Format user mappings
+	// Format user mappings (limited to maxUsersInPrompt)
+	const limitedUsers = platform.users.slice(0, maxUsersInPrompt);
+	const userCountNote = platform.users.length > maxUsersInPrompt ? ` (showing ${maxUsersInPrompt} of ${platform.users.length})` : "";
 	const userMappings =
-		platform.users.length > 0
-			? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
+		limitedUsers.length > 0
+			? limitedUsers.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
 			: "(no users loaded)";
 
 	const envDescription = isDocker
@@ -168,7 +171,7 @@ ${platform.formattingGuide}
 ## Platform IDs
 Channels: ${channelMappings}
 
-Users: ${userMappings}
+Users: ${userMappings}${userCountNote}
 
 When mentioning users, use <@username> format (e.g., <@mario>).
 
@@ -406,7 +409,7 @@ export async function createRunner(
 	const memory = await getMemory(channelDir);
 	const skills = loadMamaSkills(channelDir, workspacePath);
 	const emptyPlatform: PlatformInfo = { name: "slack", formattingGuide: "", channels: [], users: [] };
-	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, emptyPlatform, skills);
+	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, emptyPlatform, skills, agentConfig.maxUsersInPrompt ?? 50);
 
 	// Create session manager and settings manager
 	// Per-session context file: {channelDir}/sessions/{rootTs}/context.jsonl
@@ -666,7 +669,7 @@ export async function createRunner(
 			// Update system prompt with fresh memory, channel/user info, and skills
 			const memory = await getMemory(channelDir);
 			const skills = loadMamaSkills(channelDir, workspacePath);
-			const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, platform, skills);
+			const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, platform, skills, agentConfig.maxUsersInPrompt ?? 50);
 			session.agent.setSystemPrompt(systemPrompt);
 
 			// Set up file upload function

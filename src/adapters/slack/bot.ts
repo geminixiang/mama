@@ -622,6 +622,11 @@ export class SlackBot {
 			} catch (error) {
 				log.logWarning(`Failed to backfill #${channel.name}`, String(error));
 			}
+
+			// Add delay between channels to avoid hitting Slack rate limits
+			if (channelId !== channelsToBackfill[channelsToBackfill.length - 1][0]) {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+			}
 		}
 
 		const durationMs = Date.now() - startTime;
