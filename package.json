@@ -38,28 +38,28 @@
     "prepublishOnly": "npm run clean && npm run build"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.16",
+    "@anthropic-ai/sandbox-runtime": "^0.0.40",
     "@mariozechner/pi-agent-core": "^0.57.1",
     "@mariozechner/pi-ai": "^0.57.1",
     "@mariozechner/pi-coding-agent": "^0.57.1",
-    "@sinclair/typebox": "^0.34.0",
-    "@slack/socket-mode": "^2.0.0",
-    "@slack/web-api": "^7.0.0",
+    "@sinclair/typebox": "^0.34.48",
+    "@slack/socket-mode": "^2.0.5",
+    "@slack/web-api": "^7.14.1",
     "chalk": "^5.6.2",
-    "croner": "^9.1.0",
-    "diff": "^8.0.2",
-    "discord.js": "^14.0.0",
+    "croner": "^10.0.1",
+    "diff": "^8.0.3",
+    "discord.js": "^14.25.1",
     "grammy": "^1.41.1"
   },
   "devDependencies": {
-    "@types/diff": "^7.0.2",
-    "@types/node": "^24.3.0",
-    "@typescript/native-preview": "7.0.0-dev.20260120.1",
+    "@types/diff": "^8.0.0",
+    "@types/node": "^25.4.0",
+    "@typescript/native-preview": "7.0.0-dev.20260311.1",
     "oxfmt": "^0.38.0",
     "oxlint": "^1.53.0",
     "shx": "^0.4.0",
-    "typescript": "^5.7.3",
-    "vitest": "^3.2.4"
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
   },
   "engines": {
     "node": ">=20.0.0"
