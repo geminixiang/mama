@@ -3,6 +3,8 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -34,4 +36,5 @@ jobs:
         run: npm test
 
       - name: Publish to npm
+        if: github.event_name == 'release'
         run: npm publish --provenance --access public
