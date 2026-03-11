@@ -17,11 +17,18 @@ export function createDiscordAdapters(
 	platform: PlatformInfo;
 } {
 	let messageId: string | null = null;
-	const threadMessageIds: string[] = [];
 	let accumulatedText = "";
 	let isWorking = true;
 	const workingIndicator = " ...";
 	let updatePromise = Promise.resolve();
+	let typingInterval: ReturnType<typeof setInterval> | null = null;
+
+	function stopTyping(): void {
+		if (typingInterval !== null) {
+			clearInterval(typingInterval);
+			typingInterval = null;
+		}
+	}
 
 	const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 	const isThreaded = !!event.thread_ts;
@@ -66,10 +73,13 @@ export function createDiscordAdapters(
 
 					if (messageId !== null) {
 						await bot.updateMessageRaw(event.channel, messageId, displayText);
-					} else if (isThreaded && event.thread_ts) {
-						messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
 					} else {
-						messageId = await bot.postReply(event.channel, event.ts, displayText);
+						stopTyping();
+						if (isThreaded && event.thread_ts) {
+							messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+						} else {
+							messageId = await bot.postReply(event.channel, event.ts, displayText);
+						}
 					}
 
 					if (messageId !== null) {
@@ -90,10 +100,13 @@ export function createDiscordAdapters(
 
 					if (messageId !== null) {
 						await bot.updateMessageRaw(event.channel, messageId, displayText);
-					} else if (isThreaded && event.thread_ts) {
-						messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
 					} else {
-						messageId = await bot.postReply(event.channel, event.ts, displayText);
+						stopTyping();
+						if (isThreaded && event.thread_ts) {
+							messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+						} else {
+							messageId = await bot.postReply(event.channel, event.ts, displayText);
+						}
 					}
 				} catch (err) {
 					log.logWarning("Discord replaceResponse error", err instanceof Error ? err.message : String(err));
@@ -102,42 +115,18 @@ export function createDiscordAdapters(
 			await updatePromise;
 		},
 
-		respondInThread: async (text: string) => {
-			updatePromise = updatePromise.then(async () => {
-				try {
-					const anchor = isThreaded ? event.thread_ts : messageId;
-					if (anchor) {
-						const threadText = truncate(text, MAX_LENGTH, "\n\n*(truncated)*");
-						const id = await bot.postInThread(event.channel, anchor, threadText);
-						threadMessageIds.push(id);
-					}
-				} catch (err) {
-					log.logWarning("Discord respondInThread error", err instanceof Error ? err.message : String(err));
-				}
-			});
-			await updatePromise;
-		},
+		// Discord threads not used here — discard thread-only messages (e.g. usage summary)
+		respondInThread: async (_text: string) => {},
 
 		setTyping: async (isTyping: boolean) => {
-			if (isTyping && messageId === null) {
-				updatePromise = updatePromise.then(async () => {
-					try {
-						if (messageId === null) {
-							await bot.sendTyping(event.channel);
-							const initialText = eventFilename ? `Starting event: ${eventFilename}` : "_Thinking..._";
-							accumulatedText = initialText;
-							const displayText = accumulatedText + workingIndicator;
-							if (isThreaded && event.thread_ts) {
-								messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
-							} else {
-								messageId = await bot.postReply(event.channel, event.ts, displayText);
-							}
-						}
-					} catch (err) {
-						log.logWarning("Discord setTyping error", err instanceof Error ? err.message : String(err));
-					}
-				});
-				await updatePromise;
+			if (isTyping && typingInterval === null) {
+				// Send immediately and repeat every 8s (Discord clears indicator after ~10s)
+				bot.sendTyping(event.channel).catch(() => {});
+				typingInterval = setInterval(() => {
+					bot.sendTyping(event.channel).catch(() => {});
+				}, 8000);
+			} else if (!isTyping) {
+				stopTyping();
 			}
 		},
 
@@ -145,6 +134,7 @@ export function createDiscordAdapters(
 			updatePromise = updatePromise.then(async () => {
 				try {
 					isWorking = working;
+					if (!working) stopTyping();
 					if (messageId !== null) {
 						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 						await bot.updateMessageRaw(event.channel, messageId, displayText);
@@ -162,14 +152,7 @@ export function createDiscordAdapters(
 
 		deleteResponse: async () => {
 			updatePromise = updatePromise.then(async () => {
-				for (let i = threadMessageIds.length - 1; i >= 0; i--) {
-					try {
-						await bot.deleteMessageRaw(event.channel, threadMessageIds[i]);
-					} catch {
-						// Ignore errors
-					}
-				}
-				threadMessageIds.length = 0;
+				stopTyping();
 				if (messageId !== null) {
 					try {
 						await bot.deleteMessageRaw(event.channel, messageId);
