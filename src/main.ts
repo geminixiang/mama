@@ -98,6 +98,12 @@ interface ChannelState {
 
 const channelStates = new Map<string, ChannelState>();
 
+/** Track in-flight runs for graceful shutdown */
+const inFlightRuns = new Set<Promise<void>>();
+
+/** Flag to stop accepting new events during shutdown */
+let isShuttingDown = false;
+
 /** Maximum number of cached sessions */
 const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
@@ -184,6 +190,12 @@ const handler: MomHandler = {
 	},
 
 	async handleEvent(event: SlackEvent, slack: SlackBot, isEvent?: boolean): Promise<void> {
+		// Don't accept new events during shutdown
+		if (isShuttingDown) {
+			log.logInfo(`[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`);
+			return;
+		}
+
 		const sessionKey = `${event.channel}:${event.thread_ts ?? event.ts}`;
 		const state = await getState(event.channel, sessionKey);
 
@@ -193,30 +205,40 @@ const handler: MomHandler = {
 
 		log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
 
-		try {
-			// Create platform-agnostic adapter objects
-			const { message, responseCtx, platform } = createSlackAdapters(event, slack, isEvent);
+		// Wrap in-flight run tracking
+		const runPromise = (async () => {
+			try {
+				// Create platform-agnostic adapter objects
+				const { message, responseCtx, platform } = createSlackAdapters(event, slack, isEvent);
 
-			// Run the agent
-			await responseCtx.setTyping(true);
-			await responseCtx.setWorking(true);
-			const result = await state.runner.run(message, responseCtx, platform);
-			await responseCtx.setWorking(false);
+				// Run the agent
+				await responseCtx.setTyping(true);
+				await responseCtx.setWorking(true);
+				const result = await state.runner.run(message, responseCtx, platform);
+				await responseCtx.setWorking(false);
 
-			if (result.stopReason === "aborted" && state.stopRequested) {
-				if (state.stopMessageTs) {
-					await slack.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
-					state.stopMessageTs = undefined;
-				} else {
-					await slack.postMessage(event.channel, "_Stopped_");
+				if (result.stopReason === "aborted" && state.stopRequested) {
+					if (state.stopMessageTs) {
+						await slack.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+						state.stopMessageTs = undefined;
+					} else {
+						await slack.postMessage(event.channel, "_Stopped_");
+					}
 				}
+			} catch (err) {
+				log.logWarning(`[${event.channel}] Run error`, err instanceof Error ? err.message : String(err));
+			} finally {
+				state.running = false;
+				state.lastAccessedAt = Date.now();
+				evictIdleSessions();
 			}
-		} catch (err) {
-			log.logWarning(`[${event.channel}] Run error`, err instanceof Error ? err.message : String(err));
+		})();
+
+		inFlightRuns.add(runPromise);
+		try {
+			await runPromise;
 		} finally {
-			state.running = false;
-			state.lastAccessedAt = Date.now();
-			evictIdleSessions();
+			inFlightRuns.delete(runPromise);
 		}
 	},
 };
@@ -242,14 +264,40 @@ const eventsWatcher = createEventsWatcher(workingDir, bot);
 eventsWatcher.start();
 
 // Handle shutdown
-process.on("SIGINT", () => {
-	log.logInfo("Shutting down...");
+process.on("SIGINT", async () => {
+	if (isShuttingDown) return; // Prevent duplicate signals
+	isShuttingDown = true;
+	log.logInfo("Shutting down gracefully...");
+
+	// Wait for in-flight runs (max 30 seconds)
+	const timeout = Date.now() + 30000;
+	while (inFlightRuns.size > 0 && Date.now() < timeout) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+
+	if (inFlightRuns.size > 0) {
+		log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
+	}
+
 	eventsWatcher.stop();
 	process.exit(0);
 });
 
-process.on("SIGTERM", () => {
-	log.logInfo("Shutting down...");
+process.on("SIGTERM", async () => {
+	if (isShuttingDown) return; // Prevent duplicate signals
+	isShuttingDown = true;
+	log.logInfo("Shutting down gracefully...");
+
+	// Wait for in-flight runs (max 30 seconds)
+	const timeout = Date.now() + 30000;
+	while (inFlightRuns.size > 0 && Date.now() < timeout) {
+		await new Promise((resolve) => setTimeout(resolve, 500));
+	}
+
+	if (inFlightRuns.size > 0) {
+		log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
+	}
+
 	eventsWatcher.stop();
 	process.exit(0);
 });

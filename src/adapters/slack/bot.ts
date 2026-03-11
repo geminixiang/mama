@@ -7,6 +7,55 @@ import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 
 // ============================================================================
+// Exponential backoff utility for Slack API calls
+// ============================================================================
+
+/**
+ * Retry a function with exponential backoff on rate limit errors.
+ */
+async function withRetry<T>(
+	fn: () => Promise<T>,
+	maxRetries: number = 3,
+	baseDelayMs: number = 1000,
+): Promise<T> {
+	let lastError: Error | undefined;
+	for (let attempt = 0; attempt < maxRetries; attempt++) {
+		try {
+			return await fn();
+		} catch (err) {
+			lastError = err instanceof Error ? err : new Error(String(err));
+
+			// Check for rate limit errors
+			let isRateLimited = false;
+
+			// Check for rate_limited error code (Slack SDK)
+			if ("code" in lastError && lastError.code === "rate_limited") {
+				isRateLimited = true;
+			}
+
+			// Check for rate_limited in error response
+			if ("data" in lastError) {
+				const data = (lastError as { data?: { error?: string; response?: { status?: number } } }).data;
+				if (data?.error === "rate_limited" || data?.response?.status === 429) {
+					isRateLimited = true;
+				}
+			}
+
+			if (isRateLimited) {
+				const delay = baseDelayMs * Math.pow(2, attempt);
+				log.logWarning(`Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+				await new Promise((resolve) => setTimeout(resolve, delay));
+				continue;
+			}
+
+			// Non-retryable error
+			throw lastError;
+		}
+	}
+	throw lastError;
+}
+
+// ============================================================================
 // Types
 // ============================================================================
 
@@ -188,31 +237,41 @@ export class SlackBot {
 	}
 
 	async postMessage(channel: string, text: string): Promise<string> {
-		const result = await this.webClient.chat.postMessage({ channel, text });
-		return result.ts as string;
+		return withRetry(async () => {
+			const result = await this.webClient.chat.postMessage({ channel, text });
+			return result.ts as string;
+		});
 	}
 
 	async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-		await this.webClient.chat.update({ channel, ts, text });
+		return withRetry(async () => {
+			await this.webClient.chat.update({ channel, ts, text });
+		});
 	}
 
 	async deleteMessage(channel: string, ts: string): Promise<void> {
-		await this.webClient.chat.delete({ channel, ts });
+		return withRetry(async () => {
+			await this.webClient.chat.delete({ channel, ts });
+		});
 	}
 
 	async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
-		const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text });
-		return result.ts as string;
+		return withRetry(async () => {
+			const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text });
+			return result.ts as string;
+		});
 	}
 
 	async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
-		const fileName = title || basename(filePath);
-		const fileContent = readFileSync(filePath);
-		await this.webClient.files.uploadV2({
-			channel_id: channel,
-			file: fileContent,
-			filename: fileName,
-			title: fileName,
+		return withRetry(async () => {
+			const fileName = title || basename(filePath);
+			const fileContent = readFileSync(filePath);
+			await this.webClient.files.uploadV2({
+				channel_id: channel,
+				file: fileContent,
+				filename: fileName,
+				title: fileName,
+			});
 		});
 	}
 

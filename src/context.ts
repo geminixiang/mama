@@ -49,43 +49,15 @@ export async function syncLogToSessionManager(
 
 	if (!existsSync(logFile)) return 0;
 
-	// Build set of existing message content from session
-	const existingMessages = new Set<string>();
+	// Build set of existing timestamps from session entries
+	// We use ts (Slack timestamp) as the unique key instead of message content
+	const existingTimestamps = new Set<string>();
 	for (const entry of sessionManager.getEntries()) {
 		if (entry.type === "message") {
 			const msgEntry = entry as SessionMessageEntry;
-			const msg = msgEntry.message as { role: string; content?: unknown };
-			if (msg.role === "user" && msg.content !== undefined) {
-				const content = msg.content;
-				if (typeof content === "string") {
-					// Strip timestamp prefix for comparison (live messages have it, synced don't)
-					// Format: [YYYY-MM-DD HH:MM:SS+HH:MM] [username]: text
-					let normalized = content.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /, "");
-					// Strip attachments section
-					const attachmentsIdx = normalized.indexOf("\n\n<slack_attachments>\n");
-					if (attachmentsIdx !== -1) {
-						normalized = normalized.substring(0, attachmentsIdx);
-					}
-					existingMessages.add(normalized);
-				} else if (Array.isArray(content)) {
-					for (const part of content) {
-						if (
-							typeof part === "object" &&
-							part !== null &&
-							"type" in part &&
-							part.type === "text" &&
-							"text" in part
-						) {
-							let normalized = (part as { type: "text"; text: string }).text;
-							normalized = normalized.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}\] /, "");
-							const attachmentsIdx = normalized.indexOf("\n\n<slack_attachments>\n");
-							if (attachmentsIdx !== -1) {
-								normalized = normalized.substring(0, attachmentsIdx);
-							}
-							existingMessages.add(normalized);
-						}
-					}
-				}
+			// SessionMessageEntry has a timestamp field (number, Unix ms)
+			if (msgEntry.timestamp) {
+				existingTimestamps.add(msgEntry.timestamp.toString());
 			}
 		}
 	}
@@ -110,11 +82,13 @@ export async function syncLogToSessionManager(
 			// Skip bot messages - added through agent flow
 			if (logMsg.isBot) continue;
 
+			// Skip if this Slack timestamp is already in the session (dedupe by ts, not content)
+			// Convert Slack ts (e.g., "1234567890.123456") to Unix ms for comparison
+			const slackTsMs = Math.floor(parseFloat(slackTs) * 1000).toString();
+			if (existingTimestamps.has(slackTsMs)) continue;
+
 			// Build the message text as it would appear in context
 			const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]: ${logMsg.text || ""}`;
-
-			// Skip if this exact message text is already in context
-			if (existingMessages.has(messageText)) continue;
 
 			const msgTime = new Date(date).getTime() || Date.now();
 			const userMessage: UserMessage = {
@@ -124,7 +98,7 @@ export async function syncLogToSessionManager(
 			};
 
 			newMessages.push({ timestamp: msgTime, message: userMessage });
-			existingMessages.add(messageText); // Track to avoid duplicates within this sync
+			existingTimestamps.add(slackTsMs); // Track to avoid duplicates within this sync
 		} catch {
 			// Skip malformed lines
 		}

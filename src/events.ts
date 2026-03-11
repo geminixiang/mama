@@ -332,13 +332,13 @@ export class EventsWatcher {
 
 		const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
 
-		// Create synthetic SlackEvent
+		// Create synthetic SlackEvent - use channelId as ts for stable session key
 		const syntheticEvent: SlackEvent = {
 			type: "mention",
 			channel: event.channelId,
 			user: "EVENT",
 			text: message,
-			ts: Date.now().toString(),
+			ts: event.channelId, // Stable key: same channel uses same ts for all events
 		};
 
 		// Enqueue for processing
