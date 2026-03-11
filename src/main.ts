@@ -1,13 +1,10 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import {
-	createSlackAdapters,
-	type MomHandler,
-	type SlackBot,
-	SlackBot as SlackBotClass,
-	type SlackEvent,
-} from "./adapters/slack/index.js";
+import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
+import { DiscordBot } from "./adapters/discord/index.js";
+import { TelegramBot } from "./adapters/telegram/index.js";
+import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
@@ -21,6 +18,8 @@ import { ChannelStore } from "./store.js";
 
 const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
+const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
+const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
 
 interface ParsedArgs {
 	workingDir?: string;
@@ -58,7 +57,7 @@ function parseArgs(): ParsedArgs {
 
 const parsedArgs = parseArgs();
 
-// Handle --download mode
+// Handle --download mode (Slack only)
 if (parsedArgs.downloadChannel) {
 	if (!MOM_SLACK_BOT_TOKEN) {
 		console.error("Missing env: MOM_SLACK_BOT_TOKEN");
@@ -77,8 +76,18 @@ if (!parsedArgs.workingDir) {
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
 
-if (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN) {
-	console.error("Missing env: MOM_SLACK_APP_TOKEN, MOM_SLACK_BOT_TOKEN");
+// Validate platform tokens
+const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
+const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
+const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+
+if (!hasSlack && !hasTelegram && !hasDiscord) {
+	console.error(
+		"No platform tokens found. Set one of:\n" +
+			"  Slack:    MOM_SLACK_APP_TOKEN + MOM_SLACK_BOT_TOKEN\n" +
+			"  Telegram: MOM_TELEGRAM_BOT_TOKEN\n" +
+			"  Discord:  MOM_DISCORD_BOT_TOKEN",
+	);
 	process.exit(1);
 }
 
@@ -130,25 +139,17 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
 /**
  * Evict idle sessions from channelStates to bound memory usage.
  * Called after each handleEvent completes.
- *
- * Eviction rules:
- * - Never evict sessions that are currently running
- * - Evict sessions idle for more than IDLE_TIMEOUT_MS
- * - If still over MAX_SESSIONS, evict oldest idle sessions first
  */
 function evictIdleSessions(): void {
 	const now = Date.now();
 
-	// First pass: evict sessions that are idle and past the timeout
 	for (const [key, state] of channelStates) {
 		if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
 			channelStates.delete(key);
 		}
 	}
 
-	// Second pass: if still over capacity, evict oldest idle sessions
 	if (channelStates.size > MAX_SESSIONS) {
-		// Collect all non-running sessions with their last access time
 		const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
 		for (const [key, state] of channelStates) {
 			if (!state.running) {
@@ -156,10 +157,8 @@ function evictIdleSessions(): void {
 			}
 		}
 
-		// Sort oldest first
 		idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
 
-		// Evict until under capacity
 		const toEvict = channelStates.size - MAX_SESSIONS;
 		for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
 			channelStates.delete(idleSessions[i].key);
@@ -171,25 +170,25 @@ function evictIdleSessions(): void {
 // Handler
 // ============================================================================
 
-const handler: MomHandler = {
+const handler: BotHandler = {
 	isRunning(sessionKey: string): boolean {
 		const state = channelStates.get(sessionKey);
 		return state?.running ?? false;
 	},
 
-	async handleStop(sessionKey: string, channelId: string, slack: SlackBot): Promise<void> {
+	async handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
 		const state = channelStates.get(sessionKey);
 		if (state?.running) {
 			state.stopRequested = true;
 			state.runner.abort();
-			const ts = await slack.postMessage(channelId, "_Stopping..._");
-			state.stopMessageTs = ts; // Save for updating later
+			const ts = await bot.postMessage(channelId, "_Stopping..._");
+			state.stopMessageTs = ts;
 		} else {
-			await slack.postMessage(channelId, "_Nothing running_");
+			await bot.postMessage(channelId, "_Nothing running_");
 		}
 	},
 
-	async handleEvent(event: SlackEvent, slack: SlackBot, isEvent?: boolean): Promise<void> {
+	async handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void> {
 		// Don't accept new events during shutdown
 		if (isShuttingDown) {
 			log.logInfo(`[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`);
@@ -208,8 +207,7 @@ const handler: MomHandler = {
 		// Wrap in-flight run tracking
 		const runPromise = (async () => {
 			try {
-				// Create platform-agnostic adapter objects
-				const { message, responseCtx, platform } = createSlackAdapters(event, slack, isEvent);
+				const { message, responseCtx, platform } = adapters;
 
 				// Run the agent
 				await responseCtx.setTyping(true);
@@ -219,10 +217,10 @@ const handler: MomHandler = {
 
 				if (result.stopReason === "aborted" && state.stopRequested) {
 					if (state.stopMessageTs) {
-						await slack.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+						await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
 						state.stopMessageTs = undefined;
 					} else {
-						await slack.postMessage(event.channel, "_Stopped_");
+						await bot.postMessage(event.channel, "_Stopped_");
 					}
 				}
 			} catch (err) {
@@ -249,15 +247,31 @@ const handler: MomHandler = {
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
 
-// Shared store for attachment downloads (also used per-channel in getState)
-const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+// Create the appropriate platform bot
+let bot: Bot;
 
-const bot = new SlackBotClass(handler, {
-	appToken: MOM_SLACK_APP_TOKEN,
-	botToken: MOM_SLACK_BOT_TOKEN,
-	workingDir,
-	store: sharedStore,
-});
+if (hasSlack) {
+	const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+	bot = new SlackBotClass(handler, {
+		appToken: MOM_SLACK_APP_TOKEN!,
+		botToken: MOM_SLACK_BOT_TOKEN!,
+		workingDir,
+		store: sharedStore,
+	});
+	log.logInfo("Platform: Slack");
+} else if (hasTelegram) {
+	bot = new TelegramBot(handler, {
+		token: MOM_TELEGRAM_BOT_TOKEN!,
+		workingDir,
+	});
+	log.logInfo("Platform: Telegram");
+} else {
+	bot = new DiscordBot(handler, {
+		token: MOM_DISCORD_BOT_TOKEN!,
+		workingDir,
+	});
+	log.logInfo("Platform: Discord");
+}
 
 // Start events watcher
 const eventsWatcher = createEventsWatcher(workingDir, bot);
@@ -265,11 +279,10 @@ eventsWatcher.start();
 
 // Handle shutdown
 process.on("SIGINT", async () => {
-	if (isShuttingDown) return; // Prevent duplicate signals
+	if (isShuttingDown) return;
 	isShuttingDown = true;
 	log.logInfo("Shutting down gracefully...");
 
-	// Wait for in-flight runs (max 30 seconds)
 	const timeout = Date.now() + 30000;
 	while (inFlightRuns.size > 0 && Date.now() < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 500));
@@ -284,11 +297,10 @@ process.on("SIGINT", async () => {
 });
 
 process.on("SIGTERM", async () => {
-	if (isShuttingDown) return; // Prevent duplicate signals
+	if (isShuttingDown) return;
 	isShuttingDown = true;
 	log.logInfo("Shutting down gracefully...");
 
-	// Wait for in-flight runs (max 30 seconds)
 	const timeout = Date.now() + 30000;
 	while (inFlightRuns.size > 0 && Date.now() < timeout) {
 		await new Promise((resolve) => setTimeout(resolve, 500));

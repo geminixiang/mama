@@ -12,7 +12,7 @@ export function createSlackAdapters(
 	isEvent?: boolean,
 ): {
 	message: ChatMessage;
-	responseCtx: ChatResponseContext & { setTyping(isTyping: boolean): Promise<void> };
+	responseCtx: ChatResponseContext;
 	platform: PlatformInfo;
 } {
 	let messageTs: string | null = null;

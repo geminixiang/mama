@@ -3,8 +3,10 @@ import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
+import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
+import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
 // Exponential backoff utility for Slack API calls
@@ -116,26 +118,8 @@ export interface SlackContext {
 	deleteMessage: () => Promise<void>;
 }
 
-export interface MomHandler {
-	/**
-	 * Check if session is currently running (SYNC).
-	 * sessionKey format: "channelId:rootTs"
-	 */
-	isRunning(sessionKey: string): boolean;
-
-	/**
-	 * Handle an event that triggers mama (ASYNC)
-	 * Called only when isRunning() returned false for user messages.
-	 * Events always queue and pass isEvent=true.
-	 */
-	handleEvent(event: SlackEvent, slack: SlackBot, isEvent?: boolean): Promise<void>;
-
-	/**
-	 * Handle stop command (ASYNC)
-	 * Called when user says "stop" while mama is running
-	 */
-	handleStop(sessionKey: string, channelId: string, slack: SlackBot): Promise<void>;
-}
+/** @deprecated Use BotHandler from adapter.ts instead */
+export type MomHandler = BotHandler;
 
 // ============================================================================
 // Per-channel queue for sequential processing
@@ -174,10 +158,10 @@ class ChannelQueue {
 // SlackBot
 // ============================================================================
 
-export class SlackBot {
+export class SlackBot implements Bot {
 	private socketClient: SocketModeClient;
 	private webClient: WebClient;
-	private handler: MomHandler;
+	private handler: BotHandler;
 	private workingDir: string;
 	private store: ChannelStore;
 	private botUserId: string | null = null;
@@ -188,7 +172,7 @@ export class SlackBot {
 	private queues = new Map<string, ChannelQueue>();
 
 	constructor(
-		handler: MomHandler,
+		handler: BotHandler,
 		config: { appToken: string; botToken: string; workingDir: string; store: ChannelStore },
 	) {
 		this.handler = handler;
@@ -299,6 +283,17 @@ export class SlackBot {
 		});
 	}
 
+	getPlatformInfo(): PlatformInfo {
+		return {
+			name: "slack",
+			formattingGuide:
+				"## Slack Formatting (mrkdwn, NOT Markdown)\nBold: *text*, Italic: _text_, Code: `code`, Block: ```code```, Links: <url|text>\nDo NOT use **double asterisks** or [markdown](links).",
+			channels: this.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
+			users: this.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
+		};
+	}
+
+
 	// ==========================================================================
 	// Events Integration
 	// ==========================================================================
@@ -307,14 +302,17 @@ export class SlackBot {
 	 * Enqueue an event for processing. Always queues (no "already working" rejection).
 	 * Returns true if enqueued, false if queue is full (max 5).
 	 */
-	enqueueEvent(event: SlackEvent): boolean {
+	enqueueEvent(event: BotEvent): boolean {
 		const queue = this.getQueue(event.channel);
 		if (queue.size() >= 5) {
 			log.logWarning(`Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`);
 			return false;
 		}
 		log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
-		queue.enqueue(() => this.handler.handleEvent(event, this, true));
+		queue.enqueue(() => {
+			const adapters = createSlackAdapters(event as unknown as SlackEvent, this, true);
+			return this.handler.handleEvent(event, this, adapters, true);
+		});
 		return true;
 	}
 
@@ -391,7 +389,10 @@ export class SlackBot {
 			if (this.handler.isRunning(sessionKey)) {
 				this.postMessage(e.channel, "_Already working in this thread. Say `@mama stop` to cancel._");
 			} else {
-				this.getQueue(sessionKey).enqueue(() => this.handler.handleEvent(slackEvent, this));
+				this.getQueue(sessionKey).enqueue(() => {
+					const adapters = createSlackAdapters(slackEvent, this, false);
+					return this.handler.handleEvent(slackEvent as unknown as import("../../adapter.js").BotEvent, this, adapters, false);
+				});
 			}
 
 			ack();
@@ -474,7 +475,10 @@ export class SlackBot {
 				if (this.handler.isRunning(dmSessionKey)) {
 					this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
 				} else {
-					this.getQueue(dmSessionKey).enqueue(() => this.handler.handleEvent(slackEvent, this));
+					this.getQueue(dmSessionKey).enqueue(() => {
+						const adapters = createSlackAdapters(slackEvent, this, false);
+						return this.handler.handleEvent(slackEvent as unknown as import("../../adapter.js").BotEvent, this, adapters, false);
+					});
 				}
 			}
 
