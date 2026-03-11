@@ -1,8 +1,6 @@
 # mama
 
-A Slack bot that delegates messages to an AI coding agent.
-
-Forked from [badlogic/pi-mono](https://github.com/badlogic/pi-mono) (`packages/mom`), MIT licensed.
+A Slack bot that delegates messages to an AI coding agent. Built as an extension of the `mom` package from [badlogic/pi-mono](https://github.com/badlogic/pi-mono), MIT licensed.
 
 ## Features
 
@@ -157,4 +155,4 @@ npm run build   # production build
 
 MIT — see [LICENSE](LICENSE).
 
-Based on [pi-mono](https://github.com/badlogic/pi-mono) by Mario Zechner.
+Based on [pi-mono](https://github.com/badlogic/pi-mono) by Mario Zechner, extended from the `mom` package.
