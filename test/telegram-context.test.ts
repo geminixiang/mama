@@ -103,6 +103,14 @@ describe("respond() — non-threaded", () => {
 		expect(updateCall[2]).toContain("line1");
 		expect(updateCall[2]).toContain("line2");
 	});
+
+	test("calls logBotResponse on successful respond", async () => {
+		const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.respond("hello");
+		expect(bot.logBotResponse).toHaveBeenCalledWith("123456", "hello", "2001");
+	});
 });
 
 describe("respond() — threaded (reply to parent message)", () => {
@@ -254,6 +262,17 @@ describe("replaceResponse()", () => {
 		expect(updateCall[2]).not.toContain("original text");
 		expect(updateCall[2]).toContain("replacement");
 	});
+
+	test("replaceResponse truncates long text", async () => {
+		const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.setWorking(false);
+		await responseCtx.replaceResponse("x".repeat(4000));
+		const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
+		expect(posted.length).toBeLessThanOrEqual(3800);
+		expect(posted).toContain("truncated");
+	});
 });
 
 // ============================================================================
@@ -266,6 +285,27 @@ describe("text truncation", () => {
 		const event = makeEvent({ thread_ts: undefined });
 		const { responseCtx } = createTelegramAdapters(event, bot);
 		await responseCtx.respond("x".repeat(4000));
+		const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
+		expect(posted.length).toBeLessThanOrEqual(3800);
+		expect(posted).toContain("truncated");
+	});
+
+	test("text exactly at 3800 chars is not truncated when not working", async () => {
+		const bot = makeTelegramBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.setWorking(false);
+		await responseCtx.respond("x".repeat(3800));
+		const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
+		expect(posted.length).toBe(3800);
+		expect(posted).not.toContain("truncated");
+	});
+
+	test("text at 3801 chars is truncated", async () => {
+		const bot = makeTelegramBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.respond("x".repeat(3801));
 		const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
 		expect(posted.length).toBeLessThanOrEqual(3800);
 		expect(posted).toContain("truncated");
@@ -323,6 +363,28 @@ describe("platform info", () => {
 });
 
 // ============================================================================
+// uploadFile()
+// ============================================================================
+
+describe("uploadFile()", () => {
+	test("calls bot.uploadFile with channel, path, and title", async () => {
+		const bot = makeTelegramBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.uploadFile("/path/to/file.txt", "My File");
+		expect(bot.uploadFile).toHaveBeenCalledWith("123456", "/path/to/file.txt", "My File");
+	});
+
+	test("calls bot.uploadFile without title", async () => {
+		const bot = makeTelegramBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createTelegramAdapters(event, bot);
+		await responseCtx.uploadFile("/path/to/image.png");
+		expect(bot.uploadFile).toHaveBeenCalledWith("123456", "/path/to/image.png", undefined);
+	});
+});
+
+// ============================================================================
 // ChatMessage fields
 // ============================================================================
 
@@ -338,5 +400,12 @@ describe("message fields", () => {
 		const event = makeEvent({ text: "what time is it?" });
 		const { message } = createTelegramAdapters(event, makeTelegramBot());
 		expect(message.text).toBe("what time is it?");
+	});
+
+	test("attachments are populated from event", () => {
+		const attachments = [{ name: "file.txt", localPath: "/tmp/file.txt" }];
+		const event = makeEvent({ attachments });
+		const { message } = createTelegramAdapters(event, makeTelegramBot());
+		expect(message.attachments).toEqual(attachments);
 	});
 });

@@ -179,6 +179,20 @@ describe("setTyping()", () => {
 		expect(bot.postReply).not.toHaveBeenCalled();
 	});
 
+	test("setTyping(false) stops typing and allows restart", async () => {
+		const bot = makeDiscordBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createDiscordAdapters(event, bot);
+		// Start typing
+		await responseCtx.setTyping(true);
+		// Stop typing (should clear interval internally)
+		await responseCtx.setTyping(false);
+		vi.clearAllMocks();
+		// Start typing again - should call sendTyping (interval was cleared)
+		await responseCtx.setTyping(true);
+		expect(bot.sendTyping).toHaveBeenCalledWith("CH001");
+	});
+
 	test("threaded: sends typing indicator", async () => {
 		const bot = makeDiscordBot();
 		const event = makeEvent({ ts: "MSG003", thread_ts: "THREAD001" });
@@ -278,6 +292,27 @@ describe("text truncation", () => {
 		expect(posted.length).toBeLessThanOrEqual(1900);
 		expect(posted).toContain("truncated");
 	});
+
+	test("text exactly at 1900 chars is not truncated when not working", async () => {
+		const bot = makeDiscordBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createDiscordAdapters(event, bot);
+		await responseCtx.setWorking(false);
+		await responseCtx.respond("x".repeat(1900));
+		const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
+		expect(posted.length).toBe(1900);
+		expect(posted).not.toContain("truncated");
+	});
+
+	test("text at 1901 chars is truncated", async () => {
+		const bot = makeDiscordBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createDiscordAdapters(event, bot);
+		await responseCtx.respond("x".repeat(1901));
+		const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
+		expect(posted.length).toBeLessThanOrEqual(1900);
+		expect(posted).toContain("truncated");
+	});
 });
 
 // ============================================================================
@@ -335,6 +370,28 @@ describe("platform info", () => {
 });
 
 // ============================================================================
+// uploadFile()
+// ============================================================================
+
+describe("uploadFile()", () => {
+	test("calls bot.uploadFile with channel, path, and title", async () => {
+		const bot = makeDiscordBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createDiscordAdapters(event, bot);
+		await responseCtx.uploadFile("/path/to/file.txt", "My File");
+		expect(bot.uploadFile).toHaveBeenCalledWith("CH001", "/path/to/file.txt", "My File");
+	});
+
+	test("calls bot.uploadFile without title", async () => {
+		const bot = makeDiscordBot();
+		const event = makeEvent({ thread_ts: undefined });
+		const { responseCtx } = createDiscordAdapters(event, bot);
+		await responseCtx.uploadFile("/path/to/image.png");
+		expect(bot.uploadFile).toHaveBeenCalledWith("CH001", "/path/to/image.png", undefined);
+	});
+});
+
+// ============================================================================
 // ChatMessage fields
 // ============================================================================
 
@@ -350,5 +407,12 @@ describe("message fields", () => {
 		const event = makeEvent({ text: "what is 2+2?" });
 		const { message } = createDiscordAdapters(event, makeDiscordBot());
 		expect(message.text).toBe("what is 2+2?");
+	});
+
+	test("attachments are populated from event", () => {
+		const attachments = [{ name: "file.txt", localPath: "/tmp/file.txt" }];
+		const event = makeEvent({ attachments });
+		const { message } = createDiscordAdapters(event, makeDiscordBot());
+		expect(message.attachments).toEqual(attachments);
 	});
 });
