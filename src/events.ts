@@ -4,6 +4,7 @@ import {
   type FSWatcher,
   mkdirSync,
   readdirSync,
+  readFileSync,
   statSync,
   unlinkSync,
   watch,
@@ -39,6 +40,15 @@ export interface PeriodicEvent {
 }
 
 export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
+
+export interface PeriodicEventInfo {
+  filename: string;
+  channelId: string;
+  text: string;
+  schedule: string;
+  timezone: string;
+  nextRun: string | null; // ISO 8601
+}
 
 // ============================================================================
 // EventsWatcher
@@ -116,6 +126,32 @@ export class EventsWatcher {
 
     this.knownFiles.clear();
     log.logInfo("Events watcher stopped");
+  }
+
+  /**
+   * Return all active periodic (cron) events with their next run time.
+   */
+  getPeriodicEvents(): PeriodicEventInfo[] {
+    const results: PeriodicEventInfo[] = [];
+    for (const [filename, cron] of this.crons) {
+      const filePath = join(this.eventsDir, filename);
+      try {
+        const content = readFileSync(filePath, "utf-8");
+        const data = JSON.parse(content) as PeriodicEvent;
+        const next = cron.nextRun();
+        results.push({
+          filename,
+          channelId: data.channelId,
+          text: data.text,
+          schedule: data.schedule,
+          timezone: data.timezone,
+          nextRun: next?.toISOString() ?? null,
+        });
+      } catch {
+        // File may have been deleted or corrupted, skip
+      }
+    }
+    return results;
   }
 
   private debounce(filename: string, fn: () => void): void {

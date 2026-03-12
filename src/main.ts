@@ -103,6 +103,7 @@ interface ChannelState {
   stopRequested: boolean;
   stopMessageTs?: string;
   lastAccessedAt: number;
+  startedAt?: number;
 }
 
 const channelStates = new Map<string, ChannelState>();
@@ -176,6 +177,16 @@ const handler: BotHandler = {
     return state?.running ?? false;
   },
 
+  getRunningSessions() {
+    const sessions: import("./adapter.js").RunningSession[] = [];
+    for (const [sessionKey, state] of channelStates) {
+      if (state.running && state.startedAt) {
+        sessions.push({ sessionKey, startedAt: state.startedAt });
+      }
+    }
+    return sessions;
+  },
+
   async handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
     const state = channelStates.get(sessionKey);
     if (state?.running) {
@@ -208,6 +219,7 @@ const handler: BotHandler = {
     // Start run
     state.running = true;
     state.stopRequested = false;
+    state.startedAt = Date.now();
 
     log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
 
@@ -285,6 +297,9 @@ if (hasSlack) {
 
 // Start events watcher
 const eventsWatcher = createEventsWatcher(workingDir, bot);
+if (hasSlack) {
+  (bot as SlackBotClass).setEventsWatcher(eventsWatcher);
+}
 eventsWatcher.start();
 
 // Handle shutdown

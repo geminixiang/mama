@@ -4,6 +4,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { createSlackAdapters } from "./context.js";
@@ -173,6 +174,7 @@ export class SlackBot implements Bot {
   private users = new Map<string, SlackUser>();
   private channels = new Map<string, SlackChannel>();
   private queues = new Map<string, ChannelQueue>();
+  private eventsWatcher: EventsWatcher | null = null;
 
   constructor(
     handler: BotHandler,
@@ -183,6 +185,10 @@ export class SlackBot implements Bot {
     this.store = config.store;
     this.socketClient = new SocketModeClient({ appToken: config.appToken });
     this.webClient = new WebClient(config.botToken);
+  }
+
+  setEventsWatcher(watcher: EventsWatcher): void {
+    this.eventsWatcher = watcher;
   }
 
   // ==========================================================================
@@ -335,6 +341,107 @@ export class SlackBot implements Bot {
       this.queues.set(channelId, queue);
     }
     return queue;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private buildHomeView(): { type: "home"; blocks: any[] } {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const blocks: any[] = [
+      {
+        type: "section",
+        text: {
+          type: "mrkdwn",
+          text: "*Pi Agent*\nWelcome back! Start a new task or check on running work.",
+        },
+        accessory: {
+          type: "image",
+          image_url: "https://media1.tenor.com/m/lfDATg4Bhc0AAAAC/happy-cat.gif",
+          alt_text: "Pi Agent",
+        },
+      },
+    ];
+
+    // --- Running tasks ---
+    const runningSessions = this.handler.getRunningSessions();
+
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "header",
+        text: { type: "plain_text", text: `Running Tasks (${runningSessions.length})`, emoji: true },
+      },
+    );
+
+    if (runningSessions.length === 0) {
+      blocks.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: "_No tasks running right now._" }],
+      });
+    } else {
+      for (const session of runningSessions) {
+        const channelId = session.sessionKey.split(":")[0];
+        const channel = this.channels.get(channelId);
+        const channelName = channel ? `#${channel.name}` : channelId;
+        const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
+        const elapsedStr = elapsed < 1 ? "<1 min" : `${elapsed} min`;
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*${channelName}*\n└ 🟢 Running · ${elapsedStr} elapsed`,
+          },
+        });
+      }
+    }
+
+    // --- Cron jobs ---
+    const periodicEvents = this.eventsWatcher?.getPeriodicEvents() ?? [];
+
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "header",
+        text: { type: "plain_text", text: `Scheduled Jobs (${periodicEvents.length})`, emoji: true },
+      },
+    );
+
+    if (periodicEvents.length === 0) {
+      blocks.push({
+        type: "context",
+        elements: [{ type: "mrkdwn", text: "_No scheduled jobs._" }],
+      });
+    } else {
+      for (const ev of periodicEvents) {
+        const channel = this.channels.get(ev.channelId);
+        const channelName = channel ? `#${channel.name}` : ev.channelId;
+        const nextStr = ev.nextRun
+          ? new Date(ev.nextRun).toLocaleString("en-US", {
+              month: "short", day: "numeric",
+              hour: "2-digit", minute: "2-digit",
+            })
+          : "—";
+        blocks.push({
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text: `*${ev.text}*\n└ \`${ev.schedule}\` · ${channelName} · Next: ${nextStr}`,
+          },
+        });
+      }
+    }
+
+    // --- Footer ---
+    blocks.push(
+      { type: "divider" },
+      {
+        type: "context",
+        elements: [
+          { type: "mrkdwn", text: "💡 @mention in a channel or send a DM to start a new task" },
+        ],
+      },
+    );
+
+    return { type: "home", blocks };
   }
 
   private setupEventHandlers(): void {
@@ -506,6 +613,20 @@ export class SlackBot implements Bot {
       }
 
       ack();
+    });
+
+    // App Home tab
+    this.socketClient.on("app_home_opened", ({ event, ack }) => {
+      const e = event as { user: string; tab: string };
+      ack();
+      if (e.tab !== "home") return;
+
+      this.webClient.views.publish({
+        user_id: e.user,
+        view: this.buildHomeView(),
+      }).catch((err) => {
+        log.logWarning(`Failed to publish App Home view`, String(err));
+      });
     });
   }
 
