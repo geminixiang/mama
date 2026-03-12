@@ -21,6 +21,7 @@ import { globalResourceCache } from "./cache.js";
 import { loadAgentConfig } from "./config.js";
 import { llmSemaphore } from "./concurrency.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { loadMamaExtensions } from "./extensions.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import { createMamaTools } from "./tools/index.js";
@@ -194,12 +195,14 @@ ${envDescription}
 ${workspacePath}/
 ├── MEMORY.md                    # Global memory (all channels)
 ├── skills/                      # Global CLI tools you create
+├── extensions/                  # Global JS/TS extension plugins
 └── ${channelId}/                # This channel
     ├── MEMORY.md                # Channel-specific memory
     ├── log.jsonl                # Message history (no tool results)
     ├── attachments/             # User-shared files
     ├── scratch/                 # Your working directory
-    └── skills/                  # Channel-specific tools
+    ├── skills/                  # Channel-specific tools
+    └── extensions/              # Channel-specific extension plugins
 
 ## Skills (Custom CLI Tools)
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
@@ -224,6 +227,38 @@ Scripts are in: {baseDir}/
 
 ### Available Skills
 ${skills.length > 0 ? formatSkillsForPrompt(skills) : "(no skills installed yet)"}
+
+## Extensions (JS/TS Plugins)
+Extensions are JavaScript or TypeScript files that register additional tools, commands, and lifecycle hooks directly into the agent runtime. Unlike skills (shell scripts), extensions run inside the process and can interact with the agent API.
+
+### Creating Extensions
+Store in \`${workspacePath}/extensions/<name>.ts\` (global) or \`${channelPath}/extensions/<name>.ts\` (channel-specific).
+
+Each extension file must export a default function:
+
+\`\`\`typescript
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+
+export default function (pi: ExtensionAPI) {
+  // Register a custom LLM-callable tool
+  pi.registerTool({
+    name: "my-tool",
+    label: "My Tool",
+    description: "Does something useful",
+    parameters: { type: "object", properties: { input: { type: "string" } } },
+    execute: async (_id, params) => ({
+      content: [{ type: "text", text: \`Result: \${params.input}\` }],
+    }),
+  });
+
+  // React to lifecycle events
+  pi.on("agent_start", () => console.log("Agent starting"));
+}
+\`\`\`
+
+Supported file extensions: \`.js\`  \`.mjs\`  \`.cjs\`  \`.ts\`
+Channel extensions override workspace extensions with the same filename.
+After creating or editing an extension, it is reloaded on the next message.
 
 ## Events
 You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspacePath}/events/\`.
@@ -483,8 +518,13 @@ export async function createRunner(
     );
   }
 
+  // Pre-load extensions once; stored in a mutable closure variable so that
+  // resourceLoader.getExtensions() can remain synchronous while reload() can
+  // refresh the result asynchronously.
+  let extensionsResult = await loadMamaExtensions(channelDir, process.cwd());
+
   const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getExtensions: () => extensionsResult,
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -493,7 +533,11 @@ export async function createRunner(
     getAppendSystemPrompt: () => [],
     getPathMetadata: () => new Map(),
     extendResources: () => {},
-    reload: async () => {},
+    reload: async () => {
+      // Invalidate the cache so the next load hits disk.
+      globalResourceCache.invalidate(`extensions:${channelDir}`);
+      extensionsResult = await loadMamaExtensions(channelDir, process.cwd());
+    },
   };
 
   const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -930,11 +974,12 @@ export async function createRunner(
         await queueChain;
       }
 
-      // Invalidate cached memory and skills for this channel so that any
-      // MEMORY.md / skills changes made by the agent during this run are
-      // visible on the very next request (instead of waiting for TTL expiry).
+      // Invalidate cached resources for this channel so that any changes
+      // made by the agent during this run (MEMORY.md, skills, extensions)
+      // are visible on the very next request instead of waiting for TTL expiry.
       globalResourceCache.invalidate(`memory:${channelDir}`);
       globalResourceCache.invalidate(`skills:${channelDir}`);
+      globalResourceCache.invalidate(`extensions:${channelDir}`);
 
       // Clear run state
       runState.responseCtx = null;
