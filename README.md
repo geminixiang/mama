@@ -15,11 +15,11 @@ This project is a **forked and extended version** of the `mom` package from [`ba
 
 ## 🎯 Positioning & Roadmap
 
-| Aspect | Description |
-|--------|-------------|
-| **Current Status** | Temporary standalone fork for urgent internal deployment |
-| **Ultimate Goal** | Merge all improvements back into pi-mono monorepo |
-| **Unique Value** | Multi-platform support (Slack + Telegram + Discord) to be contributed upstream |
+| Aspect             | Description                                                                    |
+| ------------------ | ------------------------------------------------------------------------------ |
+| **Current Status** | Temporary standalone fork for urgent internal deployment                       |
+| **Ultimate Goal**  | Merge all improvements back into pi-mono monorepo                              |
+| **Unique Value**   | Multi-platform support (Slack + Telegram + Discord) to be contributed upstream |
 
 ### Why a temporary fork?
 
@@ -34,6 +34,7 @@ Our internal services urgently needed a multi-platform bot, and we couldn't wait
 > "This is not a separate product — it's a **temporary fork** for urgent internal needs, and all improvements will be contributed back to pi-mono."
 
 We actively track the upstream `pi-mom` and plan to:
+
 - ✅ Submit PRs for platform adapters (Telegram, Discord)
 - ✅ Contribute cross-platform abstractions
 - ✅ Keep dependencies synchronized with pi-mono releases
@@ -247,12 +248,12 @@ npm run build   # production build
 
 ## 📦 Dependencies & Versions
 
-| Package | mama Version | pi-mom Synced Version |
-|---------|-------------|----------------------|
-| `@mariozechner/pi-agent-core` | `^0.57.1` | ✅ Synchronized |
-| `@mariozechner/pi-ai` | `^0.57.1` | ✅ Synchronized |
-| `@mariozechner/pi-coding-agent` | `^0.57.1` | ✅ Synchronized |
-| `@anthropic-ai/sandbox-runtime` | `^0.0.40` | ⚠️ Newer (pi-mom uses 0.0.16) |
+| Package                         | mama Version | pi-mom Synced Version         |
+| ------------------------------- | ------------ | ----------------------------- |
+| `@mariozechner/pi-agent-core`   | `^0.57.1`    | ✅ Synchronized               |
+| `@mariozechner/pi-ai`           | `^0.57.1`    | ✅ Synchronized               |
+| `@mariozechner/pi-coding-agent` | `^0.57.1`    | ✅ Synchronized               |
+| `@anthropic-ai/sandbox-runtime` | `^0.0.40`    | ⚠️ Newer (pi-mom uses 0.0.16) |
 
 ## License
 
