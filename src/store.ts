@@ -17,6 +17,7 @@ export interface LoggedMessage {
   text: string;
   attachments: Attachment[];
   isBot: boolean;
+  threadTs?: string; // slack thread timestamp (root message ts)
 }
 
 export interface ChannelStoreConfig {
