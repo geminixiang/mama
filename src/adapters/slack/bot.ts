@@ -281,10 +281,11 @@ export class SlackBot implements Bot {
   /**
    * Log a bot response to log.jsonl
    */
-  logBotResponse(channel: string, text: string, ts: string): void {
+  logBotResponse(channel: string, text: string, ts: string, threadTs?: string): void {
     this.logToFile(channel, {
       date: new Date().toISOString(),
       ts,
+      threadTs,
       user: "bot",
       text,
       attachments: [],
@@ -655,6 +656,7 @@ export class SlackBot implements Bot {
     this.logToFile(event.channel, {
       date: new Date(parseFloat(event.ts) * 1000).toISOString(),
       ts: event.ts,
+      threadTs: event.thread_ts,
       user: event.user,
       userName: user?.userName,
       displayName: user?.displayName,

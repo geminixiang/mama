@@ -75,7 +75,7 @@ export function createSlackAdapters(
           }
 
           if (messageTs) {
-            slack.logBotResponse(event.channel, text, messageTs);
+            slack.logBotResponse(event.channel, text, messageTs, rootTs);
           }
         } catch (err) {
           log.logWarning("Slack respond error", err instanceof Error ? err.message : String(err));
