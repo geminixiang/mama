@@ -3,7 +3,43 @@
 [![npm version](https://img.shields.io/npm/v/@geminixiang/mama.svg)](https://www.npmjs.com/package/@geminixiang/mama)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-An AI agent bot for Slack, Telegram, and Discord. Built as an extension of the `mom` package from [badlogic/pi-mono](https://github.com/badlogic/pi-mono), MIT licensed.
+A multi-platform AI agent bot for Slack, Telegram, and Discord — based on [pi-mom](https://github.com/badlogic/pi-mono), with the goal of merging improvements back upstream.
+
+## 📜 Attribution & Origins
+
+This project is a **forked and extended version** of the `mom` package from [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) by Mario Zechner, licensed under MIT.
+
+- **Original project**: [pi-mom](https://github.com/badlogic/pi-mono/tree/main/packages/mom) (22K+ stars)
+- **Base version**: forked from pi-mom v0.57.1 (synchronized with `@mariozechner/*` packages)
+- **Primary motivation**: Internal services urgently needed a multi-platform bot — this fork enables rapid iteration while preparing changes to contribute back upstream
+
+## 🎯 Positioning & Roadmap
+
+| Aspect | Description |
+|--------|-------------|
+| **Current Status** | Temporary standalone fork for urgent internal deployment |
+| **Ultimate Goal** | Merge all improvements back into pi-mono monorepo |
+| **Unique Value** | Multi-platform support (Slack + Telegram + Discord) to be contributed upstream |
+
+### Why a temporary fork?
+
+Our internal services urgently needed a multi-platform bot, and we couldn't wait for upstream release cycles. This fork allows us to:
+
+1. **Ship fast**: Deploy to production immediately while internal demand is high
+2. **Iterate freely**: Test multi-platform adapters (Slack, Telegram, Discord) without monorepo constraints
+3. **Contribute back**: All work here is intended to be merged into pi-mono — `mama` is not a replacement for `mom`
+
+### Contribution Philosophy 🔄
+
+> "This is not a separate product — it's a **temporary fork** for urgent internal needs, and all improvements will be contributed back to pi-mono."
+
+We actively track the upstream `pi-mom` and plan to:
+- ✅ Submit PRs for platform adapters (Telegram, Discord)
+- ✅ Contribute cross-platform abstractions
+- ✅ Keep dependencies synchronized with pi-mono releases
+- ✅ Document what we learn from production use
+
+---
 
 ## Features
 
@@ -205,8 +241,17 @@ npm test        # run tests
 npm run build   # production build
 ```
 
+## 📦 Dependencies & Versions
+
+| Package | mama Version | pi-mom Synced Version |
+|---------|-------------|----------------------|
+| `@mariozechner/pi-agent-core` | `^0.57.1` | ✅ Synchronized |
+| `@mariozechner/pi-ai` | `^0.57.1` | ✅ Synchronized |
+| `@mariozechner/pi-coding-agent` | `^0.57.1` | ✅ Synchronized |
+| `@anthropic-ai/sandbox-runtime` | `^0.0.40` | ⚠️ Newer (pi-mom uses 0.0.16) |
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
 
-Based on [pi-mono](https://github.com/badlogic/pi-mono) by Mario Zechner, extended from the `mom` package.
+**Note**: This project inherits the MIT license from pi-mom and aims to keep its contributions compatible with the upstream ecosystem.
