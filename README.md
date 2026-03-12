@@ -78,7 +78,11 @@ npm run build
 
 1. Create a Slack app with **Socket Mode** enabled ([setup guide](docs/slack-bot-minimal-guide.md)).
 2. Add the `app_mentions:read`, `chat:write`, `files:write`, and `im:history` OAuth scopes.
-3. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
+3. Enable the **Home Tab**:
+   - **App Home → Show Tabs** — toggle **Home Tab** on
+   - **App Home → Agents & AI Apps** — toggle **Agent or Assistant** on
+   - **Event Subscriptions → Subscribe to bot events** — add `app_home_opened`
+4. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
 
 ```bash
 export MOM_SLACK_APP_TOKEN=xapp-...
