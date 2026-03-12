@@ -17,7 +17,9 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
+import { globalResourceCache } from "./cache.js";
 import { loadAgentConfig } from "./config.js";
+import { llmSemaphore } from "./concurrency.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
@@ -52,6 +54,10 @@ function getImageMimeType(filename: string): string | undefined {
 }
 
 async function getMemory(channelDir: string): Promise<string> {
+  const cacheKey = `memory:${channelDir}`;
+  const cached = globalResourceCache.get<string>(cacheKey);
+  if (cached !== undefined) return cached;
+
   const parts: string[] = [];
 
   // Read workspace-level memory (shared across all channels)
@@ -80,14 +86,16 @@ async function getMemory(channelDir: string): Promise<string> {
     }
   }
 
-  if (parts.length === 0) {
-    return "(no working memory yet)";
-  }
-
-  return parts.join("\n\n");
+  const result = parts.length === 0 ? "(no working memory yet)" : parts.join("\n\n");
+  globalResourceCache.set(cacheKey, result);
+  return result;
 }
 
 function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
+  const cacheKey = `skills:${channelDir}`;
+  const cached = globalResourceCache.get<Skill[]>(cacheKey);
+  if (cached !== undefined) return cached;
+
   const skillMap = new Map<string, Skill>();
 
   // channelDir is the host path (e.g., /Users/.../data/C0A34FL8PMH)
@@ -120,7 +128,9 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
     skillMap.set(skill.name, skill);
   }
 
-  return Array.from(skillMap.values());
+  const result = Array.from(skillMap.values());
+  globalResourceCache.set(cacheKey, result);
+  return result;
 }
 
 function buildSystemPrompt(
@@ -834,9 +844,18 @@ export async function createRunner(
       };
       await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
 
-      await session.prompt(
-        userMessage,
-        imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+      // Gate concurrent LLM calls so we don't overwhelm provider rate limits.
+      // All callers share the global semaphore; excess requests wait in FIFO order.
+      if (llmSemaphore.queued > 0) {
+        log.logInfo(
+          `[${channelId}] LLM slot queued (available: ${llmSemaphore.available}, waiting: ${llmSemaphore.queued})`,
+        );
+      }
+      await llmSemaphore.run(() =>
+        session.prompt(
+          userMessage,
+          imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+        ),
       );
 
       // Wait for queued messages
@@ -910,6 +929,12 @@ export async function createRunner(
         runState.queue.enqueue(() => responseCtx.respondInThread(summary), "usage summary");
         await queueChain;
       }
+
+      // Invalidate cached memory and skills for this channel so that any
+      // MEMORY.md / skills changes made by the agent during this run are
+      // visible on the very next request (instead of waiting for TTL expiry).
+      globalResourceCache.invalidate(`memory:${channelDir}`);
+      globalResourceCache.invalidate(`skills:${channelDir}`);
 
       // Clear run state
       runState.responseCtx = null;
