@@ -368,7 +368,11 @@ export class SlackBot implements Bot {
       { type: "divider" },
       {
         type: "header",
-        text: { type: "plain_text", text: `Running Tasks (${runningSessions.length})`, emoji: true },
+        text: {
+          type: "plain_text",
+          text: `Running Tasks (${runningSessions.length})`,
+          emoji: true,
+        },
       },
     );
 
@@ -401,7 +405,11 @@ export class SlackBot implements Bot {
       { type: "divider" },
       {
         type: "header",
-        text: { type: "plain_text", text: `Scheduled Jobs (${periodicEvents.length})`, emoji: true },
+        text: {
+          type: "plain_text",
+          text: `Scheduled Jobs (${periodicEvents.length})`,
+          emoji: true,
+        },
       },
     );
 
@@ -416,8 +424,10 @@ export class SlackBot implements Bot {
         const channelName = channel ? `#${channel.name}` : ev.channelId;
         const nextStr = ev.nextRun
           ? new Date(ev.nextRun).toLocaleString("en-US", {
-              month: "short", day: "numeric",
-              hour: "2-digit", minute: "2-digit",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
             })
           : "—";
         blocks.push({
@@ -621,12 +631,14 @@ export class SlackBot implements Bot {
       ack();
       if (e.tab !== "home") return;
 
-      this.webClient.views.publish({
-        user_id: e.user,
-        view: this.buildHomeView(),
-      }).catch((err) => {
-        log.logWarning(`Failed to publish App Home view`, String(err));
-      });
+      this.webClient.views
+        .publish({
+          user_id: e.user,
+          view: this.buildHomeView(),
+        })
+        .catch((err) => {
+          log.logWarning(`Failed to publish App Home view`, String(err));
+        });
     });
   }
 
