@@ -79,9 +79,11 @@ export async function loadMamaExtensions(
     log.logInfo(
       `[extensions] Loading ${allPaths.length} file(s): ${allPaths.map((p) => p.split("/").pop()).join(", ")}`,
     );
-    // Pass our pre-scanned absolute paths as configuredPaths.
-    // No agentDir is given, so standard system/project locations are skipped —
-    // only the explicit workspace/channel extension files are loaded.
+    // discoverAndLoadExtensions loads in this order (deduped by resolved path):
+    //   1. {cwd}/.pi/extensions/       — project-local pi extensions
+    //   2. {agentDir}/extensions/      — global pi extensions (~/.pi/agent/extensions/)
+    //   3. configuredPaths (allPaths)  — mama workspace + channel extensions
+    // agentDir defaults to getAgentDir() so standard pi locations are included.
     result = await discoverAndLoadExtensions(allPaths, cwd);
     if (result.errors.length > 0) {
       for (const err of result.errors) {
