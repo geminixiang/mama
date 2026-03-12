@@ -6,6 +6,9 @@ import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
+import { configureResourceCache } from "./cache.js";
+import { loadAgentConfig } from "./config.js";
+import { configureLlmSemaphore } from "./concurrency.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -92,6 +95,22 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
 }
 
 await validateSandbox(sandbox);
+
+// ============================================================================
+// Apply scalability settings from settings.json
+// ============================================================================
+
+{
+  const agentConfig = loadAgentConfig(workingDir);
+  if (agentConfig.maxConcurrentRuns !== undefined) {
+    configureLlmSemaphore(agentConfig.maxConcurrentRuns);
+    log.logInfo(`LLM concurrency limit: ${agentConfig.maxConcurrentRuns}`);
+  }
+  if (agentConfig.resourceCacheTtlMs !== undefined) {
+    configureResourceCache(agentConfig.resourceCacheTtlMs);
+    log.logInfo(`Resource cache TTL: ${agentConfig.resourceCacheTtlMs}ms`);
+  }
+}
 
 // ============================================================================
 // State (per channel)

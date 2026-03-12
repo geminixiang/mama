@@ -7,6 +7,21 @@ export interface AgentConfig {
   thinkingLevel?: string;
   sessionScope?: "thread" | "channel";
   maxUsersInPrompt?: number;
+  /**
+   * Maximum number of LLM API calls that may be in-flight simultaneously
+   * across all channels and users.  Excess requests queue and wait for a slot.
+   * Lower values protect against provider rate-limit errors; higher values
+   * increase throughput when the provider tier allows it.
+   * Default: 20  (suitable for ~200 active users with typical conversation pace)
+   */
+  maxConcurrentRuns?: number;
+  /**
+   * How long (ms) cached memory-file and skills data remains valid before
+   * being re-read from disk.  Longer values reduce I/O under load; shorter
+   * values make manual edits to MEMORY.md / skills visible sooner.
+   * Default: 30000 (30 seconds)
+   */
+  resourceCacheTtlMs?: number;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -15,6 +30,8 @@ const DEFAULTS: AgentConfig = {
   thinkingLevel: "off",
   sessionScope: "thread",
   maxUsersInPrompt: 50,
+  maxConcurrentRuns: 20,
+  resourceCacheTtlMs: 30_000,
 };
 
 export function loadAgentConfig(workspaceDir: string): AgentConfig {
@@ -38,8 +55,10 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
   const maxUsersInPrompt = fromFile.maxUsersInPrompt ?? DEFAULTS.maxUsersInPrompt;
+  const maxConcurrentRuns = fromFile.maxConcurrentRuns ?? DEFAULTS.maxConcurrentRuns;
+  const resourceCacheTtlMs = fromFile.resourceCacheTtlMs ?? DEFAULTS.resourceCacheTtlMs;
 
-  return { provider, model, thinkingLevel, sessionScope, maxUsersInPrompt };
+  return { provider, model, thinkingLevel, sessionScope, maxUsersInPrompt, maxConcurrentRuns, resourceCacheTtlMs };
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
