@@ -35,7 +35,8 @@
     "lint:fix": "oxlint --fix",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "prepublishOnly": "npm run clean && npm run build"
+    "prepublishOnly": "npm run clean && npm run build",
+    "prepare": "husky"
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.40",
@@ -55,11 +56,22 @@
     "@types/diff": "^8.0.0",
     "@types/node": "^25.4.0",
     "@typescript/native-preview": "7.0.0-dev.20260311.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "oxfmt": "^0.38.0",
     "oxlint": "^1.53.0",
     "shx": "^0.4.0",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
+  },
+  "lint-staged": {
+    "*.ts": [
+      "npm run lint",
+      "npm run fmt"
+    ],
+    "*.test.ts": [
+      "npm run test"
+    ]
   },
   "engines": {
     "node": ">=20.0.0"
