@@ -3,14 +3,17 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  type Collection,
   type Message,
+  type Attachment,
   type TextChannel,
   type DMChannel,
   type NewsChannel,
   type ThreadChannel,
 } from "discord.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
+
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { createDiscordAdapters } from "./context.js";
@@ -223,6 +226,69 @@ export class DiscordBot implements Bot {
     });
   }
 
+  /**
+   * Process attachments from a Discord message
+   * Downloads files in background and returns metadata
+   * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
+   */
+  processAttachments(
+    channelId: string,
+    attachments: Collection<string, Attachment>,
+    messageId: string,
+  ): { name: string; localPath: string }[] {
+    const result: { name: string; localPath: string }[] = [];
+
+    // Discord attachments Collection - iterate over values
+    for (const attachment of attachments.values()) {
+      if (!attachment.name) {
+        log.logWarning("Discord attachment missing name, skipping", attachment.url);
+        continue;
+      }
+
+      // Generate local filename
+      const ts = Date.now();
+      const sanitizedName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filename = `${ts}_${sanitizedName}`;
+      const localPath = `${channelId}/attachments/${filename}`;
+      const fullDir = join(this.workingDir, channelId, "attachments");
+
+      result.push({
+        name: attachment.name,
+        localPath: localPath,
+      });
+
+      // Download in background (fire and forget)
+      this.downloadAttachment(fullDir, filename, attachment.url).catch((err) => {
+        log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Download an attachment from URL to local file
+   */
+  private async downloadAttachment(
+    dir: string,
+    filename: string,
+    url: string,
+  ): Promise<void> {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      writeFileSync(join(dir, filename), Buffer.from(buffer));
+    } catch (err) {
+      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ==========================================================================
   // Private - Event Handlers
   // ==========================================================================
@@ -295,6 +361,13 @@ export class DiscordBot implements Bot {
 
       const cleanedText = this.stripBotMention(msg.content);
 
+      // Process attachments (download in background)
+      const processedAttachments = this.processAttachments(
+        channelId,
+        msg.attachments,
+        msgId,
+      );
+
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
         channel: channelId,
@@ -303,6 +376,7 @@ export class DiscordBot implements Bot {
         user: userId,
         userName,
         text: cleanedText,
+        attachments: processedAttachments,
       };
 
       // Log message
@@ -312,7 +386,7 @@ export class DiscordBot implements Bot {
         user: userId,
         userName,
         text: cleanedText,
-        attachments: [],
+        attachments: processedAttachments,
         isBot: false,
       });
 

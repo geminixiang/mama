@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
@@ -182,6 +182,93 @@ export class TelegramBot implements Bot {
     });
   }
 
+  /**
+   * Process attachments from a Telegram message
+   * Downloads files in background and returns metadata
+   * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
+   */
+  processAttachments(
+    chatId: string,
+    message: any,
+  ): { name: string; localPath: string }[] {
+    const result: { name: string; localPath: string }[] = [];
+
+    // Handle photos (take the largest size for best quality)
+    if (message.photo && message.photo.length > 0) {
+      const photos = message.photo;
+      const photo = photos[photos.length - 1]; // Largest photo
+      const fileId = photo.file_id;
+
+      this.processTelegramFile(chatId, fileId, `photo_${message.message_id}.jpg`).then((attachment) => {
+        if (attachment) result.push(attachment);
+      }).catch((err) => {
+        log.logWarning(`Failed to download Telegram photo`, `${err}`);
+      });
+    }
+
+    // Handle documents
+    if (message.document) {
+      const doc = message.document;
+      const fileId = doc.file_id;
+      const fileName = doc.file_name ?? `document_${message.message_id}`;
+
+      this.processTelegramFile(chatId, fileId, fileName).then((attachment) => {
+        if (attachment) result.push(attachment);
+      }).catch((err) => {
+        log.logWarning(`Failed to download Telegram document`, `${err}`);
+      });
+    }
+
+    return result;
+  }
+
+  /**
+   * Download a file from Telegram and return attachment metadata
+   */
+  private async processTelegramFile(
+    chatId: string,
+    fileId: string,
+    originalName: string,
+  ): Promise<{ name: string; localPath: string } | null> {
+    try {
+      // Get file info from Telegram
+      const file = await this.client.api.getFile(fileId);
+      if (!file.file_path) {
+        log.logWarning("Telegram file has no path", fileId);
+        return null;
+      }
+
+      // Generate local filename
+      const ts = Date.now();
+      const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const filename = `${ts}_${sanitizedName}`;
+      const localPath = `${chatId}/attachments/${filename}`;
+      const fullDir = join(this.workingDir, chatId, "attachments");
+
+      if (!existsSync(fullDir)) mkdirSync(fullDir, { recursive: true });
+
+      // Construct download URL
+      const downloadUrl = `https://api.telegram.org/file/bot${this.botUserId}/${file.file_path}`;
+
+      // Download the file
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const buffer = await response.arrayBuffer();
+      writeFileSync(join(fullDir, filename), Buffer.from(buffer));
+
+      return {
+        name: originalName,
+        localPath: localPath,
+      };
+    } catch (err) {
+      log.logWarning(`Failed to process Telegram file`, `${originalName}: ${err}`);
+      return null;
+    }
+  }
+
   // ==========================================================================
   // Private - Event Handlers
   // ==========================================================================
@@ -234,6 +321,9 @@ export class TelegramBot implements Bot {
       const cleanedText = this.cleanText(text);
       const sessionKey = `${chatId}:${threadTs ?? msgId}`;
 
+      // Process attachments (starts download in background)
+      const processedAttachments = this.processAttachments(chatId, msg);
+
       const event: TelegramEvent = {
         type: "message",
         channel: chatId,
@@ -242,6 +332,7 @@ export class TelegramBot implements Bot {
         user: userId,
         userName,
         text: cleanedText,
+        attachments: processedAttachments,
       };
 
       // Log the message
@@ -251,7 +342,7 @@ export class TelegramBot implements Bot {
         user: userId,
         userName,
         text: cleanedText,
-        attachments: [],
+        attachments: processedAttachments,
         isBot: false,
       });
 
