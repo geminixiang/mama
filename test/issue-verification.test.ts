@@ -1,8 +1,6 @@
-import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
+import { describe, expect, test, beforeEach, afterEach } from "vitest";
 import { appendFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
-import { syncLogToSessionManager } from "../src/context.js";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
 
 // ============================================================================
 // Test 1: Verify Discord/Telegram attachments are NOT captured
@@ -76,9 +74,9 @@ describe("ISSUE VERIFICATION: Telegram attachments not captured", () => {
     // The code checks for document/photo EXISTENCE but never stores them!
     // This is the bug - detection without processing.
 
-    const hasDocument = true;  // msg.document exists
-    const hasPhoto = true;     // msg.photo exists
-    const attachments = [];    // But it's never captured
+    const hasDocument = true; // msg.document exists
+    const hasPhoto = true; // msg.photo exists
+    const attachments = []; // But it's never captured
 
     // The message would trigger processing but attachments would be lost
     expect(hasDocument || hasPhoto).toBe(true);
@@ -102,11 +100,51 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
 
     // Create log.jsonl with various historical messages
     const logEntries = [
-      { date: "2025-01-01T10:00:00.000Z", ts: "1000000000.000001", user: "U001", userName: "alice", text: "Hello team", attachments: [], isBot: false },
-      { date: "2025-01-02T10:00:00.000Z", ts: "1000000000.000002", user: "U002", userName: "bob", text: "I found a bug in the login flow", attachments: [], isBot: false },
-      { date: "2025-01-03T10:00:00.000Z", ts: "1000000000.000003", user: "bot", userName: "mama", text: "Hello! How can I help?", attachments: [], isBot: true },
-      { date: "2025-01-04T10:00:00.000Z", ts: "1000000000.000004", user: "U001", userName: "alice", text: "The database is running slow", attachments: [], isBot: false },
-      { date: "2025-03-13T10:00:00.000Z", ts: "1000000000.000005", user: "U003", userName: "charlie", text: "Can someone review my PR?", attachments: [], isBot: false },
+      {
+        date: "2025-01-01T10:00:00.000Z",
+        ts: "1000000000.000001",
+        user: "U001",
+        userName: "alice",
+        text: "Hello team",
+        attachments: [],
+        isBot: false,
+      },
+      {
+        date: "2025-01-02T10:00:00.000Z",
+        ts: "1000000000.000002",
+        user: "U002",
+        userName: "bob",
+        text: "I found a bug in the login flow",
+        attachments: [],
+        isBot: false,
+      },
+      {
+        date: "2025-01-03T10:00:00.000Z",
+        ts: "1000000000.000003",
+        user: "bot",
+        userName: "mama",
+        text: "Hello! How can I help?",
+        attachments: [],
+        isBot: true,
+      },
+      {
+        date: "2025-01-04T10:00:00.000Z",
+        ts: "1000000000.000004",
+        user: "U001",
+        userName: "alice",
+        text: "The database is running slow",
+        attachments: [],
+        isBot: false,
+      },
+      {
+        date: "2025-03-13T10:00:00.000Z",
+        ts: "1000000000.000005",
+        user: "U003",
+        userName: "charlie",
+        text: "Can someone review my PR?",
+        attachments: [],
+        isBot: false,
+      },
     ];
 
     for (const entry of logEntries) {
@@ -123,10 +161,9 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
   test("grep can find messages from specific user", async () => {
     const { execSync } = await import("child_process");
 
-    const result = execSync(
-      `grep '"userName":"alice"' ${join(testDir, "log.jsonl")}`,
-      { encoding: "utf-8" }
-    );
+    const result = execSync(`grep '"userName":"alice"' ${join(testDir, "log.jsonl")}`, {
+      encoding: "utf-8",
+    });
 
     const lines = result.trim().split("\n");
     expect(lines.length).toBe(2); // Alice has 2 messages
@@ -137,10 +174,7 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
   test("grep can find messages containing specific keyword", async () => {
     const { execSync } = await import("child_process");
 
-    const result = execSync(
-      `grep -i "bug" ${join(testDir, "log.jsonl")}`,
-      { encoding: "utf-8" }
-    );
+    const result = execSync(`grep -i "bug" ${join(testDir, "log.jsonl")}`, { encoding: "utf-8" });
 
     expect(result).toContain("I found a bug in the login flow");
     expect(result).toContain("bob");
@@ -150,10 +184,9 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
     const { execSync } = await import("child_process");
 
     // Find messages from January 2025
-    const result = execSync(
-      `grep '"date":"2025-01' ${join(testDir, "log.jsonl")}`,
-      { encoding: "utf-8" }
-    );
+    const result = execSync(`grep '"date":"2025-01' ${join(testDir, "log.jsonl")}`, {
+      encoding: "utf-8",
+    });
 
     const lines = result.trim().split("\n");
     expect(lines.length).toBe(4); // 4 messages from January
@@ -206,10 +239,9 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
 
     // But January messages would be filtered out by syncLogToSessionManager
     // because they are more than 2 days old
-    const januaryCount = execSync(
-      `grep '"date":"2025-01' ${join(testDir, "log.jsonl")} | wc -l`,
-      { encoding: "utf-8" }
-    );
+    const januaryCount = execSync(`grep '"date":"2025-01' ${join(testDir, "log.jsonl")} | wc -l`, {
+      encoding: "utf-8",
+    });
     expect(parseInt(januaryCount)).toBe(4); // 4 messages from January
 
     // This demonstrates the DESIGNED behavior:

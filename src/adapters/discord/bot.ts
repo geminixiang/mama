@@ -234,7 +234,7 @@ export class DiscordBot implements Bot {
   processAttachments(
     channelId: string,
     attachments: Collection<string, Attachment>,
-    messageId: string,
+    _messageId: string,
   ): { name: string; localPath: string }[] {
     const result: { name: string; localPath: string }[] = [];
 
@@ -269,11 +269,7 @@ export class DiscordBot implements Bot {
   /**
    * Download an attachment from URL to local file
    */
-  private async downloadAttachment(
-    dir: string,
-    filename: string,
-    url: string,
-  ): Promise<void> {
+  private async downloadAttachment(dir: string, filename: string, url: string): Promise<void> {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
     try {
@@ -362,11 +358,7 @@ export class DiscordBot implements Bot {
       const cleanedText = this.stripBotMention(msg.content);
 
       // Process attachments (download in background)
-      const processedAttachments = this.processAttachments(
-        channelId,
-        msg.attachments,
-        msgId,
-      );
+      const processedAttachments = this.processAttachments(channelId, msg.attachments, msgId);
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",

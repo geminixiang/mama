@@ -187,10 +187,7 @@ export class TelegramBot implements Bot {
    * Downloads files in background and returns metadata
    * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
    */
-  processAttachments(
-    chatId: string,
-    message: any,
-  ): { name: string; localPath: string }[] {
+  processAttachments(chatId: string, message: any): { name: string; localPath: string }[] {
     const result: { name: string; localPath: string }[] = [];
 
     // Handle photos (take the largest size for best quality)
@@ -199,11 +196,13 @@ export class TelegramBot implements Bot {
       const photo = photos[photos.length - 1]; // Largest photo
       const fileId = photo.file_id;
 
-      this.processTelegramFile(chatId, fileId, `photo_${message.message_id}.jpg`).then((attachment) => {
-        if (attachment) result.push(attachment);
-      }).catch((err) => {
-        log.logWarning(`Failed to download Telegram photo`, `${err}`);
-      });
+      this.processTelegramFile(chatId, fileId, `photo_${message.message_id}.jpg`)
+        .then((attachment) => {
+          if (attachment) result.push(attachment);
+        })
+        .catch((err) => {
+          log.logWarning(`Failed to download Telegram photo`, `${err}`);
+        });
     }
 
     // Handle documents
@@ -212,11 +211,13 @@ export class TelegramBot implements Bot {
       const fileId = doc.file_id;
       const fileName = doc.file_name ?? `document_${message.message_id}`;
 
-      this.processTelegramFile(chatId, fileId, fileName).then((attachment) => {
-        if (attachment) result.push(attachment);
-      }).catch((err) => {
-        log.logWarning(`Failed to download Telegram document`, `${err}`);
-      });
+      this.processTelegramFile(chatId, fileId, fileName)
+        .then((attachment) => {
+          if (attachment) result.push(attachment);
+        })
+        .catch((err) => {
+          log.logWarning(`Failed to download Telegram document`, `${err}`);
+        });
     }
 
     return result;
