@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/mama",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Slack bot that delegates messages to the pi coding agent",
   "keywords": [
     "agent",
