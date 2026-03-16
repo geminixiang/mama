@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/mama",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Slack bot that delegates messages to the pi coding agent",
   "keywords": [
     "agent",
@@ -39,13 +39,13 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.40",
-    "@mariozechner/pi-agent-core": "^0.57.1",
-    "@mariozechner/pi-ai": "^0.57.1",
-    "@mariozechner/pi-coding-agent": "^0.57.1",
+    "@anthropic-ai/sandbox-runtime": "^0.0.42",
+    "@mariozechner/pi-agent-core": "^0.58.3",
+    "@mariozechner/pi-ai": "^0.58.3",
+    "@mariozechner/pi-coding-agent": "^0.58.3",
     "@sinclair/typebox": "^0.34.48",
-    "@slack/socket-mode": "^2.0.5",
-    "@slack/web-api": "^7.14.1",
+    "@slack/socket-mode": "^2.0.6",
+    "@slack/web-api": "^7.15.0",
     "chalk": "^5.6.2",
     "croner": "^10.0.1",
     "diff": "^8.0.3",
@@ -54,15 +54,15 @@
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
-    "@types/node": "^25.4.0",
-    "@typescript/native-preview": "7.0.0-dev.20260311.1",
+    "@types/node": "^25.5.0",
+    "@typescript/native-preview": "7.0.0-dev.20260315.1",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
-    "oxfmt": "^0.38.0",
-    "oxlint": "^1.53.0",
+    "oxfmt": "^0.40.0",
+    "oxlint": "^1.55.0",
     "shx": "^0.4.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.1.0"
   },
   "lint-staged": {
     "*.ts": [
