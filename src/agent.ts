@@ -130,7 +130,6 @@ function buildSystemPrompt(
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
-  maxUsersInPrompt: number,
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
   const isDocker = sandboxConfig.type === "docker";
@@ -141,15 +140,10 @@ function buildSystemPrompt(
       ? platform.channels.map((c) => `${c.id}\t#${c.name}`).join("\n")
       : "(no channels loaded)";
 
-  // Format user mappings (limited to maxUsersInPrompt)
-  const limitedUsers = platform.users.slice(0, maxUsersInPrompt);
-  const userCountNote =
-    platform.users.length > maxUsersInPrompt
-      ? ` (showing ${maxUsersInPrompt} of ${platform.users.length})`
-      : "";
+  // Format user mappings
   const userMappings =
-    limitedUsers.length > 0
-      ? limitedUsers.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
+    platform.users.length > 0
+      ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
   const envDescription = isDocker
@@ -173,7 +167,7 @@ ${platform.formattingGuide}
 ## Platform IDs
 Channels: ${channelMappings}
 
-Users: ${userMappings}${userCountNote}
+Users: ${userMappings}
 
 When mentioning users, use <@username> format (e.g., <@mario>).
 
@@ -427,7 +421,6 @@ export async function createRunner(
     sandboxConfig,
     emptyPlatform,
     skills,
-    agentConfig.maxUsersInPrompt ?? 50,
   );
 
   // Create session manager and settings manager
@@ -718,7 +711,6 @@ export async function createRunner(
         sandboxConfig,
         platform,
         skills,
-        agentConfig.maxUsersInPrompt ?? 50,
       );
       session.agent.setSystemPrompt(systemPrompt);
 

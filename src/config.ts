@@ -6,7 +6,6 @@ export interface AgentConfig {
   model: string;
   thinkingLevel?: string;
   sessionScope?: "thread" | "channel";
-  maxUsersInPrompt?: number;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -14,7 +13,6 @@ const DEFAULTS: AgentConfig = {
   model: "claude-sonnet-4-5",
   thinkingLevel: "off",
   sessionScope: "thread",
-  maxUsersInPrompt: 50,
 };
 
 export function loadAgentConfig(workspaceDir: string): AgentConfig {
@@ -37,9 +35,8 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const model = fromFile.model || process.env.MOM_AI_MODEL || DEFAULTS.model;
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
-  const maxUsersInPrompt = fromFile.maxUsersInPrompt ?? DEFAULTS.maxUsersInPrompt;
 
-  return { provider, model, thinkingLevel, sessionScope, maxUsersInPrompt };
+  return { provider, model, thinkingLevel, sessionScope };
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
