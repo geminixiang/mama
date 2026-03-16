@@ -35,7 +35,7 @@ export interface TimeRange {
 /**
  * Default number of days to sync when no time range is specified
  */
-const DEFAULT_SYNC_DAYS = 2;
+const DEFAULT_SYNC_DAYS = 10;
 
 interface LogMessage {
   date?: string;
@@ -55,7 +55,7 @@ interface LogMessage {
  * @param sessionManager - The SessionManager to sync to
  * @param channelDir - Path to channel directory containing log.jsonl
  * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
- * @param timeRange - Optional time range to filter log entries (defaults to last 2 days)
+ * @param timeRange - Optional time range to filter log entries (defaults to last 10 days)
  * @returns Number of messages synced
  */
 export async function syncLogToSessionManager(
@@ -64,7 +64,7 @@ export async function syncLogToSessionManager(
   excludeSlackTs?: string,
   timeRange?: TimeRange,
 ): Promise<number> {
-  // Calculate default time range (last 2 days) if not provided
+  // Calculate default time range (last 10 days) if not provided
   const now = Date.now();
   const defaultStart = now - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000;
   const range = timeRange ?? { start: defaultStart, end: now };

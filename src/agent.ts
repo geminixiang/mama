@@ -692,7 +692,7 @@ export async function createRunner(
 
       // Sync messages from log.jsonl that arrived while we were offline or busy
       // Exclude the current message (it will be added via prompt())
-      // Default sync range is 2 days (handled by syncLogToSessionManager)
+      // Default sync range is 10 days (handled by syncLogToSessionManager)
       const syncedCount = await syncLogToSessionManager(sessionManager, channelDir, message.id);
       if (syncedCount > 0) {
         log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
