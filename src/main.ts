@@ -138,6 +138,7 @@ interface ChannelState {
   stopMessageTs?: string;
   lastAccessedAt: number;
   startedAt?: number;
+  lastActivityAt?: number;
 }
 
 const channelStates = new Map<string, ChannelState>();
@@ -215,7 +216,14 @@ const handler: BotHandler = {
     const sessions: import("./adapter.js").RunningSession[] = [];
     for (const [sessionKey, state] of channelStates) {
       if (state.running && state.startedAt) {
-        sessions.push({ sessionKey, startedAt: state.startedAt });
+        // Get current step from runner
+        const currentStep = state.runner.getCurrentStep();
+        sessions.push({
+          sessionKey,
+          startedAt: state.startedAt,
+          lastActivityAt: state.lastActivityAt,
+          currentTool: currentStep?.label || currentStep?.toolName,
+        });
       }
     }
     return sessions;
@@ -230,6 +238,17 @@ const handler: BotHandler = {
       state.stopMessageTs = ts;
     } else {
       await bot.postMessage(channelId, "_Nothing running_");
+    }
+  },
+
+  forceStop(sessionKey: string): void {
+    const state = channelStates.get(sessionKey);
+    if (state?.running) {
+      log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
+      state.stopRequested = true;
+      state.runner.abort();
+      // Force set running to false immediately
+      state.running = false;
     }
   },
 
@@ -254,6 +273,7 @@ const handler: BotHandler = {
     state.running = true;
     state.stopRequested = false;
     state.startedAt = Date.now();
+    state.lastActivityAt = Date.now();
 
     log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
 

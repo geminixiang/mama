@@ -383,19 +383,60 @@ export class SlackBot implements Bot {
         elements: [{ type: "mrkdwn", text: "_No tasks running right now._" }],
       });
     } else {
+      // Threshold for "stuck" detection (10 minutes)
+      const STUCK_THRESHOLD_MS = 10 * 60 * 1000;
+
       for (const session of runningSessions) {
         const channelId = session.sessionKey.split(":")[0];
         const channel = this.channels.get(channelId);
         const channelName = channel ? `#${channel.name}` : channelId;
         const elapsed = Math.floor((Date.now() - session.startedAt) / 60000);
         const elapsedStr = elapsed < 1 ? "<1 min" : `${elapsed} min`;
+
+        // Check if task might be stuck
+        const lastActivity = session.lastActivityAt ? Date.now() - session.lastActivityAt : 0;
+        const isStuck = lastActivity > STUCK_THRESHOLD_MS;
+        const statusText = isStuck ? "_stuck_" : "_running_";
+
+        // Build status line: channel · status · time · step
+        let statusLine = `${statusText} · ${elapsedStr}`;
+        if (session.currentTool) {
+          statusLine += ` · ${session.currentTool}`;
+        }
+        if (isStuck && lastActivity > 0) {
+          const inactiveMin = Math.floor(lastActivity / 60000);
+          statusLine += ` · idle ${inactiveMin}m`;
+        }
+
+        // Use context block for gray small text (like "No scheduled jobs.")
         blocks.push({
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `*${channelName}*\n└ 🟢 Running · ${elapsedStr} elapsed`,
-          },
+          type: "context",
+          elements: [
+            {
+              type: "mrkdwn",
+              text: `*${channelName}* · ${statusLine}`,
+            },
+          ],
         });
+
+        // Add Force Stop button as separate element if stuck
+        if (isStuck) {
+          blocks.push({
+            type: "context",
+            elements: [
+              {
+                type: "mrkdwn",
+                text: " ",
+              },
+              {
+                type: "button",
+                text: { type: "plain_text", text: "Force Stop", emoji: true },
+                action_id: `force_stop_${session.sessionKey.replace(/:/g, "_")}`,
+                style: "danger",
+              },
+            ],
+          });
+        }
       }
     }
 
@@ -640,6 +681,40 @@ export class SlackBot implements Bot {
         .catch((err) => {
           log.logWarning(`Failed to publish App Home view`, String(err));
         });
+    });
+
+    // Handle button clicks (Force Stop)
+    this.socketClient.on("block_actions", async ({ body, ack }) => {
+      const action = body.actions?.[0];
+      if (!action || !action.action_id?.startsWith("force_stop_")) {
+        ack();
+        return;
+      }
+
+      ack();
+      const sessionKey = action.action_id.replace("force_stop_", "").replace(/_/g, ":");
+      const userId = body.user?.id;
+      const channelId = body.container?.channel_id || sessionKey.split(":")[0];
+
+      log.logInfo(`[Force Stop] User ${userId} requested force stop for ${sessionKey}`);
+
+      // Use handler's forceStop method
+      this.handler.forceStop(sessionKey);
+
+      // Notify in channel
+      await this.postMessage(channelId, `_🔴 Force stopped by ${userId}_`);
+
+      // Refresh home tab
+      if (userId) {
+        this.webClient.views
+          .publish({
+            user_id: userId,
+            view: this.buildHomeView(),
+          })
+          .catch((err) => {
+            log.logWarning(`Failed to refresh App Home view`, String(err));
+          });
+      }
     });
   }
 

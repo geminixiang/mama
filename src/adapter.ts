@@ -79,6 +79,10 @@ export interface BotAdapters {
 export interface RunningSession {
   sessionKey: string;
   startedAt: number; // Date.now() when run started
+  /** Last activity timestamp (for detecting hung tasks) */
+  lastActivityAt?: number;
+  /** Current tool/step being executed (if any) */
+  currentTool?: string;
 }
 
 export interface BotHandler {
@@ -86,6 +90,8 @@ export interface BotHandler {
   getRunningSessions(): RunningSession[];
   handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
   handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  /** Force stop a running session (bypass normal stop mechanism) */
+  forceStop(sessionKey: string): void;
 }
 
 /** @deprecated Use BotHandler */

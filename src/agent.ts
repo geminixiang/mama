@@ -37,6 +37,8 @@ export interface AgentRunner {
     platform: PlatformInfo,
   ): Promise<{ stopReason: string; errorMessage?: string }>;
   abort(): void;
+  /** Get current step info (tool name, label) for debugging */
+  getCurrentStep(): { toolName?: string; label?: string } | undefined;
 }
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -936,6 +938,18 @@ export async function createRunner(
 
     abort(): void {
       session.abort();
+    },
+
+    getCurrentStep(): { toolName?: string; label?: string } | undefined {
+      const pending = runState.pendingTools;
+      if (pending.size === 0) return undefined;
+      // Get the first pending tool
+      const first = pending.values().next().value;
+      if (!first) return undefined;
+      return {
+        toolName: first.toolName,
+        label: (first.args as { label?: string })?.label,
+      };
     },
   };
 }
