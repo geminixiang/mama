@@ -255,7 +255,12 @@ export class SlackBot implements Bot {
     });
   }
 
-  async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
+  async uploadFile(
+    channel: string,
+    filePath: string,
+    title?: string,
+    threadTs?: string,
+  ): Promise<void> {
     return withRetry(async () => {
       const fileName = title || basename(filePath);
       const fileContent = readFileSync(filePath);
@@ -264,7 +269,8 @@ export class SlackBot implements Bot {
         file: fileContent,
         filename: fileName,
         title: fileName,
-      });
+        ...(threadTs ? { thread_ts: threadTs } : {}),
+      } as Parameters<typeof this.webClient.files.uploadV2>[0]);
     });
   }
 

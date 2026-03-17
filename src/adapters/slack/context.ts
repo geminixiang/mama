@@ -174,7 +174,7 @@ export function createSlackAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await slack.uploadFile(event.channel, filePath, title);
+      await slack.uploadFile(event.channel, filePath, title, rootTs);
     },
 
     setWorking: async (working: boolean) => {
