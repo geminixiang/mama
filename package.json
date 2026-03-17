@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.42",
+    "@google-cloud/logging": "^11.2.1",
     "@mariozechner/pi-agent-core": "^0.58.3",
     "@mariozechner/pi-ai": "^0.58.3",
     "@mariozechner/pi-coding-agent": "^0.58.3",
@@ -50,7 +51,8 @@
     "croner": "^10.0.1",
     "diff": "^8.0.3",
     "discord.js": "^14.25.1",
-    "grammy": "^1.41.1"
+    "grammy": "^1.41.1",
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",

@@ -158,16 +158,44 @@ Create `settings.json` in your working directory to override defaults:
   "provider": "anthropic",
   "model": "claude-sonnet-4-5",
   "thinkingLevel": "off",
-  "sessionScope": "thread"
+  "sessionScope": "thread",
+  "logFormat": "console",
+  "logLevel": "info"
 }
 ```
 
-| Field           | Default             | Description                                    |
-| --------------- | ------------------- | ---------------------------------------------- |
-| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)           |
-| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)               |
-| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`              |
-| `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel` |
+| Field           | Default             | Description                                              |
+| --------------- | ------------------- | -------------------------------------------------------- |
+| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)                     |
+| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)                         |
+| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
+| `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel`           |
+| `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
+| `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
+
+### GCP Cloud Logging (Compute Engine)
+
+Set `logFormat: "json"` to send structured logs directly to Cloud Logging via API — no Ops Agent or log file configuration needed.
+
+**Requirements:**
+
+1. VM service account has `roles/logging.logWriter`
+2. `GOOGLE_CLOUD_PROJECT` env var is set
+
+```bash
+GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
+```
+
+`settings.json`:
+
+```json
+{
+  "logFormat": "json",
+  "logLevel": "info"
+}
+```
+
+Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout) is unaffected and continues to work alongside Cloud Logging.
 
 ## Working Directory Layout
 

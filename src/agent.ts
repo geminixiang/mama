@@ -393,6 +393,13 @@ export async function createRunner(
   workspaceDir: string,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
+
+  // Initialize logger with settings from config
+  log.initLogger({
+    logFormat: agentConfig.logFormat,
+    logLevel: agentConfig.logLevel,
+  });
+
   const executor = createExecutor(sandboxConfig);
   const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 

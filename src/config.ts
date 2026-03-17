@@ -6,6 +6,8 @@ export interface AgentConfig {
   model: string;
   thinkingLevel?: string;
   sessionScope?: "thread" | "channel";
+  logFormat?: "console" | "json";
+  logLevel?: "trace" | "debug" | "info" | "warn" | "error";
 }
 
 const DEFAULTS: AgentConfig = {
@@ -13,6 +15,8 @@ const DEFAULTS: AgentConfig = {
   model: "claude-sonnet-4-5",
   thinkingLevel: "off",
   sessionScope: "thread",
+  logFormat: "console",
+  logLevel: "info",
 };
 
 export function loadAgentConfig(workspaceDir: string): AgentConfig {
@@ -35,8 +39,10 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const model = fromFile.model || process.env.MOM_AI_MODEL || DEFAULTS.model;
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
+  const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
+  const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
 
-  return { provider, model, thinkingLevel, sessionScope };
+  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel };
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {

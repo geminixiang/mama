@@ -1,9 +1,78 @@
+import { Logging } from "@google-cloud/logging";
+import { Writable } from "node:stream";
 import chalk from "chalk";
+import pino from "pino";
+
+const PINO_TO_GCP: Record<number, string> = {
+  10: "DEBUG",
+  20: "DEBUG",
+  30: "INFO",
+  40: "WARNING",
+  50: "ERROR",
+  60: "CRITICAL",
+};
+
+function createGcpStream(): Writable {
+  const log = new Logging().log("mama");
+  return new Writable({
+    write(chunk, _encoding, callback) {
+      try {
+        const line = chunk.toString().trim();
+        if (line) {
+          const { level, time, pid: _pid, hostname: _hostname, msg, ...rest } = JSON.parse(line);
+          const entry = log.entry(
+            { severity: PINO_TO_GCP[level] ?? "DEFAULT", timestamp: new Date(time) },
+            { message: msg, ...rest },
+          );
+          log.write(entry).catch((err) => console.error("GCP log write failed:", err));
+        }
+      } catch {
+        // ignore parse errors
+      }
+      callback();
+    },
+  });
+}
 
 export interface LogContext {
   channelId: string;
   userName?: string;
   channelName?: string; // For display like #dev-team vs C16HET4EQ
+}
+
+export interface LogConfig {
+  logFormat?: "console" | "json";
+  logLevel?: "trace" | "debug" | "info" | "warn" | "error";
+}
+
+let logger: pino.Logger | null = null;
+
+export function initLogger(config?: LogConfig): void {
+  if (logger) return;
+
+  const format = config?.logFormat ?? "console";
+  const level = config?.logLevel ?? "info";
+
+  if (format === "json") {
+    try {
+      logger = pino({ level }, createGcpStream());
+      console.log(`📝 GCP logging enabled (level: ${level})`);
+    } catch (err) {
+      console.warn("⚠️ Failed to init GCP logger, JSON logging disabled:", err);
+    }
+  }
+}
+
+/** Only for use in tests. */
+export function __resetLoggerForTest(): void {
+  logger = null;
+}
+
+function ctxFields(ctx: LogContext): Record<string, string> {
+  const out: Record<string, string> = { channel: ctx.channelId };
+  if (ctx.userName) out.user = ctx.userName;
+  if (ctx.channelName) out.channelName = ctx.channelName;
+  return out;
 }
 
 function timestamp(): string {
@@ -70,6 +139,7 @@ function formatToolArgs(args: Record<string, unknown>): string {
 
 // User messages
 export function logUserMessage(ctx: LogContext, text: string): void {
+  if (logger) logger.info({ event: "user_message", ...ctxFields(ctx), text }, text);
   console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} ${text}`));
 }
 
@@ -80,6 +150,11 @@ export function logToolStart(
   label: string,
   args: Record<string, unknown>,
 ): void {
+  if (logger)
+    logger.debug(
+      { event: "tool_start", ...ctxFields(ctx), tool: toolName, label, args },
+      `${toolName}: ${label}`,
+    );
   const formattedArgs = formatToolArgs(args);
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↳ ${toolName}: ${label}`));
   if (formattedArgs) {
@@ -98,6 +173,11 @@ export function logToolSuccess(
   durationMs: number,
   result: string,
 ): void {
+  if (logger)
+    logger.debug(
+      { event: "tool_success", ...ctxFields(ctx), tool: toolName, durationMs, result },
+      `${toolName} completed`,
+    );
   const duration = (durationMs / 1000).toFixed(1);
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✓ ${toolName} (${duration}s)`));
 
@@ -117,6 +197,11 @@ export function logToolError(
   durationMs: number,
   error: string,
 ): void {
+  if (logger)
+    logger.warn(
+      { event: "tool_error", ...ctxFields(ctx), tool: toolName, durationMs, error },
+      `${toolName} failed`,
+    );
   const duration = (durationMs / 1000).toFixed(1);
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ ${toolName} (${duration}s)`));
 
@@ -130,10 +215,12 @@ export function logToolError(
 
 // Response streaming
 export function logResponseStart(ctx: LogContext): void {
+  if (logger) logger.debug({ event: "response_start", ...ctxFields(ctx) }, "Streaming response");
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} → Streaming response...`));
 }
 
 export function logThinking(ctx: LogContext, thinking: string): void {
+  if (logger) logger.debug({ event: "thinking", ...ctxFields(ctx), text: thinking }, "Thinking");
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💭 Thinking`));
   const truncated = truncate(thinking, 1000);
   const indented = truncated
@@ -144,6 +231,7 @@ export function logThinking(ctx: LogContext, thinking: string): void {
 }
 
 export function logResponse(ctx: LogContext, text: string): void {
+  if (logger) logger.info({ event: "response", ...ctxFields(ctx), text }, "Response");
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💬 Response`));
   const truncated = truncate(text, 1000);
   const indented = truncated
@@ -155,11 +243,21 @@ export function logResponse(ctx: LogContext, text: string): void {
 
 // Attachments
 export function logDownloadStart(ctx: LogContext, filename: string, localPath: string): void {
+  if (logger)
+    logger.debug(
+      { event: "download_start", ...ctxFields(ctx), filename, localPath },
+      `Downloading ${filename}`,
+    );
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↓ Downloading attachment`));
   console.log(chalk.dim(`           ${filename} → ${localPath}`));
 }
 
 export function logDownloadSuccess(ctx: LogContext, sizeKB: number): void {
+  if (logger)
+    logger.info(
+      { event: "download_success", ...ctxFields(ctx), sizeKB },
+      `Downloaded (${sizeKB} KB)`,
+    );
   console.log(
     chalk.yellow(
       `${timestamp()} ${formatContext(ctx)} ✓ Downloaded (${sizeKB.toLocaleString()} KB)`,
@@ -168,22 +266,30 @@ export function logDownloadSuccess(ctx: LogContext, sizeKB: number): void {
 }
 
 export function logDownloadError(ctx: LogContext, filename: string, error: string): void {
+  if (logger)
+    logger.warn(
+      { event: "download_error", ...ctxFields(ctx), filename, error },
+      `Download failed: ${filename}`,
+    );
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ Download failed`));
   console.log(chalk.dim(`           ${filename}: ${error}`));
 }
 
 // Control
 export function logStopRequest(ctx: LogContext): void {
+  if (logger) logger.info({ event: "stop_request", ...ctxFields(ctx) }, "Stop requested");
   console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} stop`));
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ⊗ Stop requested - aborting`));
 }
 
 // System
 export function logInfo(message: string): void {
+  if (logger) logger.info({ event: "info" }, message);
   console.log(chalk.blue(`${timestamp()} [system] ${message}`));
 }
 
 export function logWarning(message: string, details?: string): void {
+  if (logger) logger.warn({ event: "warning", ...(details ? { details } : {}) }, message);
   console.log(chalk.yellow(`${timestamp()} [system] ⚠ ${message}`));
   if (details) {
     const indented = details
@@ -195,6 +301,10 @@ export function logWarning(message: string, details?: string): void {
 }
 
 export function logAgentError(ctx: LogContext | "system", error: string): void {
+  if (logger) {
+    const extra = ctx === "system" ? { error } : { ...ctxFields(ctx), error };
+    logger.error({ event: "agent_error", ...extra }, "Agent error");
+  }
   const context = ctx === "system" ? "[system]" : formatContext(ctx);
   console.log(chalk.yellow(`${timestamp()} ${context} ✗ Agent error`));
   const indented = error
@@ -249,6 +359,20 @@ export function logUsageSummary(
   const summary = lines.join("\n");
 
   // Log to console
+  if (logger) {
+    logger.info(
+      {
+        event: "usage",
+        ...ctxFields(ctx),
+        tokensIn: usage.input,
+        tokensOut: usage.output,
+        cacheRead: usage.cacheRead,
+        cacheWrite: usage.cacheWrite,
+        cost: usage.cost.total,
+      },
+      `Usage: $${usage.cost.total.toFixed(4)}`,
+    );
+  }
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💰 Usage`));
   console.log(
     chalk.dim(
@@ -265,30 +389,45 @@ export function logUsageSummary(
 
 // Startup (no context needed)
 export function logStartup(workingDir: string, sandbox: string): void {
+  if (logger) logger.info({ event: "startup", workingDir, sandbox }, "Starting mama");
   console.log("Starting mama...");
   console.log(`  Working directory: ${workingDir}`);
   console.log(`  Sandbox: ${sandbox}`);
 }
 
 export function logConnected(): void {
+  if (logger) logger.info({ event: "connected" }, "Mama connected and listening");
   console.log("⚡️ Mama connected and listening!");
   console.log("");
 }
 
 export function logDisconnected(): void {
+  if (logger) logger.info({ event: "disconnected" }, "Mama disconnected");
   console.log("Mama disconnected.");
 }
 
 // Backfill
 export function logBackfillStart(channelCount: number): void {
+  if (logger)
+    logger.info({ event: "backfill_start", channelCount }, `Backfilling ${channelCount} channels`);
   console.log(chalk.blue(`${timestamp()} [system] Backfilling ${channelCount} channels...`));
 }
 
 export function logBackfillChannel(channelName: string, messageCount: number): void {
+  if (logger)
+    logger.debug(
+      { event: "backfill_channel", channelName, messageCount },
+      `#${channelName}: ${messageCount} messages`,
+    );
   console.log(chalk.blue(`${timestamp()} [system]   #${channelName}: ${messageCount} messages`));
 }
 
 export function logBackfillComplete(totalMessages: number, durationMs: number): void {
+  if (logger)
+    logger.info(
+      { event: "backfill_complete", totalMessages, durationMs },
+      `Backfill complete: ${totalMessages} messages`,
+    );
   const duration = (durationMs / 1000).toFixed(1);
   console.log(
     chalk.blue(
