@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
 import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
@@ -16,6 +19,26 @@ import { ChannelStore } from "./store.js";
 // Config
 // ============================================================================
 
+// Get version from package.json
+function getVersion(): string {
+  // Try to find package.json in the dist directory or parent
+  const possiblePaths = [
+    pathJoin(dirname(fileURLToPath(import.meta.url)), "package.json"),
+    pathJoin(dirname(fileURLToPath(import.meta.url)), "..", "package.json"),
+    pathJoin(process.cwd(), "package.json"),
+  ];
+
+  for (const pkgPath of possiblePaths) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (pkg.version) return pkg.version;
+    } catch {
+      // Continue to next path
+    }
+  }
+  return "unknown";
+}
+
 const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
@@ -25,6 +48,7 @@ interface ParsedArgs {
   workingDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
+  showVersion?: boolean;
 }
 
 function parseArgs(): ParsedArgs {
@@ -32,10 +56,13 @@ function parseArgs(): ParsedArgs {
   let sandbox: SandboxConfig = { type: "host" };
   let workingDir: string | undefined;
   let downloadChannelId: string | undefined;
+  let showVersion = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
-    if (arg.startsWith("--sandbox=")) {
+    if (arg === "--version" || arg === "-v" || arg === "-V") {
+      showVersion = true;
+    } else if (arg.startsWith("--sandbox=")) {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
       sandbox = parseSandboxArg(args[++i] || "");
@@ -52,10 +79,17 @@ function parseArgs(): ParsedArgs {
     workingDir: workingDir ? resolve(workingDir) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
+    showVersion,
   };
 }
 
 const parsedArgs = parseArgs();
+
+// Handle --version
+if (parsedArgs.showVersion) {
+  console.log(getVersion());
+  process.exit(0);
+}
 
 // Handle --download mode (Slack only)
 if (parsedArgs.downloadChannel) {
