@@ -548,7 +548,11 @@ export async function createRunner(
         label,
         agentEvent.args as Record<string, unknown>,
       );
-      queue.enqueue(() => responseCtx.respond(`_→ ${label}_`), "tool label");
+      // Split long tool labels to avoid msg_too_long error
+      const labelParts = splitForSlack(`_→ ${label}_`);
+      for (const part of labelParts) {
+        queue.enqueue(() => responseCtx.respond(part), "tool label");
+      }
     } else if (event.type === "tool_execution_end") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
       const resultStr = extractToolResultText(agentEvent.result);
@@ -756,7 +760,11 @@ export async function createRunner(
               const errMsg = err instanceof Error ? err.message : String(err);
               log.logWarning(`API error (${errorContext})`, errMsg);
               try {
-                await responseCtx.respondInThread(`_Error: ${errMsg}_`);
+                // Split long error messages to avoid msg_too_long
+                const errParts = splitForSlack(`_Error: ${errMsg}_`);
+                for (const part of errParts) {
+                  await responseCtx.respondInThread(part);
+                }
               } catch {
                 // Ignore
               }
@@ -845,7 +853,11 @@ export async function createRunner(
       if (runState.stopReason === "error" && runState.errorMessage) {
         try {
           await responseCtx.replaceResponse("_Sorry, something went wrong_");
-          await responseCtx.respondInThread(`_Error: ${runState.errorMessage}_`);
+          // Split long error messages to avoid msg_too_long
+          const errorParts = splitForSlack(`_Error: ${runState.errorMessage}_`);
+          for (const part of errorParts) {
+            await responseCtx.respondInThread(part);
+          }
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           log.logWarning("Failed to post error message", errMsg);
@@ -906,7 +918,11 @@ export async function createRunner(
           contextTokens,
           contextWindow,
         );
-        runState.queue.enqueue(() => responseCtx.respondInThread(summary), "usage summary");
+        // Split long summaries to avoid msg_too_long
+        const summaryParts = splitForSlack(summary);
+        for (const part of summaryParts) {
+          runState.queue!.enqueue(() => responseCtx.respondInThread(part), "usage summary");
+        }
         await queueChain;
       }
 
