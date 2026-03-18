@@ -1,6 +1,6 @@
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
-import { basename, resolve as resolvePath } from "path";
+import { basename, extname, resolve as resolvePath } from "path";
 
 const attachSchema = Type.Object({
   label: Type.String({ description: "Brief description of what you're sharing (shown to user)" }),
@@ -34,7 +34,9 @@ export function createAttachTool(): {
       }
 
       const absolutePath = resolvePath(path);
-      const fileName = title || basename(absolutePath);
+      const base = basename(absolutePath);
+      const ext = extname(base);
+      const fileName = title ? (ext && !title.endsWith(ext) ? `${title}${ext}` : title) : base;
 
       await uploadFn(absolutePath, fileName);
 
