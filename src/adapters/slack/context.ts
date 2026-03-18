@@ -30,6 +30,15 @@ export function createSlackAdapters(
   const rootTs = event.thread_ts ?? event.ts;
   const isThreaded = !!event.thread_ts;
 
+  /** Post first top-level message and register thread alias so stop commands can find this session */
+  const postFirstMessage = async (text: string): Promise<string> => {
+    const ts = await slack.postMessage(event.channel, text);
+    if (ts) {
+      slack.registerThreadAlias(`${event.channel}:${ts}`, `${event.channel}:${rootTs}`);
+    }
+    return ts;
+  };
+
   const message: ChatMessage = {
     id: event.ts,
     sessionKey: `${event.channel}:${rootTs}`,
@@ -71,7 +80,7 @@ export function createSlackAdapters(
             // Reply within the user's thread
             messageTs = await slack.postInThread(event.channel, rootTs, displayText);
           } else {
-            messageTs = await slack.postMessage(event.channel, displayText);
+            messageTs = await postFirstMessage(displayText);
           }
 
           if (messageTs) {
@@ -104,7 +113,7 @@ export function createSlackAdapters(
           } else if (isThreaded) {
             messageTs = await slack.postInThread(event.channel, rootTs, displayText);
           } else {
-            messageTs = await slack.postMessage(event.channel, displayText);
+            messageTs = await postFirstMessage(displayText);
           }
         } catch (err) {
           log.logWarning(
@@ -156,10 +165,7 @@ export function createSlackAdapters(
                   accumulatedText + workingIndicator,
                 );
               } else {
-                messageTs = await slack.postMessage(
-                  event.channel,
-                  accumulatedText + workingIndicator,
-                );
+                messageTs = await postFirstMessage(accumulatedText + workingIndicator);
               }
             }
           } catch (err) {

@@ -248,6 +248,10 @@ export class SlackBot implements Bot {
     });
   }
 
+  registerThreadAlias(aliasKey: string, sessionKey: string): void {
+    this.handler.registerThreadAlias(aliasKey, sessionKey);
+  }
+
   async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
     return withRetry(async () => {
       const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text });
@@ -520,9 +524,9 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // Derive session key from thread context
+      // Derive session key from thread context (resolve alias for bot-reply-anchored threads)
       const rootTs = e.thread_ts ?? e.ts;
-      const sessionKey = `${e.channel}:${rootTs}`;
+      const sessionKey = this.handler.resolveSessionKey(`${e.channel}:${rootTs}`);
 
       const slackEvent: SlackEvent = {
         type: "mention",
@@ -550,7 +554,7 @@ export class SlackBot implements Bot {
       // Check for stop command - execute immediately, don't queue!
       if (slackEvent.text.toLowerCase().trim() === "stop") {
         if (this.handler.isRunning(sessionKey)) {
-          this.handler.handleStop(sessionKey, e.channel, this); // Don't await, don't queue
+          this.handler.handleStop(sessionKey, e.channel, this);
         } else {
           this.postMessage(e.channel, "_Nothing running_");
         }
@@ -639,10 +643,23 @@ export class SlackBot implements Bot {
         return;
       }
 
+      // Check for stop command in channel threads (without @mention)
+      // app_mention handles "@mama stop", but bare "stop" in a thread comes here
+      if (!isDM && e.thread_ts && slackEvent.text.toLowerCase().trim() === "stop") {
+        const threadSessionKey = this.handler.resolveSessionKey(`${e.channel}:${e.thread_ts}`);
+        if (this.handler.isRunning(threadSessionKey)) {
+          this.handler.handleStop(threadSessionKey, e.channel, this);
+        } else {
+          this.postMessage(e.channel, "_Nothing running_");
+        }
+        ack();
+        return;
+      }
+
       // Only trigger handler for DMs
       if (isDM) {
         const dmRootTs = e.thread_ts ?? e.ts;
-        const dmSessionKey = `${e.channel}:${dmRootTs}`;
+        const dmSessionKey = this.handler.resolveSessionKey(`${e.channel}:${dmRootTs}`);
 
         // Check for stop command - execute immediately, don't queue!
         if (slackEvent.text.toLowerCase().trim() === "stop") {

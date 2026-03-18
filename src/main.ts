@@ -143,6 +143,15 @@ interface ChannelState {
 
 const channelStates = new Map<string, ChannelState>();
 
+/**
+ * Maps "channel:botReplyTs" → sessionKey.
+ * When the bot posts a top-level reply, the Slack thread anchors to that ts.
+ * Users replying in that thread will have thread_ts = botReplyTs, which differs
+ * from the original sessionKey (channel:userMessageTs). This alias map lets
+ * stop commands resolve the correct session even when the ts doesn't match.
+ */
+const threadAliases = new Map<string, string>();
+
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
 
@@ -182,6 +191,10 @@ function evictIdleSessions(): void {
   for (const [key, state] of channelStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
       channelStates.delete(key);
+      // Clean up aliases pointing to this session
+      for (const [alias, target] of threadAliases) {
+        if (target === key) threadAliases.delete(alias);
+      }
     }
   }
 
@@ -197,7 +210,11 @@ function evictIdleSessions(): void {
 
     const toEvict = channelStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
-      channelStates.delete(idleSessions[i].key);
+      const evictedKey = idleSessions[i].key;
+      channelStates.delete(evictedKey);
+      for (const [alias, target] of threadAliases) {
+        if (target === evictedKey) threadAliases.delete(alias);
+      }
     }
   }
 }
@@ -209,7 +226,7 @@ function evictIdleSessions(): void {
 const handler: BotHandler = {
   isRunning(sessionKey: string): boolean {
     const state = channelStates.get(sessionKey);
-    return state?.running ?? false;
+    return !!state?.running;
   },
 
   getRunningSessions() {
@@ -247,9 +264,16 @@ const handler: BotHandler = {
       log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
       state.stopRequested = true;
       state.runner.abort();
-      // Force set running to false immediately
       state.running = false;
     }
+  },
+
+  resolveSessionKey(rawKey: string): string {
+    return threadAliases.get(rawKey) ?? rawKey;
+  },
+
+  registerThreadAlias(aliasKey: string, sessionKey: string): void {
+    threadAliases.set(aliasKey, sessionKey);
   },
 
   async handleEvent(
@@ -266,7 +290,8 @@ const handler: BotHandler = {
       return;
     }
 
-    const sessionKey = `${event.channel}:${event.thread_ts ?? event.ts}`;
+    const rawSessionKey = `${event.channel}:${event.thread_ts ?? event.ts}`;
+    const sessionKey = this.resolveSessionKey(rawSessionKey);
     const state = await getState(event.channel, sessionKey);
 
     // Start run

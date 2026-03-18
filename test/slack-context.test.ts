@@ -21,6 +21,7 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
     getChannel: vi.fn().mockReturnValue(undefined),
     enqueueEvent: vi.fn().mockReturnValue(true),
     logToFile: vi.fn(),
+    registerThreadAlias: vi.fn(),
     ...overrides,
   } as unknown as SlackBot;
 }
