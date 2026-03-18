@@ -126,7 +126,7 @@ export function createSlackAdapters(
       await updatePromise;
     },
 
-    respondInThread: async (text: string) => {
+    respondInThread: async (text: string, options?: { style?: "muted" }) => {
       updatePromise = updatePromise.then(async () => {
         try {
           // For threaded sessions, anchor to the user's root thread
@@ -140,8 +140,21 @@ export function createSlackAdapters(
               threadText = `${threadText.substring(0, MAX_THREAD_LENGTH - 50)}\n\n_(truncated)_`;
             }
 
-            const ts = await slack.postInThread(event.channel, threadAnchor, threadText);
-            threadMessageTs.push(ts);
+            // Use context block for muted style (small gray text like Slack's Home tab)
+            if (options?.style === "muted") {
+              const CONTEXT_TEXT_LIMIT = 3000;
+              const blockText =
+                threadText.length > CONTEXT_TEXT_LIMIT
+                  ? threadText.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
+                  : threadText;
+              const ts = await slack.postInThreadBlocks(event.channel, threadAnchor, threadText, [
+                { type: "context", elements: [{ type: "mrkdwn", text: blockText }] },
+              ]);
+              threadMessageTs.push(ts);
+            } else {
+              const ts = await slack.postInThread(event.channel, threadAnchor, threadText);
+              threadMessageTs.push(ts);
+            }
           }
         } catch (err) {
           log.logWarning(

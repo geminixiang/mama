@@ -335,7 +335,7 @@ export function logUsageSummary(
   };
 
   const lines: string[] = [];
-  lines.push("*Usage Summary*");
+  lines.push("_Usage Summary_");
   lines.push(`Tokens: ${usage.input.toLocaleString()} in, ${usage.output.toLocaleString()} out`);
   if (usage.cacheRead > 0 || usage.cacheWrite > 0) {
     lines.push(

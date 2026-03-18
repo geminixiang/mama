@@ -551,14 +551,8 @@ export async function createRunner(
         label,
         agentEvent.args as Record<string, unknown>,
       );
-      // Skip Slack messages for read tool to reduce noise
-      if (agentEvent.toolName !== "read") {
-        // Split long tool labels to avoid msg_too_long error
-        const labelParts = splitForSlack(`_→ ${label}_`);
-        for (const part of labelParts) {
-          queue.enqueue(() => responseCtx.respond(part), "tool label");
-        }
-      }
+      // Tool labels are omitted from the main message to reduce Slack noise.
+      // Tool execution details are still posted to the thread (see tool_execution_end).
     } else if (event.type === "tool_execution_end") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
       const resultStr = extractToolResultText(agentEvent.result);
@@ -585,8 +579,10 @@ export async function createRunner(
       if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
       threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
 
-      // Skip Slack messages for read tool to reduce noise
-      if (agentEvent.toolName !== "read") {
+      // Only post thread details for tools with meaningful output (bash, attach).
+      // Skip read/write/edit to reduce Slack noise — their results are in the log.
+      const quietTools = new Set(["read", "write", "edit"]);
+      if (!quietTools.has(agentEvent.toolName)) {
         queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
       }
 
@@ -931,7 +927,10 @@ export async function createRunner(
         // Split long summaries to avoid msg_too_long
         const summaryParts = splitForSlack(summary);
         for (const part of summaryParts) {
-          runState.queue!.enqueue(() => responseCtx.respondInThread(part), "usage summary");
+          runState.queue!.enqueue(
+            () => responseCtx.respondInThread(part, { style: "muted" }),
+            "usage summary",
+          );
         }
         await queueChain;
       }

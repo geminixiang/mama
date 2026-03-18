@@ -11,7 +11,7 @@ export interface ChatMessage {
 export interface ChatResponseContext {
   respond(text: string): Promise<void>;
   replaceResponse(text: string): Promise<void>;
-  respondInThread(text: string): Promise<void>;
+  respondInThread(text: string, options?: { style?: "muted" }): Promise<void>;
   setTyping(isTyping: boolean): Promise<void>;
   setWorking(working: boolean): Promise<void>;
   uploadFile(filePath: string, title?: string): Promise<void>;

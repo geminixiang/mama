@@ -254,7 +254,39 @@ export class SlackBot implements Bot {
 
   async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
     return withRetry(async () => {
+      // Use Block Kit section for long messages to trigger Slack's "Show more" collapsing (~700 chars)
+      const SECTION_TEXT_LIMIT = 3000;
+      if (text.length > 500) {
+        const blockText =
+          text.length > SECTION_TEXT_LIMIT
+            ? text.substring(0, SECTION_TEXT_LIMIT - 20) + "\n_(truncated)_"
+            : text;
+        const result = await this.webClient.chat.postMessage({
+          channel,
+          thread_ts: threadTs,
+          text, // full text as notification fallback
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: blockText } }],
+        });
+        return result.ts as string;
+      }
       const result = await this.webClient.chat.postMessage({ channel, thread_ts: threadTs, text });
+      return result.ts as string;
+    });
+  }
+
+  async postInThreadBlocks(
+    channel: string,
+    threadTs: string,
+    text: string,
+    blocks: object[],
+  ): Promise<string> {
+    return withRetry(async () => {
+      const result = await this.webClient.chat.postMessage({
+        channel,
+        thread_ts: threadTs,
+        text, // fallback for notifications
+        blocks: blocks as any,
+      });
       return result.ts as string;
     });
   }
