@@ -48,6 +48,18 @@ interface LogMessage {
 }
 
 /**
+ * Thread filter for scoping log sync to a specific thread session.
+ * When provided, only messages belonging to this thread are synced,
+ * preventing cross-thread context contamination.
+ */
+export interface ThreadFilter {
+  /** The root message timestamp (user's original message ts, derived from sessionKey) */
+  rootTs: string;
+  /** The thread anchor timestamp (bot's first reply ts, used as thread_ts by Slack replies) */
+  threadTs?: string;
+}
+
+/**
  * Sync user messages from log.jsonl to SessionManager.
  *
  * This ensures that messages logged while mama wasn't running (channel chatter,
@@ -57,6 +69,7 @@ interface LogMessage {
  * @param channelDir - Path to channel directory containing log.jsonl
  * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
  * @param timeRange - Optional time range to filter log entries (defaults to last 10 days)
+ * @param threadFilter - Optional thread filter to scope sync to a specific thread
  * @returns Number of messages synced
  */
 export async function syncLogToSessionManager(
@@ -64,6 +77,7 @@ export async function syncLogToSessionManager(
   channelDir: string,
   excludeSlackTs?: string,
   timeRange?: TimeRange,
+  threadFilter?: ThreadFilter,
 ): Promise<number> {
   // Calculate default time range (last 10 days) if not provided
   const now = Date.now();
@@ -105,6 +119,24 @@ export async function syncLogToSessionManager(
 
       // Skip bot messages - added through agent flow
       if (logMsg.isBot) continue;
+
+      // Thread filtering: only sync messages belonging to this session's thread
+      if (threadFilter) {
+        if (logMsg.threadTs) {
+          // Thread reply: only include if threadTs matches our thread anchor or rootTs
+          if (
+            logMsg.threadTs !== threadFilter.threadTs &&
+            logMsg.threadTs !== threadFilter.rootTs
+          ) {
+            continue;
+          }
+        } else {
+          // Top-level message: only include if it's this session's root message
+          if (slackTs !== threadFilter.rootTs) {
+            continue;
+          }
+        }
+      }
 
       // Skip if this Slack timestamp is already in the session (dedupe by ts, not content)
       // Convert Slack ts (e.g., "1234567890.123456") to Unix ms for comparison
