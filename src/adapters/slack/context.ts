@@ -46,6 +46,7 @@ export function createSlackAdapters(
     userName: user?.userName,
     text: event.text,
     attachments: (event.attachments || []).map((a) => ({ name: a.local, localPath: a.local })),
+    threadTs: event.thread_ts,
   };
 
   const platform: PlatformInfo = {
@@ -84,7 +85,7 @@ export function createSlackAdapters(
           }
 
           if (messageTs) {
-            slack.logBotResponse(event.channel, text, messageTs, rootTs);
+            slack.logBotResponse(event.channel, text, messageTs, isThreaded ? rootTs : undefined);
           }
         } catch (err) {
           log.logWarning("Slack respond error", err instanceof Error ? err.message : String(err));

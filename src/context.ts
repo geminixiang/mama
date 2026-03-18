@@ -40,6 +40,7 @@ const DEFAULT_SYNC_DAYS = 10;
 interface LogMessage {
   date?: string;
   ts?: string;
+  threadTs?: string;
   user?: string;
   userName?: string;
   text?: string;
@@ -111,7 +112,8 @@ export async function syncLogToSessionManager(
       if (existingTimestamps.has(slackTsMs)) continue;
 
       // Build the message text as it would appear in context
-      const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]: ${logMsg.text || ""}`;
+      const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
+      const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
 
       const msgTime = new Date(date).getTime() || Date.now();
 

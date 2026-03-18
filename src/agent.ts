@@ -163,6 +163,7 @@ function buildSystemPrompt(
 - For current date/time, use: date
 - You have access to previous conversation context including tool results from prior turns.
 - For older history beyond your context, search log.jsonl (contains user messages and your final responses, but not tool results).
+- User messages include a \`[in-thread:TS]\` marker when sent from within a Slack thread (TS is the root message timestamp). Without this marker, the message is a top-level channel message.
 
 ${platform.formattingGuide}
 
@@ -550,10 +551,13 @@ export async function createRunner(
         label,
         agentEvent.args as Record<string, unknown>,
       );
-      // Split long tool labels to avoid msg_too_long error
-      const labelParts = splitForSlack(`_→ ${label}_`);
-      for (const part of labelParts) {
-        queue.enqueue(() => responseCtx.respond(part), "tool label");
+      // Skip Slack messages for read tool to reduce noise
+      if (agentEvent.toolName !== "read") {
+        // Split long tool labels to avoid msg_too_long error
+        const labelParts = splitForSlack(`_→ ${label}_`);
+        for (const part of labelParts) {
+          queue.enqueue(() => responseCtx.respond(part), "tool label");
+        }
       }
     } else if (event.type === "tool_execution_end") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
@@ -581,7 +585,10 @@ export async function createRunner(
       if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
       threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
 
-      queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
+      // Skip Slack messages for read tool to reduce noise
+      if (agentEvent.toolName !== "read") {
+        queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
+      }
 
       if (agentEvent.isError) {
         queue.enqueue(
@@ -805,7 +812,8 @@ export async function createRunner(
       const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
       const offsetMins = pad(Math.abs(offset) % 60);
       const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-      let userMessage = `[${timestamp}] [${message.userName || "unknown"}]: ${message.text}`;
+      const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
+      let userMessage = `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
 
       const imageAttachments: ImageContent[] = [];
       const nonImagePaths: string[] = [];

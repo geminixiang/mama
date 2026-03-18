@@ -40,6 +40,7 @@ export function createDiscordAdapters(
     userName: event.userName,
     text: event.text,
     attachments: event.attachments,
+    threadTs: event.thread_ts,
   };
 
   const platform: PlatformInfo = {

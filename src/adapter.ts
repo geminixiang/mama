@@ -5,6 +5,7 @@ export interface ChatMessage {
   userName?: string;
   text: string;
   attachments?: { name: string; localPath: string }[];
+  threadTs?: string;
 }
 
 export interface ChatResponseContext {
