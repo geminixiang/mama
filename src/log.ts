@@ -2,6 +2,9 @@ import { Logging } from "@google-cloud/logging";
 import { Writable } from "node:stream";
 import chalk from "chalk";
 import pino from "pino";
+import { redact } from "./redact.js";
+
+export { registerSecret, __resetSecretsForTest } from "./redact.js";
 
 const PINO_TO_GCP: Record<number, string> = {
   10: "DEBUG",
@@ -46,27 +49,6 @@ export interface LogConfig {
 }
 
 let logger: pino.Logger | null = null;
-
-// Secret redaction
-const registeredSecrets = new Set<string>();
-
-export function registerSecret(value: string): void {
-  if (value && value.length >= 8) registeredSecrets.add(value);
-}
-
-/** Only for use in tests. */
-export function __resetSecretsForTest(): void {
-  registeredSecrets.clear();
-}
-
-function redact(text: string): string {
-  if (registeredSecrets.size === 0) return text;
-  let result = text;
-  for (const secret of registeredSecrets) {
-    result = result.split(secret).join("[REDACTED]");
-  }
-  return result;
-}
 
 export function initLogger(config?: LogConfig): void {
   if (logger) return;
