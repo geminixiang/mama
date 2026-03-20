@@ -47,6 +47,27 @@ export interface LogConfig {
 
 let logger: pino.Logger | null = null;
 
+// Secret redaction
+const registeredSecrets = new Set<string>();
+
+export function registerSecret(value: string): void {
+  if (value && value.length >= 8) registeredSecrets.add(value);
+}
+
+/** Only for use in tests. */
+export function __resetSecretsForTest(): void {
+  registeredSecrets.clear();
+}
+
+function redact(text: string): string {
+  if (registeredSecrets.size === 0) return text;
+  let result = text;
+  for (const secret of registeredSecrets) {
+    result = result.split(secret).join("[REDACTED]");
+  }
+  return result;
+}
+
 export function initLogger(config?: LogConfig): void {
   if (logger) return;
 
@@ -139,8 +160,9 @@ function formatToolArgs(args: Record<string, unknown>): string {
 
 // User messages
 export function logUserMessage(ctx: LogContext, text: string): void {
-  if (logger) logger.info({ event: "user_message", ...ctxFields(ctx), text }, text);
-  console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} ${text}`));
+  const safe = redact(text);
+  if (logger) logger.info({ event: "user_message", ...ctxFields(ctx), text: safe }, safe);
+  console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} ${safe}`));
 }
 
 // Tool execution
@@ -150,13 +172,14 @@ export function logToolStart(
   label: string,
   args: Record<string, unknown>,
 ): void {
+  const safeLabel = redact(label);
   if (logger)
     logger.debug(
-      { event: "tool_start", ...ctxFields(ctx), tool: toolName, label, args },
-      `${toolName}: ${label}`,
+      { event: "tool_start", ...ctxFields(ctx), tool: toolName, label: safeLabel, args },
+      `${toolName}: ${safeLabel}`,
     );
-  const formattedArgs = formatToolArgs(args);
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↳ ${toolName}: ${label}`));
+  const formattedArgs = redact(formatToolArgs(args));
+  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↳ ${toolName}: ${safeLabel}`));
   if (formattedArgs) {
     // Indent the args
     const indented = formattedArgs
@@ -173,15 +196,16 @@ export function logToolSuccess(
   durationMs: number,
   result: string,
 ): void {
+  const safeResult = redact(result);
   if (logger)
     logger.debug(
-      { event: "tool_success", ...ctxFields(ctx), tool: toolName, durationMs, result },
+      { event: "tool_success", ...ctxFields(ctx), tool: toolName, durationMs, result: safeResult },
       `${toolName} completed`,
     );
   const duration = (durationMs / 1000).toFixed(1);
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✓ ${toolName} (${duration}s)`));
 
-  const truncated = truncate(result, 1000);
+  const truncated = truncate(safeResult, 1000);
   if (truncated) {
     const indented = truncated
       .split("\n")
@@ -197,15 +221,16 @@ export function logToolError(
   durationMs: number,
   error: string,
 ): void {
+  const safeError = redact(error);
   if (logger)
     logger.warn(
-      { event: "tool_error", ...ctxFields(ctx), tool: toolName, durationMs, error },
+      { event: "tool_error", ...ctxFields(ctx), tool: toolName, durationMs, error: safeError },
       `${toolName} failed`,
     );
   const duration = (durationMs / 1000).toFixed(1);
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ ${toolName} (${duration}s)`));
 
-  const truncated = truncate(error, 1000);
+  const truncated = truncate(safeError, 1000);
   const indented = truncated
     .split("\n")
     .map((line) => `           ${line}`)
@@ -220,9 +245,11 @@ export function logResponseStart(ctx: LogContext): void {
 }
 
 export function logThinking(ctx: LogContext, thinking: string): void {
-  if (logger) logger.debug({ event: "thinking", ...ctxFields(ctx), text: thinking }, "Thinking");
+  const safeThinking = redact(thinking);
+  if (logger)
+    logger.debug({ event: "thinking", ...ctxFields(ctx), text: safeThinking }, "Thinking");
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💭 Thinking`));
-  const truncated = truncate(thinking, 1000);
+  const truncated = truncate(safeThinking, 1000);
   const indented = truncated
     .split("\n")
     .map((line) => `           ${line}`)
@@ -231,9 +258,10 @@ export function logThinking(ctx: LogContext, thinking: string): void {
 }
 
 export function logResponse(ctx: LogContext, text: string): void {
-  if (logger) logger.info({ event: "response", ...ctxFields(ctx), text }, "Response");
+  const safeText = redact(text);
+  if (logger) logger.info({ event: "response", ...ctxFields(ctx), text: safeText }, "Response");
   console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} 💬 Response`));
-  const truncated = truncate(text, 1000);
+  const truncated = truncate(safeText, 1000);
   const indented = truncated
     .split("\n")
     .map((line) => `           ${line}`)
@@ -301,13 +329,14 @@ export function logWarning(message: string, details?: string): void {
 }
 
 export function logAgentError(ctx: LogContext | "system", error: string): void {
+  const safeError = redact(error);
   if (logger) {
-    const extra = ctx === "system" ? { error } : { ...ctxFields(ctx), error };
+    const extra = ctx === "system" ? { error: safeError } : { ...ctxFields(ctx), error: safeError };
     logger.error({ event: "agent_error", ...extra }, "Agent error");
   }
   const context = ctx === "system" ? "[system]" : formatContext(ctx);
   console.log(chalk.yellow(`${timestamp()} ${context} ✗ Agent error`));
-  const indented = error
+  const indented = safeError
     .split("\n")
     .map((line) => `           ${line}`)
     .join("\n");

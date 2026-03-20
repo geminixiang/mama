@@ -2,6 +2,20 @@ import { spawn } from "child_process";
 
 export type SandboxConfig = { type: "host" } | { type: "docker"; container: string };
 
+// Names of env vars that hold secrets and must not be exposed to agent-executed commands
+const secretEnvVarNames = new Set<string>();
+
+export function registerSecretEnvVar(name: string): void {
+  secretEnvVarNames.add(name);
+}
+
+function buildSafeEnv(): NodeJS.ProcessEnv {
+  if (secretEnvVarNames.size === 0) return process.env;
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !secretEnvVarNames.has(key)),
+  ) as NodeJS.ProcessEnv;
+}
+
 export function parseSandboxArg(value: string): SandboxConfig {
   if (value === "host") {
     return { type: "host" };
@@ -115,6 +129,7 @@ class HostExecutor implements Executor {
       const child = spawn(shell, [...shellArgs, command], {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        env: buildSafeEnv(),
       });
 
       let stdout = "";
