@@ -41,6 +41,7 @@
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.42",
     "@google-cloud/logging": "^11.2.1",
+    "@google-cloud/secret-manager": "^5.6.0",
     "@mariozechner/pi-agent-core": "^0.58.3",
     "@mariozechner/pi-ai": "^0.58.3",
     "@mariozechner/pi-coding-agent": "^0.58.3",

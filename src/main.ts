@@ -12,6 +12,7 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { OAuthManager, startOAuthServer } from "./oauth/index.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
 
@@ -43,6 +44,13 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+
+// Google OAuth (optional — set all four to enable per-user auth)
+const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
+const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI;
+const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT;
+const GOOGLE_OAUTH_PORT = parseInt(process.env.GOOGLE_OAUTH_PORT ?? "8080", 10);
 
 interface ParsedArgs {
   workingDir?: string;
@@ -348,8 +356,55 @@ const handler: BotHandler = {
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
 
-// Create the appropriate platform bot
+// ============================================================================
+// Google OAuth (optional)
+// ============================================================================
+
+// Forward-declare bot so the OAuth callback (which runs after startup) can reference it
 let bot: Bot;
+let oauthManager: OAuthManager | undefined;
+let stopOAuthServer: (() => void) | undefined;
+
+if (
+  GOOGLE_OAUTH_CLIENT_ID &&
+  GOOGLE_OAUTH_CLIENT_SECRET &&
+  GOOGLE_OAUTH_REDIRECT_URI &&
+  GOOGLE_CLOUD_PROJECT
+) {
+  oauthManager = new OAuthManager({
+    clientId: GOOGLE_OAUTH_CLIENT_ID,
+    clientSecret: GOOGLE_OAUTH_CLIENT_SECRET,
+    redirectUri: GOOGLE_OAUTH_REDIRECT_URI,
+    projectId: GOOGLE_CLOUD_PROJECT,
+  });
+
+  stopOAuthServer = startOAuthServer(
+    GOOGLE_OAUTH_PORT,
+    async (code, state) => {
+      const result = await oauthManager!.handleCallback(code, state);
+      if (result && hasSlack) {
+        // DM the user to let them know authorization succeeded
+        const slackBot = bot as SlackBotClass;
+        slackBot
+          .postMessage(
+            result.channelId,
+            `_✓ Google authorization successful! Authorized as *${result.email}*._`,
+          )
+          .catch(() => {});
+      }
+      return { success: !!result, email: result?.email };
+    },
+    (slackUserId) => oauthManager!.getAccessToken(slackUserId),
+  );
+
+  log.logInfo(
+    `Google OAuth enabled (callback: ${GOOGLE_OAUTH_REDIRECT_URI}, port: ${GOOGLE_OAUTH_PORT})`,
+  );
+}
+
+// ============================================================================
+// Create the appropriate platform bot
+// ============================================================================
 
 if (hasSlack) {
   const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
@@ -358,6 +413,7 @@ if (hasSlack) {
     botToken: MOM_SLACK_BOT_TOKEN!,
     workingDir,
     store: sharedStore,
+    oauthManager,
   });
   log.logInfo("Platform: Slack");
 } else if (hasTelegram) {
@@ -396,6 +452,7 @@ process.on("SIGINT", async () => {
     log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
   }
 
+  stopOAuthServer?.();
   eventsWatcher.stop();
   process.exit(0);
 });
@@ -414,6 +471,7 @@ process.on("SIGTERM", async () => {
     log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
   }
 
+  stopOAuthServer?.();
   eventsWatcher.stop();
   process.exit(0);
 });

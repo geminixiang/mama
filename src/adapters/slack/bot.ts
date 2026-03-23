@@ -6,6 +6,7 @@ import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
+import type { OAuthManager } from "../../oauth/index.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { createSlackAdapters } from "./context.js";
 
@@ -175,14 +176,22 @@ export class SlackBot implements Bot {
   private channels = new Map<string, SlackChannel>();
   private queues = new Map<string, ChannelQueue>();
   private eventsWatcher: EventsWatcher | null = null;
+  private oauthManager: OAuthManager | null = null;
 
   constructor(
     handler: BotHandler,
-    config: { appToken: string; botToken: string; workingDir: string; store: ChannelStore },
+    config: {
+      appToken: string;
+      botToken: string;
+      workingDir: string;
+      store: ChannelStore;
+      oauthManager?: OAuthManager;
+    },
   ) {
     this.handler = handler;
     this.workingDir = config.workingDir;
     this.store = config.store;
+    this.oauthManager = config.oauthManager ?? null;
     this.socketClient = new SocketModeClient({ appToken: config.appToken });
     this.webClient = new WebClient(config.botToken);
   }
@@ -538,6 +547,41 @@ export class SlackBot implements Bot {
     return { type: "home", blocks };
   }
 
+  // ==========================================================================
+  // Private - OAuth command handling
+  // ==========================================================================
+
+  /**
+   * Handle `auth` / `revoke` commands for Google OAuth.
+   * Returns true if the command was handled so callers can skip normal processing.
+   */
+  private async handleOAuthCommand(
+    userId: string,
+    channelId: string,
+    text: string,
+  ): Promise<boolean> {
+    if (!this.oauthManager) return false;
+
+    const normalized = text.toLowerCase().trim();
+
+    if (normalized === "auth") {
+      const url = this.oauthManager.generateAuthUrl(userId, channelId);
+      await this.postMessage(
+        channelId,
+        `Click the link below to authorize your Google account:\n${url}\n\n_This link expires in 10 minutes._`,
+      );
+      return true;
+    }
+
+    if (normalized === "revoke") {
+      await this.oauthManager.revokeToken(userId);
+      await this.postMessage(channelId, "_Your Google authorization has been revoked._");
+      return true;
+    }
+
+    return false;
+  }
+
   private setupEventHandlers(): void {
     // Channel @mentions
     this.socketClient.on("app_mention", ({ event, ack }) => {
@@ -594,23 +638,29 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // SYNC: Check if busy (per-thread)
-      if (this.handler.isRunning(sessionKey)) {
-        this.postMessage(
-          e.channel,
-          "_Already working in this thread. Say `@mama stop` to cancel._",
-        );
-      } else {
-        this.getQueue(sessionKey).enqueue(() => {
-          const adapters = createSlackAdapters(slackEvent, this, false);
-          return this.handler.handleEvent(
-            slackEvent as unknown as import("../../adapter.js").BotEvent,
-            this,
-            adapters,
-            false,
-          );
+      // Handle OAuth commands (auth / revoke)
+      this.handleOAuthCommand(e.user, e.channel, slackEvent.text)
+        .then((handled) => {
+          if (!handled && !this.handler.isRunning(sessionKey)) {
+            this.getQueue(sessionKey).enqueue(() => {
+              const adapters = createSlackAdapters(slackEvent, this, false);
+              return this.handler.handleEvent(
+                slackEvent as unknown as import("../../adapter.js").BotEvent,
+                this,
+                adapters,
+                false,
+              );
+            });
+          } else if (!handled && this.handler.isRunning(sessionKey)) {
+            this.postMessage(
+              e.channel,
+              "_Already working in this thread. Say `@mama stop` to cancel._",
+            );
+          }
+        })
+        .catch((err) => {
+          log.logWarning("OAuth command error", err instanceof Error ? err.message : String(err));
         });
-      }
 
       ack();
     });
@@ -704,19 +754,28 @@ export class SlackBot implements Bot {
           return;
         }
 
-        if (this.handler.isRunning(dmSessionKey)) {
-          this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
-        } else {
-          this.getQueue(dmSessionKey).enqueue(() => {
-            const adapters = createSlackAdapters(slackEvent, this, false);
-            return this.handler.handleEvent(
-              slackEvent as unknown as import("../../adapter.js").BotEvent,
-              this,
-              adapters,
-              false,
-            );
+        // Handle OAuth commands (auth / revoke)
+        this.handleOAuthCommand(e.user!, e.channel, slackEvent.text)
+          .then((handled) => {
+            if (!handled) {
+              if (this.handler.isRunning(dmSessionKey)) {
+                this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
+              } else {
+                this.getQueue(dmSessionKey).enqueue(() => {
+                  const adapters = createSlackAdapters(slackEvent, this, false);
+                  return this.handler.handleEvent(
+                    slackEvent as unknown as import("../../adapter.js").BotEvent,
+                    this,
+                    adapters,
+                    false,
+                  );
+                });
+              }
+            }
+          })
+          .catch((err) => {
+            log.logWarning("OAuth command error", err instanceof Error ? err.message : String(err));
           });
-        }
       }
 
       ack();
