@@ -8,6 +8,7 @@ import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
 import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
+import { GitHubBot } from "./adapters/github/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
@@ -43,6 +44,9 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+const MOM_GITHUB_TOKEN = process.env.MOM_GITHUB_TOKEN;
+const MOM_GITHUB_WEBHOOK_SECRET = process.env.MOM_GITHUB_WEBHOOK_SECRET;
+const MOM_GITHUB_WEBHOOK_PORT = process.env.MOM_GITHUB_WEBHOOK_PORT;
 
 interface ParsedArgs {
   workingDir?: string;
@@ -114,13 +118,15 @@ const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: pa
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
 const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
 const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+const hasGitHub = !!MOM_GITHUB_TOKEN;
 
-if (!hasSlack && !hasTelegram && !hasDiscord) {
+if (!hasSlack && !hasTelegram && !hasDiscord && !hasGitHub) {
   console.error(
     "No platform tokens found. Set one of:\n" +
       "  Slack:    MOM_SLACK_APP_TOKEN + MOM_SLACK_BOT_TOKEN\n" +
       "  Telegram: MOM_TELEGRAM_BOT_TOKEN\n" +
-      "  Discord:  MOM_DISCORD_BOT_TOKEN",
+      "  Discord:  MOM_DISCORD_BOT_TOKEN\n" +
+      "  GitHub:   MOM_GITHUB_TOKEN",
   );
   process.exit(1);
 }
@@ -366,6 +372,14 @@ if (hasSlack) {
     workingDir,
   });
   log.logInfo("Platform: Telegram");
+} else if (hasGitHub) {
+  bot = new GitHubBot(handler, {
+    token: MOM_GITHUB_TOKEN,
+    workingDir,
+    webhookSecret: MOM_GITHUB_WEBHOOK_SECRET,
+    webhookPort: MOM_GITHUB_WEBHOOK_PORT ? parseInt(MOM_GITHUB_WEBHOOK_PORT, 10) : undefined,
+  });
+  log.logInfo("Platform: GitHub");
 } else {
   bot = new DiscordBot(handler, {
     token: MOM_DISCORD_BOT_TOKEN!,

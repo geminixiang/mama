@@ -5,6 +5,16 @@
 
 A multi-platform AI agent bot for Slack, Telegram, and Discord — based on [pi-mom](https://github.com/badlogic/pi-mono), with the goal of merging improvements back upstream.
 
+**Current Version**: v0.1.9
+
+## ✨ What's New (v0.1.9)
+
+- **Thread Context Awareness**: Agent messages now properly understand thread context, maintaining conversation continuity within threads
+- **Slack Home Tab Enhancement**: Added task status display and force stop functionality to the Home Tab
+- **GCP Cloud Logging**: Integrated Google Cloud Logging support for production observability
+- **Long Message Handling**: Automatic splitting of long messages to avoid Slack `msg_too_long` errors
+- **Improved File Handling**: Preserves file extensions when attachment titles are set
+
 ## 📜 Attribution & Origins
 
 This project is a **forked and extended version** of the `mom` package from [`badlogic/pi-mono`](https://github.com/badlogic/pi-mono) by Mario Zechner, licensed under MIT.
@@ -278,10 +288,11 @@ npm run build   # production build
 
 | Package                         | mama Version | pi-mom Synced Version         |
 | ------------------------------- | ------------ | ----------------------------- |
-| `@mariozechner/pi-agent-core`   | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-ai`           | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-coding-agent` | `^0.57.1`    | ✅ Synchronized               |
-| `@anthropic-ai/sandbox-runtime` | `^0.0.40`    | ⚠️ Newer (pi-mom uses 0.0.16) |
+| `@mariozechner/pi-agent-core`   | `^0.58.3`    | ✅ Synchronized               |
+| `@mariozechner/pi-ai`           | `^0.58.3`    | ✅ Synchronized               |
+| `@mariozechner/pi-coding-agent` | `^0.58.3`    | ✅ Synchronized               |
+| `@anthropic-ai/sandbox-runtime` | `^0.0.42`    | ⚠️ Newer (pi-mom uses 0.0.16) |
+| `@google-cloud/logging`         | `^11.2.1`    | 🆕 New dependency             |
 
 ## License
 
