@@ -15,6 +15,7 @@ import * as log from "./log.js";
 import { OAuthManager, startOAuthServer } from "./oauth/index.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { loadEnvConfig } from "./config.js";
 
 // ============================================================================
 // Config
@@ -40,17 +41,8 @@ function getVersion(): string {
   return "unknown";
 }
 
-const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
-const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
-const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
-const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
-
-// Google OAuth (optional — set all four to enable per-user auth)
-const GOOGLE_OAUTH_CLIENT_ID = process.env.GOOGLE_OAUTH_CLIENT_ID;
-const GOOGLE_OAUTH_CLIENT_SECRET = process.env.GOOGLE_OAUTH_CLIENT_SECRET;
-const GOOGLE_OAUTH_REDIRECT_URI = process.env.GOOGLE_OAUTH_REDIRECT_URI;
-const GOOGLE_CLOUD_PROJECT = process.env.GOOGLE_CLOUD_PROJECT;
-const GOOGLE_OAUTH_PORT = parseInt(process.env.GOOGLE_OAUTH_PORT ?? "8080", 10);
+// Load environment config
+const envConfig = loadEnvConfig();
 
 interface ParsedArgs {
   workingDir?: string;
@@ -101,11 +93,11 @@ if (parsedArgs.showVersion) {
 
 // Handle --download mode (Slack only)
 if (parsedArgs.downloadChannel) {
-  if (!MOM_SLACK_BOT_TOKEN) {
+  if (!envConfig.slackBotToken) {
     console.error("Missing env: MOM_SLACK_BOT_TOKEN");
     process.exit(1);
   }
-  await downloadChannel(parsedArgs.downloadChannel, MOM_SLACK_BOT_TOKEN);
+  await downloadChannel(parsedArgs.downloadChannel, envConfig.slackBotToken);
   process.exit(0);
 }
 
@@ -119,9 +111,9 @@ if (!parsedArgs.workingDir) {
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
 
 // Validate platform tokens
-const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
-const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
-const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+const hasSlack = !!(envConfig.slackAppToken && envConfig.slackBotToken);
+const hasTelegram = !!envConfig.telegramBotToken;
+const hasDiscord = !!envConfig.discordBotToken;
 
 if (!hasSlack && !hasTelegram && !hasDiscord) {
   console.error(
@@ -366,20 +358,20 @@ let oauthManager: OAuthManager | undefined;
 let stopOAuthServer: (() => void) | undefined;
 
 if (
-  GOOGLE_OAUTH_CLIENT_ID &&
-  GOOGLE_OAUTH_CLIENT_SECRET &&
-  GOOGLE_OAUTH_REDIRECT_URI &&
-  GOOGLE_CLOUD_PROJECT
+  envConfig.googleOAuthClientId &&
+  envConfig.googleOAuthClientSecret &&
+  envConfig.googleOAuthRedirectUri &&
+  envConfig.googleCloudProject
 ) {
   oauthManager = new OAuthManager({
-    clientId: GOOGLE_OAUTH_CLIENT_ID,
-    clientSecret: GOOGLE_OAUTH_CLIENT_SECRET,
-    redirectUri: GOOGLE_OAUTH_REDIRECT_URI,
-    projectId: GOOGLE_CLOUD_PROJECT,
+    clientId: envConfig.googleOAuthClientId,
+    clientSecret: envConfig.googleOAuthClientSecret,
+    redirectUri: envConfig.googleOAuthRedirectUri,
+    projectId: envConfig.googleCloudProject,
   });
 
   stopOAuthServer = startOAuthServer(
-    GOOGLE_OAUTH_PORT,
+    envConfig.googleOAuthPort ?? 8080,
     async (code, state) => {
       const result = await oauthManager!.handleCallback(code, state);
       if (result && hasSlack) {
@@ -398,7 +390,7 @@ if (
   );
 
   log.logInfo(
-    `Google OAuth enabled (callback: ${GOOGLE_OAUTH_REDIRECT_URI}, port: ${GOOGLE_OAUTH_PORT})`,
+    `Google OAuth enabled (callback: ${envConfig.googleOAuthRedirectUri}, port: ${envConfig.googleOAuthPort ?? 8080})`,
   );
 }
 
@@ -407,10 +399,10 @@ if (
 // ============================================================================
 
 if (hasSlack) {
-  const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+  const sharedStore = new ChannelStore({ workingDir, botToken: envConfig.slackBotToken! });
   bot = new SlackBotClass(handler, {
-    appToken: MOM_SLACK_APP_TOKEN!,
-    botToken: MOM_SLACK_BOT_TOKEN!,
+    appToken: envConfig.slackAppToken!,
+    botToken: envConfig.slackBotToken!,
     workingDir,
     store: sharedStore,
     oauthManager,
@@ -418,13 +410,13 @@ if (hasSlack) {
   log.logInfo("Platform: Slack");
 } else if (hasTelegram) {
   bot = new TelegramBot(handler, {
-    token: MOM_TELEGRAM_BOT_TOKEN!,
+    token: envConfig.telegramBotToken!,
     workingDir,
   });
   log.logInfo("Platform: Telegram");
 } else {
   bot = new DiscordBot(handler, {
-    token: MOM_DISCORD_BOT_TOKEN!,
+    token: envConfig.discordBotToken!,
     workingDir,
   });
   log.logInfo("Platform: Discord");
