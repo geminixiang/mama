@@ -17,7 +17,7 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
-import { loadAgentConfig } from "./config.js";
+import { loadAgentConfig, loadEnvConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
@@ -132,6 +132,7 @@ function buildSystemPrompt(
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
+  requestContext?: string,
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
   const isDocker = sandboxConfig.type === "docker";
@@ -173,6 +174,8 @@ Channels: ${channelMappings}
 Users: ${userMappings}
 
 When mentioning users, use <@username> format (e.g., <@mario>).
+
+${requestContext ? `${requestContext}\n` : ""}
 
 ## Environment
 ${envDescription}
@@ -317,6 +320,83 @@ Each tool requires a "label" parameter (shown to user).
 `;
 }
 
+export function buildRunEnvironment(
+  platform: PlatformInfo,
+  message: ChatMessage,
+  sandboxConfig: SandboxConfig,
+  googleOAuthPort?: number,
+): Record<string, string> {
+  const channelId = message.sessionKey.split(":")[0];
+  const env: Record<string, string> = {
+    MAMA_PLATFORM: platform.name,
+    MAMA_USER_ID: message.userId,
+    MAMA_CHANNEL_ID: channelId,
+  };
+
+  if (message.threadTs) {
+    env.MAMA_THREAD_TS = message.threadTs;
+  }
+
+  if (platform.name === "slack") {
+    env.MAMA_SLACK_USER_ID = message.userId;
+
+    if (googleOAuthPort) {
+      const tokenHost = sandboxConfig.type === "docker" ? "host.docker.internal" : "127.0.0.1";
+      const tokenBaseUrl = `http://${tokenHost}:${googleOAuthPort}/api/token`;
+      env.MAMA_GOOGLE_TOKEN_BASE_URL = tokenBaseUrl;
+      env.MAMA_GOOGLE_ACCESS_TOKEN_URL = `${tokenBaseUrl}/${message.userId}`;
+    }
+  }
+
+  return env;
+}
+
+export function buildCurrentRequestContext(
+  platform: PlatformInfo,
+  message: ChatMessage,
+  executionEnv: Record<string, string>,
+): string {
+  const lines = [
+    "## Current Request",
+    `- Platform: ${platform.name}`,
+    `- User ID: ${message.userId}`,
+    `- Channel ID: ${message.sessionKey.split(":")[0]}`,
+  ];
+
+  if (message.userName) {
+    lines.push(`- User name: ${message.userName}`);
+  }
+
+  if (message.threadTs) {
+    lines.push(`- Thread root: ${message.threadTs}`);
+  }
+
+  if (platform.name === "slack") {
+    lines.push(
+      "- Use only the requesting Slack user's permissions. Never substitute another Slack user ID to fetch or use credentials.",
+    );
+    lines.push("- Bash and skills receive these env vars for the current caller:");
+    lines.push(`  - MAMA_SLACK_USER_ID=${executionEnv.MAMA_SLACK_USER_ID ?? message.userId}`);
+
+    if (executionEnv.MAMA_GOOGLE_TOKEN_BASE_URL) {
+      lines.push(
+        `  - MAMA_GOOGLE_TOKEN_BASE_URL=${executionEnv.MAMA_GOOGLE_TOKEN_BASE_URL}`,
+      );
+    }
+
+    if (executionEnv.MAMA_GOOGLE_ACCESS_TOKEN_URL) {
+      lines.push(
+        `  - MAMA_GOOGLE_ACCESS_TOKEN_URL=${executionEnv.MAMA_GOOGLE_ACCESS_TOKEN_URL}`,
+      );
+      lines.push(
+        "- Prefer MAMA_GOOGLE_ACCESS_TOKEN_URL over hardcoding localhost URLs, especially in Docker sandbox mode.",
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function truncate(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text;
   return `${text.substring(0, maxLen - 3)}...`;
@@ -396,6 +476,7 @@ export async function createRunner(
   workspaceDir: string,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
+  const envConfig = loadEnvConfig();
 
   // Initialize logger with settings from config
   log.initLogger({
@@ -405,9 +486,10 @@ export async function createRunner(
 
   const executor = createExecutor(sandboxConfig);
   const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+  let executionEnv: Record<string, string> = {};
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
+  const { tools, setUploadFunction } = createMamaTools(executor, () => executionEnv);
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -431,6 +513,7 @@ export async function createRunner(
     sandboxConfig,
     emptyPlatform,
     skills,
+    undefined,
   );
 
   // Create session manager and settings manager
@@ -727,6 +810,13 @@ export async function createRunner(
       // Update system prompt with fresh memory, channel/user info, and skills
       const memory = await getMemory(channelDir);
       const skills = loadMamaSkills(channelDir, workspacePath);
+      executionEnv = buildRunEnvironment(
+        platform,
+        message,
+        sandboxConfig,
+        envConfig.googleOAuthPort,
+      );
+      const requestContext = buildCurrentRequestContext(platform, message, executionEnv);
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
@@ -734,6 +824,7 @@ export async function createRunner(
         sandboxConfig,
         platform,
         skills,
+        requestContext,
       );
       session.agent.setSystemPrompt(systemPrompt);
 
@@ -946,6 +1037,7 @@ export async function createRunner(
       runState.responseCtx = null;
       runState.logCtx = null;
       runState.queue = null;
+      executionEnv = {};
 
       return { stopReason: runState.stopReason, errorMessage: runState.errorMessage };
     },

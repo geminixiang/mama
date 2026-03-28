@@ -98,6 +98,7 @@ export interface Executor {
 export interface ExecOptions {
   timeout?: number;
   signal?: AbortSignal;
+  env?: Record<string, string>;
 }
 
 export interface ExecResult {
@@ -111,8 +112,9 @@ class HostExecutor implements Executor {
     return new Promise((resolve, reject) => {
       const shell = process.platform === "win32" ? "cmd" : "sh";
       const shellArgs = process.platform === "win32" ? ["/c"] : ["-c"];
+      const commandWithEnv = applyCommandEnv(command, options?.env);
 
-      const child = spawn(shell, [...shellArgs, command], {
+      const child = spawn(shell, [...shellArgs, commandWithEnv], {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -190,7 +192,8 @@ class DockerExecutor implements Executor {
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     // Wrap command for docker exec
-    const dockerCmd = `docker exec ${this.container} sh -c ${shellEscape(command)}`;
+    const commandWithEnv = applyCommandEnv(command, options?.env);
+    const dockerCmd = `docker exec ${this.container} sh -c ${shellEscape(commandWithEnv)}`;
     const hostExecutor = new HostExecutor();
     return hostExecutor.exec(dockerCmd, options);
   }
@@ -227,4 +230,17 @@ function killProcessTree(pid: number): void {
 function shellEscape(s: string): string {
   // Escape for passing to sh -c
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+function applyCommandEnv(command: string, env?: Record<string, string>): string {
+  if (!env || Object.keys(env).length === 0) {
+    return command;
+  }
+
+  const assignments = Object.entries(env)
+    .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+    .map(([key, value]) => `${key}=${shellEscape(value)}`)
+    .join(" ");
+
+  return assignments ? `${assignments} ${command}` : command;
 }

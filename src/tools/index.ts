@@ -6,7 +6,10 @@ import { createEditTool } from "./edit.js";
 import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
 
-export function createMamaTools(executor: Executor): {
+export function createMamaTools(
+  executor: Executor,
+  getExecutionEnv?: () => Record<string, string>,
+): {
   tools: AgentTool<any>[];
   setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
 } {
@@ -14,7 +17,7 @@ export function createMamaTools(executor: Executor): {
   return {
     tools: [
       createReadTool(executor),
-      createBashTool(executor),
+      createBashTool(executor, getExecutionEnv),
       createEditTool(executor),
       createWriteTool(executor),
       attachTool,

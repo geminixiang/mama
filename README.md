@@ -328,8 +328,9 @@ GET http://localhost:PORT/api/token/{slack_user_id}
 Inside a skill or the agent's bash tool:
 
 ```bash
-SLACK_USER_ID="U0123456789"
-TOKEN=$(curl -sf http://localhost:8080/api/token/$SLACK_USER_ID)
+SLACK_USER_ID="${MAMA_SLACK_USER_ID:?missing slack user id}"
+TOKEN_URL="${MAMA_GOOGLE_ACCESS_TOKEN_URL:-http://127.0.0.1:8080/api/token/$SLACK_USER_ID}"
+TOKEN=$(curl -sf "$TOKEN_URL")
 if [ -z "$TOKEN" ] || [ "$TOKEN" = "no_token" ]; then
   echo "User has not authorised. Ask them to send 'auth' in Slack first."
   exit 1
@@ -338,6 +339,17 @@ fi
 CLOUDSDK_AUTH_ACCESS_TOKEN=$TOKEN gdcloud compute instances list \
   --project=sandbox-project
 ```
+
+For Slack-triggered runs, mama now injects the caller context into bash/skills:
+
+- `MAMA_PLATFORM`
+- `MAMA_USER_ID`
+- `MAMA_CHANNEL_ID`
+- `MAMA_THREAD_TS` (when in thread)
+- `MAMA_SLACK_USER_ID` (Slack only)
+- `MAMA_GOOGLE_TOKEN_BASE_URL` / `MAMA_GOOGLE_ACCESS_TOKEN_URL` when Google OAuth is enabled
+
+In Docker sandbox mode, `MAMA_GOOGLE_ACCESS_TOKEN_URL` automatically uses `host.docker.internal` instead of `localhost`, so the container can still fetch the caller's token from the mama process running on the host.
 
 ### Secret storage layout in Secret Manager
 
