@@ -45,6 +45,7 @@ We actively track the upstream `pi-mom` and plan to:
 ## Features
 
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
+- **Per-user Google OAuth** — each Slack user authorises their own Google account once; the agent uses their identity for GCP / GDC operations
 - **Thread sessions** — each thread / reply chain gets its own isolated conversation context
 - **Concurrent threads** — multiple threads in the same channel run independently
 - **Sandbox execution** — run agent commands on host or inside a Docker container
@@ -196,6 +197,176 @@ GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
 ```
 
 Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout) is unaffected and continues to work alongside Cloud Logging.
+
+---
+
+## Google OAuth — per-user GCP authentication
+
+This feature lets each Slack user authorise their own Google account **once**. After that, the agent can run `gdcloud` / GCP API calls **as that user** rather than as the bot's service account.
+
+### Architecture
+
+```
+[ First-time setup — once per user ]
+
+User sends "auth" in Slack
+  → Bot generates a Google consent URL and replies
+  → User clicks the link, completes the consent screen
+  → Google redirects to /oauth/callback on the mama server
+  → Server exchanges the code for a refresh_token
+  → refresh_token is stored in GCP Secret Manager
+     key: gdc-sandbox-token-{slack_user_id}
+
+[ Every subsequent command ]
+
+User sends a command in Slack
+  → Agent fetches the user's access_token via
+    GET http://localhost:PORT/api/token/{slack_user_id}
+    (auto-refreshes from Secret Manager when expired)
+  → Agent runs: CLOUDSDK_AUTH_ACCESS_TOKEN=<token> gdcloud ...
+```
+
+### Prerequisites
+
+| Requirement | Details |
+|---|---|
+| GCP project | Set `GOOGLE_CLOUD_PROJECT` |
+| Secret Manager API | Enable `secretmanager.googleapis.com` in your project |
+| Service account | Needs `roles/secretmanager.admin` (or a custom role with `secretmanager.secrets.*` permissions) |
+| OAuth 2.0 client | Create in [Google Cloud Console](https://console.cloud.google.com/apis/credentials) — **Web application** type |
+| Public HTTPS URL | The redirect URI must be reachable from users' browsers (use Cloud Run, a load balancer, or ngrok for testing) |
+
+### Step-by-step setup
+
+#### 1 — Enable APIs
+
+```bash
+gcloud services enable secretmanager.googleapis.com --project=YOUR_PROJECT
+gcloud services enable oauth2.googleapis.com --project=YOUR_PROJECT
+```
+
+#### 2 — Create an OAuth 2.0 client
+
+1. Open **APIs & Services → Credentials** in Google Cloud Console.
+2. Click **Create Credentials → OAuth client ID**.
+3. Choose **Web application**.
+4. Add your redirect URI, e.g. `https://mama.example.com/oauth/callback`.
+5. Download or copy the **Client ID** and **Client Secret**.
+
+#### 3 — Grant Secret Manager permissions to the mama service account
+
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:mama-sa@YOUR_PROJECT.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.admin"
+```
+
+#### 4 — Set environment variables
+
+```bash
+export GOOGLE_CLOUD_PROJECT=YOUR_PROJECT
+export GOOGLE_OAUTH_CLIENT_ID=YOUR_CLIENT_ID.apps.googleusercontent.com
+export GOOGLE_OAUTH_CLIENT_SECRET=YOUR_CLIENT_SECRET
+export GOOGLE_OAUTH_REDIRECT_URI=https://mama.example.com/oauth/callback
+export GOOGLE_OAUTH_PORT=8080          # optional, default: 8080
+```
+
+#### 5 — Expose the callback port
+
+The mama process listens on `GOOGLE_OAUTH_PORT` (default **8080**). Make sure this port is reachable from the public internet (or your internal network) at the domain you registered as the redirect URI.
+
+**Cloud Run example** — add the port to the container and use the service URL as the redirect URI:
+
+```yaml
+# service.yaml (excerpt)
+spec:
+  template:
+    spec:
+      containers:
+        - image: gcr.io/YOUR_PROJECT/mama
+          ports:
+            - containerPort: 8080   # Slack Socket Mode (no inbound port needed)
+            - containerPort: 8080   # OAuth callback
+          env:
+            - name: GOOGLE_OAUTH_PORT
+              value: "8080"
+```
+
+**Local testing** — use ngrok:
+
+```bash
+ngrok http 8080
+# Use the ngrok HTTPS URL as GOOGLE_OAUTH_REDIRECT_URI
+```
+
+### User workflow
+
+Once deployed, users interact with the bot via Slack:
+
+```
+# Authorise (one-time):
+@mama auth
+  → Bot replies with a Google consent URL (valid for 10 minutes)
+  → Click the link → authorise → see "✓ Authorised as you@company.com"
+
+# Remove authorisation:
+@mama revoke
+```
+
+### Using the token in agent commands
+
+The OAuth server exposes a **localhost-only** token endpoint:
+
+```
+GET http://localhost:PORT/api/token/{slack_user_id}
+```
+
+- Returns the current access token as plain text (auto-refreshed when < 5 min remaining).
+- Returns `404 no_token` if the user has never authorised.
+- Only accepts connections from `127.0.0.1` / `::1` — safe to call from bash.
+
+Inside a skill or the agent's bash tool:
+
+```bash
+SLACK_USER_ID="${MAMA_SLACK_USER_ID:?missing slack user id}"
+TOKEN_URL="${MAMA_GOOGLE_ACCESS_TOKEN_URL:-http://127.0.0.1:8080/api/token/$SLACK_USER_ID}"
+TOKEN=$(curl -sf "$TOKEN_URL")
+if [ -z "$TOKEN" ] || [ "$TOKEN" = "no_token" ]; then
+  echo "User has not authorised. Ask them to send 'auth' in Slack first."
+  exit 1
+fi
+
+CLOUDSDK_AUTH_ACCESS_TOKEN=$TOKEN gdcloud compute instances list \
+  --project=sandbox-project
+```
+
+For Slack-triggered runs, mama now injects the caller context into bash/skills:
+
+- `MAMA_PLATFORM`
+- `MAMA_USER_ID`
+- `MAMA_CHANNEL_ID`
+- `MAMA_THREAD_TS` (when in thread)
+- `MAMA_SLACK_USER_ID` (Slack only)
+- `MAMA_GOOGLE_TOKEN_BASE_URL` / `MAMA_GOOGLE_ACCESS_TOKEN_URL` when Google OAuth is enabled
+
+In Docker sandbox mode, `MAMA_GOOGLE_ACCESS_TOKEN_URL` automatically uses `host.docker.internal` instead of `localhost`, so the container can still fetch the caller's token from the mama process running on the host.
+
+### Secret storage layout in Secret Manager
+
+| Secret name | Content |
+|---|---|
+| `gdc-sandbox-token-{slack_user_id}` | JSON: `{ refresh_token, access_token, expires_at, email }` |
+
+Each new authorisation adds a new **version** to the existing secret (previous versions are retained by GCP for audit purposes).
+
+### Security notes
+
+- The token endpoint (`/api/token/…`) rejects all non-localhost connections.
+- Refresh tokens are never logged or included in Slack messages.
+- Users can revoke access at any time with `@mama revoke` (deletes the secret).
+- You can also revoke from Google at <https://myaccount.google.com/permissions>.
+
+---
 
 ## Working Directory Layout
 

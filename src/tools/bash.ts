@@ -36,7 +36,10 @@ interface BashToolDetails {
   fullOutputPath?: string;
 }
 
-export function createBashTool(executor: Executor): AgentTool<typeof bashSchema> {
+export function createBashTool(
+  executor: Executor,
+  getExecutionEnv?: () => Record<string, string>,
+): AgentTool<typeof bashSchema> {
   return {
     name: "bash",
     label: "bash",
@@ -51,7 +54,11 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
       let tempFilePath: string | undefined;
       let tempFileStream: ReturnType<typeof createWriteStream> | undefined;
 
-      const result = await executor.exec(command, { timeout, signal });
+      const result = await executor.exec(command, {
+        timeout,
+        signal,
+        env: getExecutionEnv?.() ?? {},
+      });
       let output = "";
       if (result.stdout) output += result.stdout;
       if (result.stderr) {

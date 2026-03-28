@@ -1,6 +1,46 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
+// ============================================================================
+// Environment Config
+// ============================================================================
+
+export interface EnvConfig {
+  // Bot tokens
+  slackAppToken?: string;
+  slackBotToken?: string;
+  telegramBotToken?: string;
+  discordBotToken?: string;
+  // Google OAuth
+  googleOAuthClientId?: string;
+  googleOAuthClientSecret?: string;
+  googleOAuthRedirectUri?: string;
+  googleCloudProject?: string;
+  googleOAuthPort?: number;
+}
+
+export function loadEnvConfig(): EnvConfig {
+  return {
+    // Bot tokens
+    slackAppToken: process.env.MOM_SLACK_APP_TOKEN,
+    slackBotToken: process.env.MOM_SLACK_BOT_TOKEN,
+    telegramBotToken: process.env.MOM_TELEGRAM_BOT_TOKEN,
+    discordBotToken: process.env.MOM_DISCORD_BOT_TOKEN,
+    // Google OAuth
+    googleOAuthClientId: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    googleOAuthClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    googleOAuthRedirectUri: process.env.GOOGLE_OAUTH_REDIRECT_URI,
+    googleCloudProject: process.env.GOOGLE_CLOUD_PROJECT,
+    googleOAuthPort: process.env.GOOGLE_OAUTH_PORT
+      ? parseInt(process.env.GOOGLE_OAUTH_PORT, 10)
+      : undefined,
+  };
+}
+
+// ============================================================================
+// Agent Config
+// ============================================================================
+
 export interface AgentConfig {
   provider: string;
   model: string;

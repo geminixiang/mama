@@ -12,8 +12,10 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { OAuthManager, startOAuthServer } from "./oauth/index.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
+import { loadEnvConfig } from "./config.js";
 
 // ============================================================================
 // Config
@@ -39,10 +41,8 @@ function getVersion(): string {
   return "unknown";
 }
 
-const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
-const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
-const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
-const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+// Load environment config
+const envConfig = loadEnvConfig();
 
 interface ParsedArgs {
   workingDir?: string;
@@ -93,11 +93,11 @@ if (parsedArgs.showVersion) {
 
 // Handle --download mode (Slack only)
 if (parsedArgs.downloadChannel) {
-  if (!MOM_SLACK_BOT_TOKEN) {
+  if (!envConfig.slackBotToken) {
     console.error("Missing env: MOM_SLACK_BOT_TOKEN");
     process.exit(1);
   }
-  await downloadChannel(parsedArgs.downloadChannel, MOM_SLACK_BOT_TOKEN);
+  await downloadChannel(parsedArgs.downloadChannel, envConfig.slackBotToken);
   process.exit(0);
 }
 
@@ -111,9 +111,9 @@ if (!parsedArgs.workingDir) {
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
 
 // Validate platform tokens
-const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
-const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
-const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+const hasSlack = !!(envConfig.slackAppToken && envConfig.slackBotToken);
+const hasTelegram = !!envConfig.telegramBotToken;
+const hasDiscord = !!envConfig.discordBotToken;
 
 if (!hasSlack && !hasTelegram && !hasDiscord) {
   console.error(
@@ -348,27 +348,75 @@ const handler: BotHandler = {
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
 
-// Create the appropriate platform bot
+// ============================================================================
+// Google OAuth (optional)
+// ============================================================================
+
+// Forward-declare bot so the OAuth callback (which runs after startup) can reference it
 let bot: Bot;
+let oauthManager: OAuthManager | undefined;
+let stopOAuthServer: (() => void) | undefined;
+
+if (
+  envConfig.googleOAuthClientId &&
+  envConfig.googleOAuthClientSecret &&
+  envConfig.googleOAuthRedirectUri &&
+  envConfig.googleCloudProject
+) {
+  oauthManager = new OAuthManager({
+    clientId: envConfig.googleOAuthClientId,
+    clientSecret: envConfig.googleOAuthClientSecret,
+    redirectUri: envConfig.googleOAuthRedirectUri,
+    projectId: envConfig.googleCloudProject,
+  });
+
+  stopOAuthServer = startOAuthServer(
+    envConfig.googleOAuthPort ?? 8080,
+    async (code, state) => {
+      const result = await oauthManager!.handleCallback(code, state);
+      if (result && hasSlack) {
+        // DM the user to let them know authorization succeeded
+        const slackBot = bot as SlackBotClass;
+        slackBot
+          .postMessage(
+            result.channelId,
+            `_✓ Google authorization successful! Authorized as *${result.email}*._`,
+          )
+          .catch(() => {});
+      }
+      return { success: !!result, email: result?.email };
+    },
+    (slackUserId) => oauthManager!.getAccessToken(slackUserId),
+  );
+
+  log.logInfo(
+    `Google OAuth enabled (callback: ${envConfig.googleOAuthRedirectUri}, port: ${envConfig.googleOAuthPort ?? 8080})`,
+  );
+}
+
+// ============================================================================
+// Create the appropriate platform bot
+// ============================================================================
 
 if (hasSlack) {
-  const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+  const sharedStore = new ChannelStore({ workingDir, botToken: envConfig.slackBotToken! });
   bot = new SlackBotClass(handler, {
-    appToken: MOM_SLACK_APP_TOKEN!,
-    botToken: MOM_SLACK_BOT_TOKEN!,
+    appToken: envConfig.slackAppToken!,
+    botToken: envConfig.slackBotToken!,
     workingDir,
     store: sharedStore,
+    oauthManager,
   });
   log.logInfo("Platform: Slack");
 } else if (hasTelegram) {
   bot = new TelegramBot(handler, {
-    token: MOM_TELEGRAM_BOT_TOKEN!,
+    token: envConfig.telegramBotToken!,
     workingDir,
   });
   log.logInfo("Platform: Telegram");
 } else {
   bot = new DiscordBot(handler, {
-    token: MOM_DISCORD_BOT_TOKEN!,
+    token: envConfig.discordBotToken!,
     workingDir,
   });
   log.logInfo("Platform: Discord");
@@ -396,6 +444,7 @@ process.on("SIGINT", async () => {
     log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
   }
 
+  stopOAuthServer?.();
   eventsWatcher.stop();
   process.exit(0);
 });
@@ -414,6 +463,7 @@ process.on("SIGTERM", async () => {
     log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
   }
 
+  stopOAuthServer?.();
   eventsWatcher.stop();
   process.exit(0);
 });
