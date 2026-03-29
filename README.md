@@ -137,11 +137,12 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 
 ## Options
 
-| Option                    | Default | Description                                              |
-| ------------------------- | ------- | -------------------------------------------------------- |
-| `--sandbox=host`          | ✓       | Run commands directly on host                            |
-| `--sandbox=docker:<name>` |         | Run commands inside a Docker container                   |
-| `--download <channel-id>` |         | Download channel history to stdout and exit (Slack only) |
+| Option                                 | Default | Description                                              |
+| -------------------------------------- | ------- | -------------------------------------------------------- |
+| `--sandbox=host`                       | ✓       | Run commands directly on host                            |
+| `--sandbox=docker:<name>`              |         | Run commands inside a Docker container                   |
+| `--sandbox=firecracker:<vm-id>:<path>` |         | Run commands inside a Firecracker microVM                |
+| `--download <channel-id>`              |         | Download channel history to stdout and exit (Slack only) |
 
 ### Download channel history (Slack)
 
@@ -228,6 +229,73 @@ docker run -d --name mama-sandbox \
 # Start mama with Docker sandbox
 mama --sandbox=docker:mama-sandbox /path/to/workspace
 ```
+
+## Firecracker Sandbox
+
+Firecracker provides lightweight VM isolation with the security benefits of a hypervisor. Unlike Docker containers, Firecracker runs a full Linux kernel, providing stronger isolation.
+
+### Requirements
+
+- SSH access to the Firecracker VM
+- SSH key-based authentication configured
+- Host workspace must be mounted at `/workspace` inside the VM
+
+### Format
+
+```
+--sandbox=firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]
+```
+
+| Parameter   | Default | Description                    |
+| ----------- | ------- | ------------------------------ |
+| `vm-id`     | -       | VM identifier (hostname or IP) |
+| `host-path` | -       | Working directory on the host  |
+| `ssh-user`  | `root`  | SSH username                   |
+| `ssh-port`  | `22`    | SSH port                       |
+
+### Examples
+
+```bash
+# Basic usage (VM at 192.168.1.100, default ssh user root:22)
+mama --sandbox=firecracker:192.168.1.100:/home/user/workspace /home/user/workspace
+
+# Custom SSH user
+mama --sandbox=firecracker:192.168.1.100:/home/user/workspace:ubuntu /home/user/workspace
+
+# Custom SSH port
+mama --sandbox=firecracker:192.168.1.100:/home/user/workspace:root:2222 /home/user/workspace
+```
+
+### Setup
+
+1. **Start a Firecracker VM** with your preferred method (fc-agent, firecracker-ctl, or manual)
+
+2. **Configure SSH access** inside the VM:
+
+   ```bash
+   # Inside the VM - allow password-less SSH for mama
+   sudo systemctl enable ssh
+   sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+   sudo sed -i 's/^#*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+   sudo systemctl restart ssh
+   ```
+
+3. **Mount your workspace** at `/workspace` inside the VM:
+
+   ```bash
+   # Option A: 9pfs (recommended, from host)
+   sudo mount -t 9p -o trans=virtio,version=9p2000.L host0 /workspace
+
+   # Option B: NFS
+   sudo mount -t nfs <host-ip>:/path/to/workspace /workspace
+   ```
+
+4. **Test SSH connectivity** from host:
+   ```bash
+   ssh root@192.168.1.100 "echo works"
+   ```
+
+The host path is mounted as `/workspace` inside the Firecracker VM. All bash commands will execute inside the VM.
 
 ## Events
 

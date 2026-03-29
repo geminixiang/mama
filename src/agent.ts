@@ -135,6 +135,7 @@ function buildSystemPrompt(
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
   const isDocker = sandboxConfig.type === "docker";
+  const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
   const channelMappings =
@@ -153,7 +154,12 @@ function buildSystemPrompt(
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apk add <package>
 - Your changes persist across sessions`
-    : `You are running directly on the host machine.
+    : isFirecracker
+      ? `You are running inside a Firecracker microVM.
+- Bash working directory: / (use cd or absolute paths)
+- Install tools with: apt-get install <package> (Debian-based)
+- Your changes persist across sessions`
+      : `You are running directly on the host machine.
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
@@ -294,6 +300,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
 ${isDocker ? "Install jq: apk add jq" : ""}
+${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
 # Recent messages
