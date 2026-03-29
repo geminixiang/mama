@@ -12,7 +12,7 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { parseSandboxArg, registerSecretEnvVar, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { ChannelStore } from "./store.js";
 
 // ============================================================================
@@ -43,6 +43,20 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+
+// Register platform tokens so they are redacted from logs and stripped from
+// the environment exposed to agent-executed bash commands.
+for (const [name, value] of [
+  ["MOM_SLACK_APP_TOKEN", MOM_SLACK_APP_TOKEN],
+  ["MOM_SLACK_BOT_TOKEN", MOM_SLACK_BOT_TOKEN],
+  ["MOM_TELEGRAM_BOT_TOKEN", MOM_TELEGRAM_BOT_TOKEN],
+  ["MOM_DISCORD_BOT_TOKEN", MOM_DISCORD_BOT_TOKEN],
+] as [string, string | undefined][]) {
+  if (value) {
+    log.registerSecret(value);
+    registerSecretEnvVar(name);
+  }
+}
 
 interface ParsedArgs {
   workingDir?: string;
