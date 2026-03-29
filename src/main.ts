@@ -103,7 +103,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-  console.error("Usage: mama [--sandbox=host|docker:<name>] <working-directory>");
+  console.error(
+    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+  );
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
@@ -346,43 +348,58 @@ const handler: BotHandler = {
 // Start
 // ============================================================================
 
-log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
+const sandboxDesc =
+  sandbox.type === "host"
+    ? "host"
+    : sandbox.type === "docker"
+      ? `docker:${sandbox.container}`
+      : `firecracker:${sandbox.vmId}`;
+log.logStartup(workingDir, sandboxDesc);
 
-// Create the appropriate platform bot
-let bot: Bot;
+// Create platform bots
+const bots: Bot[] = [];
 
 if (hasSlack) {
   const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
-  bot = new SlackBotClass(handler, {
-    appToken: MOM_SLACK_APP_TOKEN!,
-    botToken: MOM_SLACK_BOT_TOKEN!,
-    workingDir,
-    store: sharedStore,
-  });
+  bots.push(
+    new SlackBotClass(handler, {
+      appToken: MOM_SLACK_APP_TOKEN!,
+      botToken: MOM_SLACK_BOT_TOKEN!,
+      workingDir,
+      store: sharedStore,
+    }),
+  );
   log.logInfo("Platform: Slack");
-} else if (hasTelegram) {
-  bot = new TelegramBot(handler, {
-    token: MOM_TELEGRAM_BOT_TOKEN!,
-    workingDir,
-  });
+}
+if (hasTelegram) {
+  bots.push(
+    new TelegramBot(handler, {
+      token: MOM_TELEGRAM_BOT_TOKEN!,
+      workingDir,
+    }),
+  );
   log.logInfo("Platform: Telegram");
-} else {
-  bot = new DiscordBot(handler, {
-    token: MOM_DISCORD_BOT_TOKEN!,
-    workingDir,
-  });
+}
+if (hasDiscord) {
+  bots.push(
+    new DiscordBot(handler, {
+      token: MOM_DISCORD_BOT_TOKEN!,
+      workingDir,
+    }),
+  );
   log.logInfo("Platform: Discord");
 }
 
-// Start events watcher
-const eventsWatcher = createEventsWatcher(workingDir, bot);
-if (hasSlack) {
-  (bot as SlackBotClass).setEventsWatcher(eventsWatcher);
+// Start events watcher (use first bot for event delivery)
+const eventsWatcher = createEventsWatcher(workingDir, bots[0]);
+const slackBot = bots.find((b) => b instanceof SlackBotClass) as SlackBotClass | undefined;
+if (slackBot) {
+  slackBot.setEventsWatcher(eventsWatcher);
 }
 eventsWatcher.start();
 
 // Handle shutdown
-process.on("SIGINT", async () => {
+async function shutdown(): Promise<void> {
   if (isShuttingDown) return;
   isShuttingDown = true;
   log.logInfo("Shutting down gracefully...");
@@ -398,27 +415,17 @@ process.on("SIGINT", async () => {
 
   eventsWatcher.stop();
   process.exit(0);
-});
+}
 
-process.on("SIGTERM", async () => {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  log.logInfo("Shutting down gracefully...");
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
 
-  const timeout = Date.now() + 30000;
-  while (inFlightRuns.size > 0 && Date.now() < timeout) {
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
-
-  if (inFlightRuns.size > 0) {
-    log.logWarning(`Forcing exit with ${inFlightRuns.size} runs still in progress`);
-  }
-
-  eventsWatcher.stop();
-  process.exit(0);
-});
-
-bot.start().catch((err) => {
-  log.logWarning("Failed to start bot", err instanceof Error ? err.message : String(err));
-  process.exit(1);
-});
+// Start all bots
+await Promise.all(
+  bots.map((bot) =>
+    bot.start().catch((err) => {
+      log.logWarning("Failed to start bot", err instanceof Error ? err.message : String(err));
+      process.exit(1);
+    }),
+  ),
+);
