@@ -465,7 +465,7 @@ export async function createRunner(
     },
     convertToLlm,
     getApiKey: async () => {
-      const key = await modelRegistry.getApiKey(model);
+      const key = await modelRegistry.getApiKeyForProvider(model.provider);
       if (!key)
         throw new Error(
           `No API key for provider "${model.provider}". Set the appropriate environment variable or configure via auth.json`,
@@ -491,7 +491,6 @@ export async function createRunner(
     getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => systemPrompt,
     getAppendSystemPrompt: () => [],
-    getPathMetadata: () => new Map(),
     extendResources: () => {},
     reload: async () => {},
   };
@@ -653,10 +652,10 @@ export async function createRunner(
           queue.enqueueMessage(text, "thread", "response thread", false);
         }
       }
-    } else if (event.type === "auto_compaction_start") {
+    } else if (event.type === "compaction_start") {
       log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
       queue.enqueue(() => responseCtx.respond("_Compacting context..._"), "compaction start");
-    } else if (event.type === "auto_compaction_end") {
+    } else if (event.type === "compaction_end") {
       const compEvent = event as any;
       if (compEvent.result) {
         log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
