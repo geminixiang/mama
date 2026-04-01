@@ -168,28 +168,12 @@ export function createSlackAdapters(
 
     setTyping: async (isTyping: boolean) => {
       if (isTyping && !messageTs) {
-        updatePromise = updatePromise.then(async () => {
-          try {
-            if (!messageTs) {
-              accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
-              if (isThreaded) {
-                messageTs = await slack.postInThread(
-                  event.channel,
-                  rootTs,
-                  accumulatedText + workingIndicator,
-                );
-              } else {
-                messageTs = await postFirstMessage(accumulatedText + workingIndicator);
-              }
-            }
-          } catch (err) {
-            log.logWarning(
-              "Slack setTyping error",
-              err instanceof Error ? err.message : String(err),
-            );
-          }
-        });
-        await updatePromise;
+        try {
+          const statusText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
+          await slack.setAssistantStatus(event.channel, rootTs, statusText);
+        } catch {
+          // Assistant API not available — first respond() call will create the message
+        }
       }
     },
 
@@ -203,7 +187,13 @@ export function createSlackAdapters(
           isWorking = working;
           if (messageTs) {
             const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-            await slack.updateMessage(event.channel, messageTs, displayText);
+            const updates: Promise<void>[] = [
+              slack.updateMessage(event.channel, messageTs, displayText),
+            ];
+            if (!working) {
+              updates.push(slack.setAssistantStatus(event.channel, rootTs, "").catch(() => {}));
+            }
+            await Promise.all(updates);
           }
         } catch (err) {
           log.logWarning(
@@ -217,6 +207,13 @@ export function createSlackAdapters(
 
     deleteResponse: async () => {
       updatePromise = updatePromise.then(async () => {
+        // Clear assistant status first
+        try {
+          await slack.setAssistantStatus(event.channel, rootTs, "");
+        } catch {
+          // Ignore errors clearing status
+        }
+
         // Delete thread messages first (in reverse order)
         for (let i = threadMessageTs.length - 1; i >= 0; i--) {
           try {

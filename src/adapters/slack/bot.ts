@@ -248,6 +248,21 @@ export class SlackBot implements Bot {
     });
   }
 
+  // ==========================================================================
+  // Slack Assistant API (AI assistant experience)
+  // ==========================================================================
+
+  /** Set the status for an assistant thread (shows "thinking" state) */
+  async setAssistantStatus(channel: string, threadTs: string, status: string): Promise<void> {
+    return withRetry(async () => {
+      await this.webClient.assistant.threads.setStatus({
+        channel_id: channel,
+        thread_ts: threadTs,
+        status,
+      });
+    });
+  }
+
   registerThreadAlias(aliasKey: string, sessionKey: string): void {
     this.handler.registerThreadAlias(aliasKey, sessionKey);
   }

@@ -177,26 +177,24 @@ describe("respondInThread()", () => {
 // ============================================================================
 
 describe("setTyping()", () => {
-  test("non-threaded: posts to channel", async () => {
-    const bot = makeSlackBot();
+  test("non-threaded: sets assistant status only", async () => {
+    const bot = makeSlackBot({ setAssistantStatus: vi.fn().mockResolvedValue(undefined) });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.setTyping(true);
-    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("_Thinking_"));
+    expect(bot.setAssistantStatus).toHaveBeenCalledWith("C001", "1000.0001", "Thinking");
+    expect(bot.postMessage).not.toHaveBeenCalled();
     expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
-  test("threaded: posts in user's thread", async () => {
-    const bot = makeSlackBot();
+  test("threaded: sets assistant status only", async () => {
+    const bot = makeSlackBot({ setAssistantStatus: vi.fn().mockResolvedValue(undefined) });
     const event = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.setTyping(true);
-    expect(bot.postInThread).toHaveBeenCalledWith(
-      "C001",
-      "1000.0001",
-      expect.stringContaining("_Thinking_"),
-    );
+    expect(bot.setAssistantStatus).toHaveBeenCalledWith("C001", "1000.0001", "Thinking");
     expect(bot.postMessage).not.toHaveBeenCalled();
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
   test("setTyping(false) does nothing", async () => {
@@ -486,14 +484,14 @@ describe("thread_ts boundary values", () => {
     expect(msg1.sessionKey).not.toBe(msg2.sessionKey);
   });
 
-  test("setTyping in thread should post to correct thread", async () => {
+  test("setTyping in thread should set assistant status with correct rootTs", async () => {
     const bot = makeSlackBot({
-      postInThread: vi.fn().mockResolvedValue("T002"),
+      setAssistantStatus: vi.fn().mockResolvedValue(undefined),
     });
     const event = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.setTyping(true);
-    expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", expect.any(String));
+    expect(bot.setAssistantStatus).toHaveBeenCalledWith("C001", "1000.0001", "Thinking");
   });
 
   test("uploadFile in thread should use correct rootTs", async () => {
