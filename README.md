@@ -78,12 +78,84 @@ npm run build
 ### Slack
 
 1. Create a Slack app with **Socket Mode** enabled ([setup guide](docs/slack-bot-minimal-guide.md)).
-2. Add the `app_mentions:read`, `chat:write`, `files:write`, and `im:history` OAuth scopes.
-3. Enable the **Home Tab**:
+2. Add the following **OAuth Bot Token Scopes**:
+   - `app_mentions:read`, `channels:history`, `channels:read`, `chat:write`
+   - `files:read`, `files:write`, `groups:history`, `groups:read`
+   - `im:history`, `im:read`, `im:write`, `users:read`
+   - `assistant:write` — required for native "Thinking" status indicator
+3. Enable the **Home Tab** and **Agent mode**:
    - **App Home → Show Tabs** — toggle **Home Tab** on
    - **App Home → Agents & AI Apps** — toggle **Agent or Assistant** on
-   - **Event Subscriptions → Subscribe to bot events** — add `app_home_opened`
-4. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
+4. Subscribe to **Bot Events**:
+   - `app_home_opened`, `app_mention`
+   - `assistant_thread_context_changed`, `assistant_thread_started`
+   - `message.channels`, `message.groups`, `message.im`
+5. Enable **Interactivity** (Settings → Interactivity & Shortcuts → toggle on).
+6. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
+
+Or import this **App Manifest** directly (Settings → App Manifest → paste JSON):
+
+<details>
+<summary>Example App Manifest</summary>
+
+```json
+{
+  "display_information": {
+    "name": "mama"
+  },
+  "features": {
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": false,
+      "messages_tab_read_only_enabled": false
+    },
+    "bot_user": {
+      "display_name": "mama",
+      "always_online": false
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "users:read"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "app_home_opened",
+        "app_mention",
+        "assistant_thread_context_changed",
+        "assistant_thread_started",
+        "message.channels",
+        "message.groups",
+        "message.im"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": true
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+}
+```
+
+</details>
 
 ```bash
 export MOM_SLACK_APP_TOKEN=xapp-...
