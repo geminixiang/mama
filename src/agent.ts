@@ -4,13 +4,10 @@ import {
   AgentSession,
   AuthStorage,
   convertToLlm,
-  createExtensionRuntime,
-  discoverAndLoadExtensions,
+  DefaultResourceLoader,
   formatSkillsForPrompt,
   loadSkillsFromDir,
   ModelRegistry,
-  type LoadExtensionsResult,
-  type ResourceLoader,
   SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
@@ -488,42 +485,27 @@ export async function createRunner(
     );
   }
 
-  // Load extensions from ~/.pi/agent/extensions/ and {workspaceDir}/.pi/extensions/
-  let extensionsResult: LoadExtensionsResult = {
-    extensions: [],
-    errors: [],
-    runtime: createExtensionRuntime(),
-  };
+  // Load extensions, skills, prompts, themes via DefaultResourceLoader
+  // This reads ~/.pi/agent/settings.json (packages, extensions enable/disable)
+  // and discovers resources from standard locations + npm/git packages.
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: workspaceDir,
+    systemPrompt,
+  });
   try {
-    extensionsResult = await discoverAndLoadExtensions([], workspaceDir);
-    if (extensionsResult.errors.length > 0) {
-      for (const err of extensionsResult.errors) {
+    await resourceLoader.reload();
+    const extResult = resourceLoader.getExtensions();
+    if (extResult.errors.length > 0) {
+      for (const err of extResult.errors) {
         log.logWarning(`[${channelId}] Extension load error: ${err.path}`, err.error);
       }
     }
-    log.logInfo(`[${channelId}] Loaded ${extensionsResult.extensions.length} extension(s)`);
+    log.logInfo(
+      `[${channelId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
+    );
   } catch (error) {
-    log.logWarning(`[${channelId}] Failed to load extensions`, String(error));
+    log.logWarning(`[${channelId}] Failed to load resources`, String(error));
   }
-
-  const resourceLoader: ResourceLoader = {
-    getExtensions: () => extensionsResult,
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt,
-    getAppendSystemPrompt: () => [],
-    extendResources: () => {},
-    reload: async () => {
-      try {
-        extensionsResult = await discoverAndLoadExtensions([], workspaceDir);
-        log.logInfo(`[${channelId}] Reloaded ${extensionsResult.extensions.length} extension(s)`);
-      } catch (error) {
-        log.logWarning(`[${channelId}] Extension reload failed`, String(error));
-      }
-    },
-  };
 
   const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
