@@ -276,15 +276,27 @@ export class EventsWatcher {
   private parseEvent(content: string, filename: string): MamaEvent | null {
     const data = JSON.parse(content);
 
-    if (!data.type || !data.channelId || !data.text) {
-      throw new Error(`Missing required fields (type, channelId, text) in ${filename}`);
+    if (!data.type || !data.text) {
+      throw new Error(`Missing required fields (type, text) in ${filename}`);
     }
 
-    const platform = this.resolvePlatform(data.platform, filename);
+    // "*" channelId or explicit broadcast:true triggers broadcast mode
+    const isBroadcast = data.channelId === "*" || data.broadcast === true;
+
+    if (!isBroadcast && !data.channelId) {
+      throw new Error(
+        `Missing required field 'channelId' in ${filename}. Use "*" to broadcast to all channels.`,
+      );
+    }
+
+    const channelId = isBroadcast ? "*" : data.channelId;
+    const platform = isBroadcast
+      ? this.resolvePlatform(data.platform, filename, true)
+      : this.resolvePlatform(data.platform, filename, false);
 
     switch (data.type) {
       case "immediate":
-        return { type: "immediate", platform, channelId: data.channelId, text: data.text };
+        return { type: "immediate", platform, channelId, text: data.text };
 
       case "one-shot":
         if (!data.at) {
@@ -293,7 +305,7 @@ export class EventsWatcher {
         return {
           type: "one-shot",
           platform,
-          channelId: data.channelId,
+          channelId,
           text: data.text,
           at: data.at,
         };
@@ -308,7 +320,7 @@ export class EventsWatcher {
         return {
           type: "periodic",
           platform,
-          channelId: data.channelId,
+          channelId,
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
@@ -319,7 +331,11 @@ export class EventsWatcher {
     }
   }
 
-  private resolvePlatform(platformValue: unknown, filename: string): string {
+  /**
+   * Resolve the platform string. When allowAll is true (broadcast mode),
+   * a missing platform returns "*" to indicate all platforms.
+   */
+  private resolvePlatform(platformValue: unknown, filename: string, allowAll: boolean): string {
     const availablePlatforms = Object.keys(this.botsByPlatform);
 
     if (typeof platformValue === "string" && platformValue.trim().length > 0) {
@@ -334,6 +350,10 @@ export class EventsWatcher {
 
     if (availablePlatforms.length === 1) {
       return availablePlatforms[0];
+    }
+
+    if (allowAll) {
+      return "*"; // broadcast all platforms
     }
 
     throw new Error(
@@ -419,6 +439,13 @@ export class EventsWatcher {
     }
 
     const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
+
+    // Broadcast mode: channelId === "*"
+    if (event.channelId === "*") {
+      this.executeBroadcast(filename, event, message, deleteAfter);
+      return;
+    }
+
     const bot = this.botsByPlatform[event.platform];
 
     if (!bot) {
@@ -450,6 +477,61 @@ export class EventsWatcher {
       if (deleteAfter) {
         this.deleteFile(filename);
       }
+    }
+  }
+
+  /**
+   * Broadcast a message to all known channels.
+   * If event.platform is "*", iterates every platform; otherwise only the specified one.
+   */
+  private executeBroadcast(
+    filename: string,
+    event: MamaEvent,
+    message: string,
+    deleteAfter: boolean,
+  ): void {
+    const platformEntries =
+      event.platform === "*"
+        ? Object.entries(this.botsByPlatform)
+        : ([[event.platform, this.botsByPlatform[event.platform]]] as [string, Bot][]);
+
+    let totalChannels = 0;
+    let totalEnqueued = 0;
+
+    for (const [platformName, bot] of platformEntries) {
+      if (!bot) {
+        log.logWarning(`No bot configured for broadcast platform '${platformName}'`, filename);
+        continue;
+      }
+
+      const channels = bot.getPlatformInfo().channels;
+      for (const channel of channels) {
+        totalChannels++;
+        const syntheticEvent: BotEvent = {
+          type: "mention",
+          channel: channel.id,
+          user: "EVENT",
+          text: message,
+          ts: channel.id,
+        };
+        if (bot.enqueueEvent(syntheticEvent)) {
+          totalEnqueued++;
+        }
+      }
+    }
+
+    log.logInfo(
+      `Broadcast event ${filename}: enqueued to ${totalEnqueued}/${totalChannels} channels`,
+    );
+
+    if (totalChannels === 0) {
+      log.logWarning(`Broadcast event found no channels: ${filename}`);
+    } else if (totalEnqueued === 0) {
+      log.logWarning(`Broadcast event: all queues full, discarded: ${filename}`);
+    }
+
+    if (deleteAfter) {
+      this.deleteFile(filename);
     }
   }
 
