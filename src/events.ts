@@ -20,12 +20,14 @@ import * as log from "./log.js";
 
 export interface ImmediateEvent {
   type: "immediate";
+  platform: string;
   channelId: string;
   text: string;
 }
 
 export interface OneShotEvent {
   type: "one-shot";
+  platform: string;
   channelId: string;
   text: string;
   at: string; // ISO 8601 with timezone offset
@@ -33,6 +35,7 @@ export interface OneShotEvent {
 
 export interface PeriodicEvent {
   type: "periodic";
+  platform: string;
   channelId: string;
   text: string;
   schedule: string; // cron syntax
@@ -43,6 +46,7 @@ export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 
 export interface PeriodicEventInfo {
   filename: string;
+  platform: string;
   channelId: string;
   text: string;
   schedule: string;
@@ -68,13 +72,13 @@ export class EventsWatcher {
 
   constructor(
     private eventsDir: string,
-    private bot: Bot,
+    private botsByPlatform: Record<string, Bot>,
   ) {
     this.startTime = Date.now();
   }
 
   /**
-   * Start watching for events. Call this after SlackBot is ready.
+   * Start watching for events. Call this after platform bots are initialized.
    */
   start(): void {
     // Ensure events directory exists
@@ -137,10 +141,14 @@ export class EventsWatcher {
       const filePath = join(this.eventsDir, filename);
       try {
         const content = readFileSync(filePath, "utf-8");
-        const data = JSON.parse(content) as PeriodicEvent;
+        const data = this.parseEvent(content, filename);
+        if (!data || data.type !== "periodic") {
+          continue;
+        }
         const next = cron.nextRun();
         results.push({
           filename,
+          platform: data.platform,
           channelId: data.channelId,
           text: data.text,
           schedule: data.schedule,
@@ -272,15 +280,23 @@ export class EventsWatcher {
       throw new Error(`Missing required fields (type, channelId, text) in ${filename}`);
     }
 
+    const platform = this.resolvePlatform(data.platform, filename);
+
     switch (data.type) {
       case "immediate":
-        return { type: "immediate", channelId: data.channelId, text: data.text };
+        return { type: "immediate", platform, channelId: data.channelId, text: data.text };
 
       case "one-shot":
         if (!data.at) {
           throw new Error(`Missing 'at' field for one-shot event in ${filename}`);
         }
-        return { type: "one-shot", channelId: data.channelId, text: data.text, at: data.at };
+        return {
+          type: "one-shot",
+          platform,
+          channelId: data.channelId,
+          text: data.text,
+          at: data.at,
+        };
 
       case "periodic":
         if (!data.schedule) {
@@ -291,6 +307,7 @@ export class EventsWatcher {
         }
         return {
           type: "periodic",
+          platform,
           channelId: data.channelId,
           text: data.text,
           schedule: data.schedule,
@@ -300,6 +317,28 @@ export class EventsWatcher {
       default:
         throw new Error(`Unknown event type '${data.type}' in ${filename}`);
     }
+  }
+
+  private resolvePlatform(platformValue: unknown, filename: string): string {
+    const availablePlatforms = Object.keys(this.botsByPlatform);
+
+    if (typeof platformValue === "string" && platformValue.trim().length > 0) {
+      const platform = platformValue.trim().toLowerCase();
+      if (!this.botsByPlatform[platform]) {
+        throw new Error(
+          `Unknown platform '${platformValue}' in ${filename}. Expected one of: ${availablePlatforms.join(", ")}`,
+        );
+      }
+      return platform;
+    }
+
+    if (availablePlatforms.length === 1) {
+      return availablePlatforms[0];
+    }
+
+    throw new Error(
+      `Missing required field 'platform' in ${filename}. Available platforms: ${availablePlatforms.join(", ")}`,
+    );
   }
 
   private handleImmediate(filename: string, event: ImmediateEvent): void {
@@ -380,6 +419,15 @@ export class EventsWatcher {
     }
 
     const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
+    const bot = this.botsByPlatform[event.platform];
+
+    if (!bot) {
+      log.logWarning(`No bot configured for event platform '${event.platform}'`, filename);
+      if (deleteAfter) {
+        this.deleteFile(filename);
+      }
+      return;
+    }
 
     // Create synthetic BotEvent - use channelId as ts for stable session key
     const syntheticEvent: BotEvent = {
@@ -391,7 +439,7 @@ export class EventsWatcher {
     };
 
     // Enqueue for processing
-    const enqueued = this.bot.enqueueEvent(syntheticEvent);
+    const enqueued = bot.enqueueEvent(syntheticEvent);
 
     if (enqueued && deleteAfter) {
       // Delete file after successful enqueue (immediate and one-shot)
@@ -424,9 +472,12 @@ export class EventsWatcher {
 }
 
 /**
- * Create and start an events watcher.
+ * Create an events watcher for all configured platforms.
  */
-export function createEventsWatcher(workspaceDir: string, bot: Bot): EventsWatcher {
+export function createEventsWatcher(
+  workspaceDir: string,
+  botsByPlatform: Record<string, Bot>,
+): EventsWatcher {
   const eventsDir = join(workspaceDir, "events");
-  return new EventsWatcher(eventsDir, bot);
+  return new EventsWatcher(eventsDir, botsByPlatform);
 }
