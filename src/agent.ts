@@ -5,9 +5,11 @@ import {
   AuthStorage,
   convertToLlm,
   createExtensionRuntime,
+  discoverAndLoadExtensions,
   formatSkillsForPrompt,
   loadSkillsFromDir,
   ModelRegistry,
+  type LoadExtensionsResult,
   type ResourceLoader,
   SessionManager,
   type Skill,
@@ -486,8 +488,26 @@ export async function createRunner(
     );
   }
 
+  // Load extensions from ~/.pi/agent/extensions/ and {workspaceDir}/.pi/extensions/
+  let extensionsResult: LoadExtensionsResult = {
+    extensions: [],
+    errors: [],
+    runtime: createExtensionRuntime(),
+  };
+  try {
+    extensionsResult = await discoverAndLoadExtensions([], workspaceDir);
+    if (extensionsResult.errors.length > 0) {
+      for (const err of extensionsResult.errors) {
+        log.logWarning(`[${channelId}] Extension load error: ${err.path}`, err.error);
+      }
+    }
+    log.logInfo(`[${channelId}] Loaded ${extensionsResult.extensions.length} extension(s)`);
+  } catch (error) {
+    log.logWarning(`[${channelId}] Failed to load extensions`, String(error));
+  }
+
   const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getExtensions: () => extensionsResult,
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -495,7 +515,14 @@ export async function createRunner(
     getSystemPrompt: () => systemPrompt,
     getAppendSystemPrompt: () => [],
     extendResources: () => {},
-    reload: async () => {},
+    reload: async () => {
+      try {
+        extensionsResult = await discoverAndLoadExtensions([], workspaceDir);
+        log.logInfo(`[${channelId}] Reloaded ${extensionsResult.extensions.length} extension(s)`);
+      } catch (error) {
+        log.logWarning(`[${channelId}] Extension reload failed`, String(error));
+      }
+    },
   };
 
   const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -505,7 +532,7 @@ export async function createRunner(
     agent,
     sessionManager,
     settingsManager,
-    cwd: process.cwd(),
+    cwd: workspaceDir,
     modelRegistry,
     resourceLoader,
     baseToolsOverride,
