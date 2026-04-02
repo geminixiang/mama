@@ -12,16 +12,22 @@ import {
   SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
+import {
+  formatAgentDefsForPrompt,
+  loadMamaAgentDefs,
+  type AgentDefinition,
+} from "./agents.js";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
-import { createMamaTools } from "./tools/index.js";
+import { createMamaTools, type AgentToolContext } from "./tools/index.js";
 
 export interface PendingMessage {
   userName: string;
@@ -132,6 +138,7 @@ function buildSystemPrompt(
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
+  agentDefs: AgentDefinition[] = [],
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
   const isDocker = sandboxConfig.type === "docker";
@@ -217,6 +224,29 @@ Scripts are in: {baseDir}/
 
 ### Available Skills
 ${skills.length > 0 ? formatSkillsForPrompt(skills) : "(no skills installed yet)"}
+
+## Agents (Sub-Agents)
+You can delegate specialized subtasks to sub-agents using the \`spawn_agent\` tool. Each sub-agent runs with a custom system prompt and returns its complete response. Sub-agents cannot spawn further agents.
+
+### Creating Agents
+Store in \`${workspacePath}/agents/<name>/\` (global) or \`${channelPath}/agents/<name>/\` (channel-specific).
+Each agent directory needs an \`AGENT.md\` with YAML frontmatter:
+
+\`\`\`markdown
+---
+name: agent-name
+description: Short description of what this agent specializes in
+model: claude-sonnet-4-5    # optional: override model
+tools: bash,read            # optional: comma-separated tool allowlist
+---
+
+You are a specialized assistant that...
+\`\`\`
+
+\`name\` and \`description\` are required. \`model\` and \`tools\` are optional.
+
+### Available Agents
+${agentDefs.length > 0 ? formatAgentDefsForPrompt(agentDefs) : "(no agents defined yet — create AGENT.md files in agents/ to add sub-agents)"}
 
 ## Events
 You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspacePath}/events/\`.
@@ -322,7 +352,7 @@ grep '"userName":"mario"' log.jsonl | tail -20 | jq -c '{date: .date[0:19], text
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files to the platform
-
+${agentDefs.length > 0 ? "- spawn_agent: Delegate a subtask to a specialized sub-agent" : ""}
 Each tool requires a "label" parameter (shown to user).
 `;
 }
@@ -416,14 +446,182 @@ export async function createRunner(
   const executor = createExecutor(sandboxConfig);
   const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
-  // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
-
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
   // while getModel() has constrained generic types for known providers.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const model = (getModel as any)(agentConfig.provider, agentConfig.model);
+
+  // Create session manager and settings manager
+  // Per-session context file: {channelDir}/sessions/{rootTs}/context.jsonl
+  const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
+  const sessionDir = join(channelDir, "sessions", rootTs);
+  mkdirSync(sessionDir, { recursive: true });
+  const contextFile = join(sessionDir, "context.jsonl");
+  const sessionManager = SessionManager.open(contextFile, channelDir);
+  const settingsManager = createMamaSettingsManager(join(channelDir, ".."));
+
+  // Create AuthStorage and ModelRegistry
+  // Auth stored outside workspace so agent can't access it
+  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
+  const modelRegistry = new ModelRegistry(authStorage);
+
+  // Shared usage accumulator — written by both main agent events and spawnSubAgent
+  const totalUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+
+  // Forward-declare agentCtx so spawnSubAgent can access the live agentDefs via agentCtx.agentDefs
+  // (agentCtx.agentDefs is refreshed on each run in runner.run())
+  let agentCtx: AgentToolContext = null!;
+
+  // Spawn a short-lived sub-agent to handle a delegated subtask
+  const spawnSubAgent = async (
+    agentName: string,
+    prompt: string,
+    timeoutSecs: number,
+  ): Promise<string> => {
+    // Use agentCtx.agentDefs so we always see the freshest list (updated each run)
+    const currentDefs = agentCtx.agentDefs;
+    const agentDef =
+      agentName === "default" ? null : currentDefs.find((d) => d.name === agentName);
+
+    if (agentName !== "default" && !agentDef) {
+      const available = currentDefs.map((d) => d.name).join(", ") || "none";
+      throw new Error(`Agent "${agentName}" not found. Available agents: ${available}`);
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const subModel = agentDef?.model
+      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (getModel as any)(agentConfig.provider, agentDef.model)
+      : model;
+
+    // Sub-agent tools: no spawn_agent (depth=1), apply allowlist if specified
+    const { tools: allSubTools } = createMamaTools(executor, {
+      agentDepth: 1,
+      agentDefs: [],
+      spawnSubAgent: async () => {
+        throw new Error("Subagents cannot spawn further agents");
+      },
+    });
+    const subTools = agentDef?.tools
+      ? allSubTools.filter((t) => agentDef.tools!.includes(t.name))
+      : allSubTools;
+
+    const subSystemPrompt = agentDef?.systemPrompt ?? "";
+    const subAgent = new Agent({
+      initialState: {
+        systemPrompt: subSystemPrompt,
+        model: subModel,
+        thinkingLevel:
+          (agentConfig.thinkingLevel as "off" | "low" | "medium" | "high" | undefined) ?? "off",
+        tools: subTools,
+      },
+      convertToLlm,
+      getApiKey: async () => {
+        const key = await modelRegistry.getApiKeyForProvider(subModel.provider);
+        if (!key) throw new Error(`No API key for provider "${subModel.provider}"`);
+        return key;
+      },
+    });
+
+    const tempDir = join(tmpdir(), `mama-subagent-${randomBytes(8).toString("hex")}`);
+    mkdirSync(tempDir, { recursive: true });
+    const tempContextFile = join(tempDir, "context.jsonl");
+    const subSessionManager = SessionManager.open(tempContextFile, tempDir);
+
+    const subResourceLoader: ResourceLoader = {
+      getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+      getSkills: () => ({ skills: [], diagnostics: [] }),
+      getPrompts: () => ({ prompts: [], diagnostics: [] }),
+      getThemes: () => ({ themes: [], diagnostics: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [] }),
+      getSystemPrompt: () => subSystemPrompt,
+      getAppendSystemPrompt: () => [],
+      extendResources: () => {},
+      reload: async () => {},
+    };
+
+    const subBaseToolsOverride = Object.fromEntries(subTools.map((t) => [t.name, t]));
+
+    const subSession = new AgentSession({
+      agent: subAgent,
+      sessionManager: subSessionManager,
+      settingsManager,
+      cwd: process.cwd(),
+      modelRegistry,
+      resourceLoader: subResourceLoader,
+      baseToolsOverride: subBaseToolsOverride,
+    });
+
+    const responseParts: string[] = [];
+    let subStopReason = "stop";
+    let subError: string | undefined;
+
+    subSession.subscribe(async (event) => {
+      if (event.type === "message_end") {
+        const msg = event as AgentEvent & { type: "message_end" };
+        if (msg.message.role === "assistant") {
+          for (const part of msg.message.content) {
+            if (part.type === "text" && (part as any).text) {
+              responseParts.push((part as any).text);
+            }
+          }
+          const assistantMsg = msg.message as any;
+          if (assistantMsg.stopReason) subStopReason = assistantMsg.stopReason;
+          if (assistantMsg.errorMessage) subError = assistantMsg.errorMessage;
+
+          // Accumulate token usage into shared tracker (shown in parent's usage summary)
+          if (assistantMsg.usage) {
+            totalUsage.input += assistantMsg.usage.input;
+            totalUsage.output += assistantMsg.usage.output;
+            totalUsage.cacheRead += assistantMsg.usage.cacheRead;
+            totalUsage.cacheWrite += assistantMsg.usage.cacheWrite;
+            totalUsage.cost.input += assistantMsg.usage.cost.input;
+            totalUsage.cost.output += assistantMsg.usage.cost.output;
+            totalUsage.cost.cacheRead += assistantMsg.usage.cost.cacheRead;
+            totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
+            totalUsage.cost.total += assistantMsg.usage.cost.total;
+          }
+        }
+      }
+    });
+
+    const timeoutHandle = setTimeout(() => {
+      subSession.abort();
+    }, timeoutSecs * 1000);
+
+    try {
+      await subSession.prompt(prompt);
+    } finally {
+      clearTimeout(timeoutHandle);
+      try {
+        rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+
+    if (subError) {
+      throw new Error(`Sub-agent "${agentName}" error: ${subError}`);
+    }
+
+    const result = responseParts.join("\n").trim();
+    return (
+      result ||
+      `(Agent "${agentName}" produced no text response, stop reason: ${subStopReason})`
+    );
+  };
+
+  // Create tools with agent context (spawn_agent is added when agents are defined)
+  const initialAgentDefs = loadMamaAgentDefs(channelDir, workspaceDir);
+  agentCtx = { agentDepth: 0, agentDefs: initialAgentDefs, spawnSubAgent };
+  const { tools, setUploadFunction } = createMamaTools(executor, agentCtx);
 
   // Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
   const memory = await getMemory(channelDir);
@@ -441,21 +639,8 @@ export async function createRunner(
     sandboxConfig,
     emptyPlatform,
     skills,
+    initialAgentDefs,
   );
-
-  // Create session manager and settings manager
-  // Per-session context file: {channelDir}/sessions/{rootTs}/context.jsonl
-  const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
-  const sessionDir = join(channelDir, "sessions", rootTs);
-  mkdirSync(sessionDir, { recursive: true });
-  const contextFile = join(sessionDir, "context.jsonl");
-  const sessionManager = SessionManager.open(contextFile, channelDir);
-  const settingsManager = createMamaSettingsManager(join(channelDir, ".."));
-
-  // Create AuthStorage and ModelRegistry
-  // Auth stored outside workspace so agent can't access it
-  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
-  const modelRegistry = new ModelRegistry(authStorage);
 
   // Create agent
   const agent = new Agent({
@@ -525,13 +710,7 @@ export async function createRunner(
       ): void;
     } | null,
     pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
-    totalUsage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
+    totalUsage,
     stopReason: "stop",
     errorMessage: undefined as string | undefined,
   };
@@ -736,9 +915,10 @@ export async function createRunner(
         );
       }
 
-      // Update system prompt with fresh memory, channel/user info, and skills
+      // Update system prompt with fresh memory, channel/user info, skills, and agents
       const memory = await getMemory(channelDir);
       const skills = loadMamaSkills(channelDir, workspacePath);
+      const freshAgentDefs = loadMamaAgentDefs(channelDir, workspaceDir);
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
@@ -746,7 +926,10 @@ export async function createRunner(
         sandboxConfig,
         platform,
         skills,
+        freshAgentDefs,
       );
+      // Sync spawn_agent availability with fresh agent definitions
+      agentCtx.agentDefs = freshAgentDefs;
       session.agent.setSystemPrompt(systemPrompt);
 
       // Set up file upload function
@@ -763,13 +946,16 @@ export async function createRunner(
         channelName: undefined,
       };
       runState.pendingTools.clear();
-      runState.totalUsage = {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      };
+      // Reset in-place to preserve the shared reference used by spawnSubAgent
+      totalUsage.input = 0;
+      totalUsage.output = 0;
+      totalUsage.cacheRead = 0;
+      totalUsage.cacheWrite = 0;
+      totalUsage.cost.input = 0;
+      totalUsage.cost.output = 0;
+      totalUsage.cost.cacheRead = 0;
+      totalUsage.cost.cacheWrite = 0;
+      totalUsage.cost.total = 0;
       runState.stopReason = "stop";
       runState.errorMessage = undefined;
 
