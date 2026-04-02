@@ -519,8 +519,14 @@ export class SlackBot implements Bot {
       });
     } else {
       for (const ev of periodicEvents) {
-        const channel = this.channels.get(ev.channelId);
-        const channelName = channel ? `#${channel.name}` : ev.channelId;
+        const channelLabel =
+          ev.platform === "slack"
+            ? (() => {
+                const channel = this.channels.get(ev.channelId);
+                const channelName = channel ? `#${channel.name}` : ev.channelId;
+                return `${ev.platform}:${channelName}`;
+              })()
+            : `${ev.platform}:${ev.channelId}`;
         const nextStr = ev.nextRun
           ? new Date(ev.nextRun).toLocaleString("en-US", {
               month: "short",
@@ -533,7 +539,7 @@ export class SlackBot implements Bot {
           type: "section",
           text: {
             type: "mrkdwn",
-            text: `*${ev.text}*\n└ \`${ev.schedule}\` · ${channelName} · Next: ${nextStr}`,
+            text: `*${ev.text}*\n└ \`${ev.schedule}\` · ${channelLabel} · Next: ${nextStr}`,
           },
         });
       }

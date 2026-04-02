@@ -358,41 +358,42 @@ log.logStartup(workingDir, sandboxDesc);
 
 // Create platform bots
 const bots: Bot[] = [];
+const botsByPlatform: Record<string, Bot> = {};
 
 if (hasSlack) {
   const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
-  bots.push(
-    new SlackBotClass(handler, {
-      appToken: MOM_SLACK_APP_TOKEN!,
-      botToken: MOM_SLACK_BOT_TOKEN!,
-      workingDir,
-      store: sharedStore,
-    }),
-  );
+  const slackBot = new SlackBotClass(handler, {
+    appToken: MOM_SLACK_APP_TOKEN!,
+    botToken: MOM_SLACK_BOT_TOKEN!,
+    workingDir,
+    store: sharedStore,
+  });
+  bots.push(slackBot);
+  botsByPlatform.slack = slackBot;
   log.logInfo("Platform: Slack");
 }
 if (hasTelegram) {
-  bots.push(
-    new TelegramBot(handler, {
-      token: MOM_TELEGRAM_BOT_TOKEN!,
-      workingDir,
-    }),
-  );
+  const telegramBot = new TelegramBot(handler, {
+    token: MOM_TELEGRAM_BOT_TOKEN!,
+    workingDir,
+  });
+  bots.push(telegramBot);
+  botsByPlatform.telegram = telegramBot;
   log.logInfo("Platform: Telegram");
 }
 if (hasDiscord) {
-  bots.push(
-    new DiscordBot(handler, {
-      token: MOM_DISCORD_BOT_TOKEN!,
-      workingDir,
-    }),
-  );
+  const discordBot = new DiscordBot(handler, {
+    token: MOM_DISCORD_BOT_TOKEN!,
+    workingDir,
+  });
+  bots.push(discordBot);
+  botsByPlatform.discord = discordBot;
   log.logInfo("Platform: Discord");
 }
 
-// Start events watcher (use first bot for event delivery)
-const eventsWatcher = createEventsWatcher(workingDir, bots[0]);
-const slackBot = bots.find((b) => b instanceof SlackBotClass) as SlackBotClass | undefined;
+// Start events watcher with explicit platform routing
+const eventsWatcher = createEventsWatcher(workingDir, botsByPlatform);
+const slackBot = botsByPlatform.slack as SlackBotClass | undefined;
 if (slackBot) {
   slackBot.setEventsWatcher(eventsWatcher);
 }
