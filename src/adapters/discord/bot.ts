@@ -11,11 +11,18 @@ import {
   type NewsChannel,
   type ThreadChannel,
 } from "discord.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { basename, join } from "path";
+import { readFileSync } from "fs";
+import { basename } from "path";
 
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import {
+  createAttachmentTarget,
+  downloadAttachmentToFile,
+  type DownloadedAttachment,
+} from "../shared/attachments.js";
+import { appendChannelLog, createBotLogEntry } from "../shared/channel-log.js";
+import { SerialWorkQueue } from "../shared/serial-queue.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -28,39 +35,6 @@ export interface DiscordEvent extends BotEvent {
 }
 
 // ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Discord queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
-}
-
-// ============================================================================
 // DiscordBot
 // ============================================================================
 
@@ -69,7 +43,7 @@ export class DiscordBot implements Bot {
   private handler: BotHandler;
   private workingDir: string;
   private botUserId: string | null = null;
-  private queues = new Map<string, ChannelQueue>();
+  private queues = new Map<string, SerialWorkQueue>();
   private startupTime: number = 0;
   private channels = new Map<string, { id: string; name: string }>();
   private users = new Map<string, { id: string; userName: string; displayName: string }>();
@@ -210,20 +184,11 @@ export class DiscordBot implements Bot {
   }
 
   logToFile(channelId: string, entry: object): void {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channelId, entry);
   }
 
   logBotResponse(channelId: string, text: string, ts: string): void {
-    this.logToFile(channelId, {
-      date: new Date().toISOString(),
-      ts,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    this.logToFile(channelId, createBotLogEntry(text, ts));
   }
 
   /**
@@ -235,8 +200,8 @@ export class DiscordBot implements Bot {
     channelId: string,
     attachments: Collection<string, Attachment>,
     _messageId: string,
-  ): { name: string; localPath: string }[] {
-    const result: { name: string; localPath: string }[] = [];
+  ): DownloadedAttachment[] {
+    const result: DownloadedAttachment[] = [];
 
     // Discord attachments Collection - iterate over values
     for (const attachment of attachments.values()) {
@@ -245,54 +210,35 @@ export class DiscordBot implements Bot {
         continue;
       }
 
-      // Generate local filename
-      const ts = Date.now();
-      const sanitizedName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const filename = `${ts}_${sanitizedName}`;
-      const localPath = `${channelId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, channelId, "attachments");
+      const target = createAttachmentTarget(
+        this.workingDir,
+        channelId,
+        attachment.name,
+        Date.now(),
+      );
 
       result.push({
         name: attachment.name,
-        localPath: localPath,
+        localPath: target.localPath,
       });
 
       // Download in background (fire and forget)
-      this.downloadAttachment(fullDir, filename, attachment.url).catch((err) => {
-        log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
+      downloadAttachmentToFile(target.directory, target.filename, attachment.url).catch((err) => {
+        log.logWarning(`Failed to download Discord attachment`, `${target.filename}: ${err}`);
       });
     }
 
     return result;
   }
 
-  /**
-   * Download an attachment from URL to local file
-   */
-  private async downloadAttachment(dir: string, filename: string, url: string): Promise<void> {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-    try {
-      const response = await fetch(url);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const buffer = await response.arrayBuffer();
-      writeFileSync(join(dir, filename), Buffer.from(buffer));
-    } catch (err) {
-      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-
   // ==========================================================================
   // Private - Event Handlers
   // ==========================================================================
 
-  private getQueue(channelId: string): ChannelQueue {
+  private getQueue(channelId: string): SerialWorkQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new SerialWorkQueue("Discord queue error");
       this.queues.set(channelId, queue);
     }
     return queue;

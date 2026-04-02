@@ -1,8 +1,15 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { basename, join } from "path";
+import { readFileSync } from "fs";
+import { basename } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import {
+  createAttachmentTarget,
+  downloadAttachmentToFile,
+  type DownloadedAttachment,
+} from "../shared/attachments.js";
+import { appendChannelLog, createBotLogEntry } from "../shared/channel-log.js";
+import { SerialWorkQueue } from "../shared/serial-queue.js";
 import { createTelegramAdapters } from "./context.js";
 
 // ============================================================================
@@ -12,39 +19,6 @@ import { createTelegramAdapters } from "./context.js";
 export interface TelegramEvent extends BotEvent {
   type: "message" | "command";
   userName?: string;
-}
-
-// ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Telegram queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
 }
 
 // ============================================================================
@@ -58,7 +32,7 @@ export class TelegramBot implements Bot {
   private workingDir: string;
   private botUserId: string | null = null;
   private botUsername: string | null = null;
-  private queues = new Map<string, ChannelQueue>();
+  private queues = new Map<string, SerialWorkQueue>();
   private startupTime: number = 0;
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
@@ -168,20 +142,11 @@ export class TelegramBot implements Bot {
   }
 
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channel, entry);
   }
 
   logBotResponse(channel: string, text: string, ts: string): void {
-    this.logToFile(channel, {
-      date: new Date().toISOString(),
-      ts,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    this.logToFile(channel, createBotLogEntry(text, ts));
   }
 
   /**
@@ -189,11 +154,8 @@ export class TelegramBot implements Bot {
    * Downloads files before returning metadata so the agent can read them immediately
    * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
    */
-  async processAttachments(
-    chatId: string,
-    message: any,
-  ): Promise<{ name: string; localPath: string }[]> {
-    const downloads: Array<Promise<{ name: string; localPath: string } | null>> = [];
+  async processAttachments(chatId: string, message: any): Promise<DownloadedAttachment[]> {
+    const downloads: Array<Promise<DownloadedAttachment | null>> = [];
 
     // Handle photos (take the largest size for best quality)
     if (message.photo && message.photo.length > 0) {
@@ -226,7 +188,7 @@ export class TelegramBot implements Bot {
     chatId: string,
     fileId: string,
     originalName: string,
-  ): Promise<{ name: string; localPath: string } | null> {
+  ): Promise<DownloadedAttachment | null> {
     try {
       // Get file info from Telegram
       const file = await this.client.api.getFile(fileId);
@@ -235,30 +197,16 @@ export class TelegramBot implements Bot {
         return null;
       }
 
-      // Generate local filename
-      const ts = Date.now();
-      const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
-      const filename = `${ts}_${sanitizedName}`;
-      const localPath = `${chatId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, chatId, "attachments");
-
-      if (!existsSync(fullDir)) mkdirSync(fullDir, { recursive: true });
+      const target = createAttachmentTarget(this.workingDir, chatId, originalName, Date.now());
 
       // Construct download URL
       const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
 
-      // Download the file
-      const response = await fetch(downloadUrl);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-      }
-
-      const buffer = await response.arrayBuffer();
-      writeFileSync(join(fullDir, filename), Buffer.from(buffer));
+      await downloadAttachmentToFile(target.directory, target.filename, downloadUrl);
 
       return {
         name: originalName,
-        localPath: localPath,
+        localPath: target.localPath,
       };
     } catch (err) {
       log.logWarning(`Failed to process Telegram file`, `${originalName}: ${err}`);
@@ -270,10 +218,10 @@ export class TelegramBot implements Bot {
   // Private - Event Handlers
   // ==========================================================================
 
-  private getQueue(channelId: string): ChannelQueue {
+  private getQueue(channelId: string): SerialWorkQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new SerialWorkQueue("Telegram queue error");
       this.queues.set(channelId, queue);
     }
     return queue;
