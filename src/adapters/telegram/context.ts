@@ -10,7 +10,7 @@ Do NOT use Markdown asterisks or backtick syntax.`;
 export function createTelegramAdapters(
   event: TelegramEvent,
   bot: TelegramBot,
-  isEvent?: boolean,
+  _isEvent?: boolean,
 ): {
   message: ChatMessage;
   responseCtx: ChatResponseContext;
@@ -18,11 +18,16 @@ export function createTelegramAdapters(
 } {
   let messageId: number | null = null;
   let accumulatedText = "";
-  let isWorking = true;
-  const workingIndicator = " ...";
   let updatePromise = Promise.resolve();
+  let typingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+  function stopTyping() {
+    if (typingInterval !== null) {
+      clearInterval(typingInterval);
+      typingInterval = null;
+    }
+  }
+
   const replyToId = event.thread_ts ? parseInt(event.thread_ts) : null;
 
   const message: ChatMessage = {
@@ -58,11 +63,7 @@ export function createTelegramAdapters(
       updatePromise = updatePromise.then(async () => {
         try {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-          const displayText = truncate(
-            isWorking ? accumulatedText + workingIndicator : accumulatedText,
-            MAX_LENGTH,
-            truncationNote,
-          );
+          const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
 
           if (messageId !== null) {
             await bot.updateMessage(event.channel, String(messageId), displayText);
@@ -89,7 +90,7 @@ export function createTelegramAdapters(
       updatePromise = updatePromise.then(async () => {
         try {
           accumulatedText = truncate(text, MAX_LENGTH, truncationNote);
-          const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+          const displayText = accumulatedText;
 
           if (messageId !== null) {
             await bot.updateMessage(event.channel, String(messageId), displayText);
@@ -112,47 +113,20 @@ export function createTelegramAdapters(
     respondInThread: async (_text: string) => {},
 
     setTyping: async (isTyping: boolean) => {
-      if (isTyping && messageId === null) {
-        updatePromise = updatePromise.then(async () => {
-          try {
-            if (messageId === null) {
-              await bot.sendTyping(parseInt(event.channel));
-              const initialText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
-              accumulatedText = initialText;
-              const displayText = accumulatedText + workingIndicator;
-              if (replyToId !== null) {
-                messageId = await bot.postReply(parseInt(event.channel), replyToId, displayText);
-              } else {
-                messageId = await bot.postMessageRaw(parseInt(event.channel), displayText);
-              }
-            }
-          } catch (err) {
-            log.logWarning(
-              "Telegram setTyping error",
-              err instanceof Error ? err.message : String(err),
-            );
-          }
-        });
-        await updatePromise;
+      if (isTyping && typingInterval === null) {
+        const chatId = parseInt(event.channel);
+        // Send immediately and repeat every 4s (Telegram clears indicator after ~5s)
+        bot.sendTyping(chatId).catch(() => {});
+        typingInterval = setInterval(() => {
+          bot.sendTyping(chatId).catch(() => {});
+        }, 4000);
+      } else if (!isTyping) {
+        stopTyping();
       }
     },
 
     setWorking: async (working: boolean) => {
-      updatePromise = updatePromise.then(async () => {
-        try {
-          isWorking = working;
-          if (messageId !== null) {
-            const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-            await bot.updateMessage(event.channel, String(messageId), displayText);
-          }
-        } catch (err) {
-          log.logWarning(
-            "Telegram setWorking error",
-            err instanceof Error ? err.message : String(err),
-          );
-        }
-      });
-      await updatePromise;
+      if (!working) stopTyping();
     },
 
     uploadFile: async (filePath: string, title?: string) => {

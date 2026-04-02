@@ -183,25 +183,26 @@ describe("respondInThread()", () => {
 // ============================================================================
 
 describe("setTyping()", () => {
-  test("sends typing action and posts initial message", async () => {
+  test("sends typing action immediately", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.setTyping(true);
     expect(bot.sendTyping).toHaveBeenCalledWith(123456);
-    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, expect.stringContaining("Thinking"));
+    expect(bot.postMessageRaw).not.toHaveBeenCalled();
   });
 
-  test("threaded: posts reply to parent", async () => {
+  test("does not post placeholder message", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ ts: "1003", thread_ts: "1001" });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.setTyping(true);
-    expect(bot.postReply).toHaveBeenCalledWith(123456, 1001, expect.stringContaining("Thinking"));
+    expect(bot.sendTyping).toHaveBeenCalledWith(123456);
+    expect(bot.postReply).not.toHaveBeenCalled();
     expect(bot.postMessageRaw).not.toHaveBeenCalled();
   });
 
-  test("setTyping(false) does nothing", async () => {
+  test("setTyping(false) does nothing if not typing", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent();
     const { responseCtx } = createTelegramAdapters(event, bot);
@@ -210,23 +211,24 @@ describe("setTyping()", () => {
     expect(bot.sendTyping).not.toHaveBeenCalled();
   });
 
-  test("setTyping(true) after message exists does nothing", async () => {
+  test("setTyping(true) twice does not duplicate interval", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
-    await responseCtx.setTyping(true); // creates message
-    vi.clearAllMocks();
+    await responseCtx.setTyping(true);
     await responseCtx.setTyping(true); // should be no-op
-    expect(bot.postMessageRaw).not.toHaveBeenCalled();
-    expect(bot.sendTyping).not.toHaveBeenCalled();
+    expect(bot.sendTyping).toHaveBeenCalledTimes(1);
   });
 
-  test("event: shows filename in initial text", async () => {
+  test("setTyping(false) allows re-triggering", async () => {
     const bot = makeTelegramBot();
-    const event = makeEvent({ text: "[EVENT:deploy.json:immediate:immediate] run deploy" });
-    const { responseCtx } = createTelegramAdapters(event, bot, /* isEvent= */ true);
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.setTyping(true);
-    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, expect.stringContaining("deploy.json"));
+    await responseCtx.setTyping(false);
+    vi.clearAllMocks();
+    await responseCtx.setTyping(true);
+    expect(bot.sendTyping).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -235,25 +237,25 @@ describe("setTyping()", () => {
 // ============================================================================
 
 describe("setWorking()", () => {
-  test("appends indicator when working=true, removes when false", async () => {
-    const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
-    const event = makeEvent({ thread_ts: undefined });
-    const { responseCtx } = createTelegramAdapters(event, bot);
-    await responseCtx.respond("content");
-    // Initially working=true (default), so update should have indicator stripped
-    await responseCtx.setWorking(false);
-    const updateCall = vi.mocked(bot.updateMessage).mock.calls[0];
-    expect(updateCall[2]).not.toContain(" ...");
-  });
-
-  test("respond() while working appends working indicator", async () => {
+  test("setWorking(false) allows typing to be re-triggered", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
-    // Default isWorking=true
+    await responseCtx.setTyping(true);
+    await responseCtx.setWorking(false);
+    vi.clearAllMocks();
+    // After setWorking(false), typing can be started again
+    await responseCtx.setTyping(true);
+    expect(bot.sendTyping).toHaveBeenCalledTimes(1);
+  });
+
+  test("respond() does not append working indicator", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("content");
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
-    expect(posted).toContain(" ...");
+    expect(posted).toBe("content");
   });
 });
 
