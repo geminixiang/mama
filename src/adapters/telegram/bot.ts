@@ -54,6 +54,7 @@ class ChannelQueue {
 export class TelegramBot implements Bot {
   private client: GrammyBot;
   private handler: BotHandler;
+  private botToken: string;
   private workingDir: string;
   private botUserId: string | null = null;
   private botUsername: string | null = null;
@@ -62,6 +63,7 @@ export class TelegramBot implements Bot {
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
+    this.botToken = config.token;
     this.workingDir = config.workingDir;
     this.client = new GrammyBot(config.token);
     this.client.catch((err) => {
@@ -184,11 +186,14 @@ export class TelegramBot implements Bot {
 
   /**
    * Process attachments from a Telegram message
-   * Downloads files in background and returns metadata
+   * Downloads files before returning metadata so the agent can read them immediately
    * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
    */
-  processAttachments(chatId: string, message: any): { name: string; localPath: string }[] {
-    const result: { name: string; localPath: string }[] = [];
+  async processAttachments(
+    chatId: string,
+    message: any,
+  ): Promise<{ name: string; localPath: string }[]> {
+    const downloads: Array<Promise<{ name: string; localPath: string } | null>> = [];
 
     // Handle photos (take the largest size for best quality)
     if (message.photo && message.photo.length > 0) {
@@ -196,13 +201,7 @@ export class TelegramBot implements Bot {
       const photo = photos[photos.length - 1]; // Largest photo
       const fileId = photo.file_id;
 
-      this.processTelegramFile(chatId, fileId, `photo_${message.message_id}.jpg`)
-        .then((attachment) => {
-          if (attachment) result.push(attachment);
-        })
-        .catch((err) => {
-          log.logWarning(`Failed to download Telegram photo`, `${err}`);
-        });
+      downloads.push(this.processTelegramFile(chatId, fileId, `photo_${message.message_id}.jpg`));
     }
 
     // Handle documents
@@ -211,16 +210,13 @@ export class TelegramBot implements Bot {
       const fileId = doc.file_id;
       const fileName = doc.file_name ?? `document_${message.message_id}`;
 
-      this.processTelegramFile(chatId, fileId, fileName)
-        .then((attachment) => {
-          if (attachment) result.push(attachment);
-        })
-        .catch((err) => {
-          log.logWarning(`Failed to download Telegram document`, `${err}`);
-        });
+      downloads.push(this.processTelegramFile(chatId, fileId, fileName));
     }
 
-    return result;
+    const attachments = await Promise.all(downloads);
+    return attachments.filter(
+      (attachment): attachment is { name: string; localPath: string } => attachment !== null,
+    );
   }
 
   /**
@@ -249,7 +245,7 @@ export class TelegramBot implements Bot {
       if (!existsSync(fullDir)) mkdirSync(fullDir, { recursive: true });
 
       // Construct download URL
-      const downloadUrl = `https://api.telegram.org/file/bot${this.botUserId}/${file.file_path}`;
+      const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
 
       // Download the file
       const response = await fetch(downloadUrl);
@@ -295,7 +291,7 @@ export class TelegramBot implements Bot {
   }
 
   private setupEventHandlers(): void {
-    this.client.on("message", (ctx) => {
+    this.client.on("message", async (ctx) => {
       const msg = ctx.message;
 
       // Skip messages from before startup (Telegram replays recent messages on poll start)
@@ -323,7 +319,7 @@ export class TelegramBot implements Bot {
       const sessionKey = `${chatId}:${threadTs ?? msgId}`;
 
       // Process attachments (starts download in background)
-      const processedAttachments = this.processAttachments(chatId, msg);
+      const processedAttachments = await this.processAttachments(chatId, msg);
 
       const event: TelegramEvent = {
         type: "message",

@@ -3,89 +3,7 @@ import { appendFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 
 // ============================================================================
-// Test 1: Verify Discord/Telegram attachments are NOT captured
-// ============================================================================
-
-describe("ISSUE VERIFICATION: Discord attachments not captured", () => {
-  test("Discord bot logs messages with empty attachments array", () => {
-    // This test verifies the bug: Discord messages with attachments
-    // are logged with attachments: [] (empty array)
-
-    // Looking at the source code (src/adapters/discord/bot.ts:315):
-    // this.logToFile(channelId, {
-    //   ...
-    //   attachments: [],  // <-- HARDCODED EMPTY!
-    //   isBot: false,
-    // });
-
-    // The msg object from Discord has:
-    // - msg.attachments (AttachmentManager)
-    // - msg.embeds (Collection<Embed>)
-    // But they are NEVER captured!
-
-    // This is the PROOF that attachments are not processed:
-    const discordLogEntry = {
-      date: new Date().toISOString(),
-      ts: "1234567890.123456",
-      user: "U123",
-      userName: "testuser",
-      text: "Check out this image",
-      attachments: [], // <-- ALWAYS EMPTY in current implementation!
-      isBot: false,
-    };
-
-    expect(discordLogEntry.attachments).toEqual([]);
-    // The bug: attachments should contain actual attachment data from msg.attachments
-  });
-});
-
-describe("ISSUE VERIFICATION: Telegram attachments not captured", () => {
-  test("Telegram bot logs messages with empty attachments array", () => {
-    // Looking at the source code (src/adapters/telegram/bot.ts:254):
-    // this.logToFile(chatId, {
-    //   ...
-    //   attachments: [],  // <-- HARDCODED EMPTY!
-    //   isBot: false,
-    // });
-
-    // The msg object from Telegram has:
-    // - msg.photo (Photo[] | undefined)
-    // - msg.document (Document | undefined)
-    // - msg.sticker (Sticker | undefined)
-    // But they are NEVER captured!
-
-    const telegramLogEntry = {
-      date: new Date().toISOString(),
-      ts: "123",
-      user: "123456789",
-      userName: "testuser",
-      text: "Check out this photo",
-      attachments: [], // <-- ALWAYS EMPTY in current implementation!
-      isBot: false,
-    };
-
-    expect(telegramLogEntry.attachments).toEqual([]);
-  });
-
-  test("Telegram detects documents/photos but doesn't process them", () => {
-    // Looking at telegram/bot.ts:219:
-    // if (!text && !msg.document && !msg.photo) return;
-
-    // The code checks for document/photo EXISTENCE but never stores them!
-    // This is the bug - detection without processing.
-
-    const hasDocument = true; // msg.document exists
-    const hasPhoto = true; // msg.photo exists
-    const attachments = []; // But it's never captured
-
-    // The message would trigger processing but attachments would be lost
-    expect(hasDocument || hasPhoto).toBe(true);
-    expect(attachments).toEqual([]);
-  });
-});
-
-// ============================================================================
-// Test 2: Verify grep CAN search log.jsonl for historical records
+// Verify grep CAN search log.jsonl for historical records
 // ============================================================================
 
 describe("ISSUE VERIFICATION: Grep can search historical records", () => {
@@ -213,17 +131,17 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
     }
   });
 
-  test("syncLogToSessionManager uses 2-day window (default)", async () => {
+  test("syncLogToSessionManager uses 10-day window (default)", async () => {
     // This verifies the default behavior
-    // 2 days ago from now would filter out January messages
+    // 10 days ago from now would filter out January messages
 
     const now = Date.now();
-    const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+    const tenDaysAgo = now - 10 * 24 * 60 * 60 * 1000;
 
-    // Messages from January 2025 would be older than 2 days
+    // Messages from January 2025 would be older than 10 days
     const januaryDate = new Date("2025-01-01").getTime();
 
-    expect(januaryDate).toBeLessThan(twoDaysAgo);
+    expect(januaryDate).toBeLessThan(tenDaysAgo);
     // So they would be EXCLUDED from sync by default!
   });
 
@@ -231,14 +149,14 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
     const { execSync } = await import("child_process");
 
     // This proves that older messages ARE in the log
-    // but would NOT be included in the 2-day sync window
+    // but would NOT be included in the 10-day sync window
 
     // All 5 messages exist
     const allResult = execSync(`wc -l ${join(testDir, "log.jsonl")}`, { encoding: "utf-8" });
     expect(allResult).toContain("5");
 
     // But January messages would be filtered out by syncLogToSessionManager
-    // because they are more than 2 days old
+    // because they are more than 10 days old
     const januaryCount = execSync(`grep '"date":"2025-01' ${join(testDir, "log.jsonl")} | wc -l`, {
       encoding: "utf-8",
     });
@@ -246,47 +164,8 @@ describe("ISSUE VERIFICATION: Grep can search historical records", () => {
 
     // This demonstrates the DESIGNED behavior:
     // - grep CAN find all historical messages
-    // - But auto-sync only gets last 2 days
+    // - But auto-sync only gets the recent default window
   });
 });
 
-// ============================================================================
-// Summary: Issue Verification Results
-// ============================================================================
-
-/*
-ISSUE 1: Discord/Telegram attachments NOT captured
-----------------------------------------------------
-VERIFIED (Before fix): Both Discord and Telegram adapters hardcoded `attachments: []`
-when logging messages. The code detected attachments but never stored them.
-
-Code locations (BEFORE):
-- src/adapters/discord/bot.ts:315 (old line)
-- src/adapters/telegram/bot.ts:254 (old line)
-
-IMPACT: Users sharing images/files on Discord/Telegram were NOT seen by the AI.
-
-FIXED: Both adapters now:
-1. Extract attachments from incoming messages
-2. Download files asynchronously in background
-3. Store attachment metadata (name, localPath) in log.jsonl
-4. Pass attachments to the AI context
-
-Code locations (AFTER):
-- src/adapters/discord/bot.ts: processAttachments() method
-- src/adapters/telegram/bot.ts: processAttachments() method
-
-ISSUE 2: Grep CAN search historical records
---------------------------------------------
-VERIFIED: The log.jsonl file contains ALL messages, and grep can search them.
-However, syncLogToSessionManager only syncs the last 2 days by default.
-
-Code location: src/context.ts:38 (DEFAULT_SYNC_DAYS = 2)
-
-Impact:
-- Grep CAN find older messages (manual search works)
-- But AI won't see them automatically in context
-- AI must be explicitly told to use grep (via system prompt examples)
-
-This is a DESIGN CHOICE, not a bug. The 2-day window prevents token bloat.
-*/
+// Historical attachment verification moved into dedicated adapter tests.

@@ -1,5 +1,8 @@
 node_modules/
 dist/
 data/
+bin/
+
 *.env
 .env*
+
