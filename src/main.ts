@@ -9,6 +9,8 @@ import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
+import { loadAgentConfig } from "./config.js";
+import { resolveSttApiKey } from "./adapters/telegram/transcribe.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -395,13 +397,24 @@ if (hasSlack) {
   log.logInfo("Platform: Slack");
 }
 if (hasTelegram) {
+  const agentCfg = loadAgentConfig(workingDir);
+  const sttApiKey = agentCfg.sttProvider ? resolveSttApiKey(agentCfg.sttProvider) : undefined;
+  const sttConfig =
+    agentCfg.sttProvider && agentCfg.sttModel && sttApiKey
+      ? { provider: agentCfg.sttProvider, model: agentCfg.sttModel, apiKey: sttApiKey }
+      : null;
+
   const telegramBot = new TelegramBot(handler, {
     token: MOM_TELEGRAM_BOT_TOKEN!,
     workingDir,
+    sttConfig,
   });
   bots.push(telegramBot);
   botsByPlatform.telegram = telegramBot;
   log.logInfo("Platform: Telegram");
+  if (sttConfig) {
+    log.logInfo(`STT: ${sttConfig.provider}/${sttConfig.model}`);
+  }
 }
 if (hasDiscord) {
   const discordBot = new DiscordBot(handler, {

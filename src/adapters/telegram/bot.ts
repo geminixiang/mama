@@ -4,6 +4,7 @@ import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { createTelegramAdapters } from "./context.js";
+import { type SttConfig, transcribeAudio } from "./transcribe.js";
 
 // ============================================================================
 // Types
@@ -68,15 +69,20 @@ export class TelegramBot implements Bot {
   private handler: BotHandler;
   private botToken: string;
   private workingDir: string;
+  private sttConfig: SttConfig | null;
   private botUserId: string | null = null;
   private botUsername: string | null = null;
   private queues = new Map<string, ChannelQueue>();
   private startupTime: number = 0;
 
-  constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
+  constructor(
+    handler: BotHandler,
+    config: { token: string; workingDir: string; sttConfig?: SttConfig | null },
+  ) {
     this.handler = handler;
     this.botToken = config.token;
     this.workingDir = config.workingDir;
+    this.sttConfig = config.sttConfig ?? null;
     this.client = new GrammyBot(config.token);
     this.client.catch((err) => {
       log.logWarning("Telegram error", err instanceof Error ? err.message : String(err));
@@ -232,6 +238,27 @@ export class TelegramBot implements Bot {
       downloads.push(this.processTelegramFile(chatId, fileId, fileName));
     }
 
+    // Handle voice messages (OGG Opus)
+    if (message.voice) {
+      const fileId = message.voice.file_id;
+      downloads.push(this.processTelegramFile(chatId, fileId, `voice_${message.message_id}.ogg`));
+    }
+
+    // Handle audio files
+    if (message.audio) {
+      const fileId = message.audio.file_id;
+      const fileName = message.audio.file_name ?? `audio_${message.message_id}.mp3`;
+      downloads.push(this.processTelegramFile(chatId, fileId, fileName));
+    }
+
+    // Handle video notes (circular video messages)
+    if (message.video_note) {
+      const fileId = message.video_note.file_id;
+      downloads.push(
+        this.processTelegramFile(chatId, fileId, `video_note_${message.message_id}.mp4`),
+      );
+    }
+
     const attachments = await Promise.all(downloads);
     return attachments.filter(
       (attachment): attachment is { name: string; localPath: string } => attachment !== null,
@@ -285,6 +312,43 @@ export class TelegramBot implements Bot {
     }
   }
 
+  /**
+   * Transcribe a voice/audio attachment using the configured STT provider.
+   */
+  private async transcribeVoiceMessage(
+    chatId: string,
+    attachments: { name: string; localPath: string }[],
+  ): Promise<string> {
+    if (!this.sttConfig) {
+      log.logWarning("Voice message received but STT is not configured (sttProvider/sttModel)");
+      return "[Voice message received but transcription is not configured]";
+    }
+
+    const voiceAttachment = attachments.find(
+      (a) =>
+        a.name.startsWith("voice_") ||
+        a.name.startsWith("audio_") ||
+        a.name.startsWith("video_note_"),
+    );
+
+    if (!voiceAttachment) {
+      log.logWarning("Voice attachment not found after download");
+      return "[Voice message could not be processed]";
+    }
+
+    const fullPath = join(this.workingDir, voiceAttachment.localPath);
+
+    try {
+      const text = await transcribeAudio(fullPath, this.sttConfig);
+      log.logInfo(`Voice transcription (${chatId}): ${text.substring(0, 100)}`);
+      return text;
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.logWarning("Voice transcription failed", errMsg);
+      return `[Voice transcription failed: ${errMsg}]`;
+    }
+  }
+
   // ==========================================================================
   // Private - Event Handlers
   // ==========================================================================
@@ -304,7 +368,8 @@ export class TelegramBot implements Bot {
     if (msg.from?.is_bot) return null;
 
     const text = msg.text ?? msg.caption ?? "";
-    if (!text && !msg.document && !msg.photo) return null;
+    if (!text && !msg.document && !msg.photo && !msg.voice && !msg.audio && !msg.video_note)
+      return null;
 
     const chatId = String(msg.chat.id);
     const chatType = msg.chat.type;
@@ -400,6 +465,17 @@ export class TelegramBot implements Bot {
       // Process attachments
       const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);
 
+      // Transcribe voice/audio if present
+      let finalText = cleanedText;
+      if (mc.msg.voice || mc.msg.audio || mc.msg.video_note) {
+        const transcription = await this.transcribeVoiceMessage(mc.chatId, processedAttachments);
+        if (transcription) {
+          finalText = finalText
+            ? `${finalText}\n\n[Voice transcription]: ${transcription}`
+            : transcription;
+        }
+      }
+
       const event: TelegramEvent = {
         type: "message",
         channel: mc.chatId,
@@ -408,7 +484,7 @@ export class TelegramBot implements Bot {
         sessionKey: mc.sessionKey,
         user: mc.userId,
         userName: mc.userName,
-        text: cleanedText,
+        text: finalText,
         attachments: processedAttachments,
       };
 
@@ -418,13 +494,13 @@ export class TelegramBot implements Bot {
         ts: mc.msgId,
         user: mc.userId,
         userName: mc.userName,
-        text: cleanedText,
+        text: finalText,
         attachments: processedAttachments,
         isBot: false,
       });
 
       // Handle bare "stop" text (backward compat)
-      if (cleanedText.toLowerCase() === "stop") {
+      if (finalText.toLowerCase() === "stop") {
         if (this.handler.isRunning(mc.sessionKey)) {
           await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
         } else {
