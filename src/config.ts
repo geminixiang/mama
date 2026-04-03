@@ -8,6 +8,8 @@ export interface AgentConfig {
   sessionScope?: "thread" | "channel";
   logFormat?: "console" | "json";
   logLevel?: "trace" | "debug" | "info" | "warn" | "error";
+  sttProvider?: string;
+  sttModel?: string;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -41,8 +43,19 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
   const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
+  const sttProvider = fromFile.sttProvider || process.env.MOM_STT_PROVIDER || undefined;
+  const sttModel = fromFile.sttModel || process.env.MOM_STT_MODEL || undefined;
 
-  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel };
+  return {
+    provider,
+    model,
+    thinkingLevel,
+    sessionScope,
+    logFormat,
+    logLevel,
+    sttProvider,
+    sttModel,
+  };
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {

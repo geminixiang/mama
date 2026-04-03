@@ -112,6 +112,65 @@ describe("TelegramBot extractMessageContext", () => {
   });
 });
 
+describe("TelegramBot voice message context", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-voice-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("accepts voice messages (not null)", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({ text: undefined, voice: { file_id: "v1", duration: 5 } });
+    const result = extract(msg);
+    expect(result).not.toBeNull();
+    expect(result.text).toBe("");
+  });
+
+  test("accepts audio messages (not null)", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({
+      text: undefined,
+      audio: { file_id: "a1", duration: 10, file_name: "song.mp3" },
+    });
+    const result = extract(msg);
+    expect(result).not.toBeNull();
+    expect(result.text).toBe("");
+  });
+
+  test("accepts video_note messages (not null)", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({ text: undefined, video_note: { file_id: "vn1", duration: 3 } });
+    const result = extract(msg);
+    expect(result).not.toBeNull();
+  });
+
+  test("voice message with caption preserves caption as text", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({
+      text: undefined,
+      caption: "listen to this",
+      voice: { file_id: "v2", duration: 5 },
+    });
+    const result = extract(msg);
+    expect(result).not.toBeNull();
+    expect(result.text).toBe("listen to this");
+  });
+});
+
 describe("TelegramBot attachments", () => {
   let workingDir: string;
   const originalFetch = globalThis.fetch;
@@ -146,6 +205,62 @@ describe("TelegramBot attachments", () => {
     expect(attachments).toEqual([
       { name: "photo_42.jpg", localPath: "123/attachments/1_photo.jpg" },
       { name: "report.pdf", localPath: "123/attachments/2_report.pdf" },
+    ]);
+  });
+
+  test("processAttachments handles voice messages", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const processTelegramFile = vi
+      .fn()
+      .mockResolvedValueOnce({ name: "voice_42.ogg", localPath: "123/attachments/1_voice.ogg" });
+
+    (bot as any).processTelegramFile = processTelegramFile;
+
+    const attachments = await bot.processAttachments("123", {
+      message_id: 42,
+      voice: { file_id: "voice-file-id", duration: 5 },
+    });
+
+    expect(processTelegramFile).toHaveBeenCalledWith("123", "voice-file-id", "voice_42.ogg");
+    expect(attachments).toEqual([
+      { name: "voice_42.ogg", localPath: "123/attachments/1_voice.ogg" },
+    ]);
+  });
+
+  test("processAttachments handles audio messages with file_name", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const processTelegramFile = vi
+      .fn()
+      .mockResolvedValueOnce({ name: "song.mp3", localPath: "123/attachments/1_song.mp3" });
+
+    (bot as any).processTelegramFile = processTelegramFile;
+
+    const attachments = await bot.processAttachments("123", {
+      message_id: 42,
+      audio: { file_id: "audio-file-id", duration: 120, file_name: "song.mp3" },
+    });
+
+    expect(processTelegramFile).toHaveBeenCalledWith("123", "audio-file-id", "song.mp3");
+    expect(attachments).toEqual([{ name: "song.mp3", localPath: "123/attachments/1_song.mp3" }]);
+  });
+
+  test("processAttachments handles video_note messages", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const processTelegramFile = vi.fn().mockResolvedValueOnce({
+      name: "video_note_42.mp4",
+      localPath: "123/attachments/1_video_note.mp4",
+    });
+
+    (bot as any).processTelegramFile = processTelegramFile;
+
+    const attachments = await bot.processAttachments("123", {
+      message_id: 42,
+      video_note: { file_id: "vn-file-id", duration: 3 },
+    });
+
+    expect(processTelegramFile).toHaveBeenCalledWith("123", "vn-file-id", "video_note_42.mp4");
+    expect(attachments).toEqual([
+      { name: "video_note_42.mp4", localPath: "123/attachments/1_video_note.mp4" },
     ]);
   });
 
