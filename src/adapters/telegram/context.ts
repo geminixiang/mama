@@ -32,7 +32,7 @@ export function createTelegramAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`,
     userId: event.user,
     userName: event.userName,
     text: event.text,

@@ -14,8 +14,103 @@ function makeHandler(): BotHandler {
     forceStop: vi.fn(),
     resolveSessionKey: vi.fn((key: string) => key),
     registerThreadAlias: vi.fn(),
+    handleNew: vi.fn(),
   };
 }
+
+// Helper: build a fake Telegram message object
+function makeMessage(overrides: Record<string, any> = {}) {
+  return {
+    message_id: 100,
+    date: Math.floor(Date.now() / 1000) + 10,
+    chat: { id: 123, type: "private" },
+    from: { id: 42, is_bot: false, username: "alice", first_name: "Alice" },
+    text: "hello",
+    ...overrides,
+  };
+}
+
+describe("TelegramBot extractMessageContext", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-ctx-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("returns null for null/undefined message", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    expect(extract(null)).toBeNull();
+    expect(extract(undefined)).toBeNull();
+  });
+
+  test("returns null for messages before startup time", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = Date.now() + 60_000;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({ date: Math.floor(Date.now() / 1000) });
+    expect(extract(msg)).toBeNull();
+  });
+
+  test("returns null for bot messages", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+    const msg = makeMessage({ from: { id: 1, is_bot: true, username: "bot" } });
+    expect(extract(msg)).toBeNull();
+  });
+
+  test("private chat: sessionKey is just chatId (single session)", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+
+    const msg1 = makeMessage({ message_id: 100 });
+    const msg2 = makeMessage({ message_id: 200 });
+    expect(extract(msg1).sessionKey).toBe("123");
+    expect(extract(msg2).sessionKey).toBe("123");
+    // Both produce the same sessionKey — same session!
+    expect(extract(msg1).sessionKey).toBe(extract(msg2).sessionKey);
+  });
+
+  test("group chat: sessionKey includes msgId (per-message session)", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+
+    const msg = makeMessage({ chat: { id: 999, type: "group" }, message_id: 50 });
+    expect(extract(msg).sessionKey).toBe("999:50");
+  });
+
+  test("group chat: reply uses threadTs in sessionKey", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+
+    const msg = makeMessage({
+      chat: { id: 999, type: "group" },
+      message_id: 60,
+      reply_to_message: { message_id: 50 },
+    });
+    expect(extract(msg).sessionKey).toBe("999:50");
+  });
+
+  test("private chat reply still uses chatId as sessionKey", () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    (bot as any).startupTime = 0;
+    const extract = (bot as any).extractMessageContext.bind(bot);
+
+    const msg = makeMessage({ reply_to_message: { message_id: 50 } });
+    expect(extract(msg).sessionKey).toBe("123");
+    // threadTs is still set for reply targeting
+    expect(extract(msg).threadTs).toBe("50");
+  });
+});
 
 describe("TelegramBot attachments", () => {
   let workingDir: string;

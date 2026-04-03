@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { readFileSync } from "fs";
+import { readFileSync, rmSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
@@ -154,6 +154,12 @@ const channelStates = new Map<string, ChannelState>();
  */
 const threadAliases = new Map<string, string>();
 
+function deleteAliasesForSession(sessionKey: string): void {
+  for (const [alias, target] of threadAliases) {
+    if (target === sessionKey) threadAliases.delete(alias);
+  }
+}
+
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
 
@@ -193,10 +199,7 @@ function evictIdleSessions(): void {
   for (const [key, state] of channelStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
       channelStates.delete(key);
-      // Clean up aliases pointing to this session
-      for (const [alias, target] of threadAliases) {
-        if (target === key) threadAliases.delete(alias);
-      }
+      deleteAliasesForSession(key);
     }
   }
 
@@ -214,9 +217,7 @@ function evictIdleSessions(): void {
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
       const evictedKey = idleSessions[i].key;
       channelStates.delete(evictedKey);
-      for (const [alias, target] of threadAliases) {
-        if (target === evictedKey) threadAliases.delete(alias);
-      }
+      deleteAliasesForSession(evictedKey);
     }
   }
 }
@@ -278,6 +279,27 @@ const handler: BotHandler = {
     threadAliases.set(aliasKey, sessionKey);
   },
 
+  async handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
+    const state = channelStates.get(sessionKey);
+    if (state?.running) {
+      state.stopRequested = true;
+      state.runner.abort();
+    }
+
+    // Delete session directory on disk
+    const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
+    const sessionDir = join(workingDir, channelId, "sessions", rootTs);
+    rmSync(sessionDir, { recursive: true, force: true });
+
+    // Remove from in-memory cache
+    channelStates.delete(sessionKey);
+
+    deleteAliasesForSession(sessionKey);
+
+    log.logInfo(`[${channelId}] Session reset: ${sessionKey}`);
+    await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
+  },
+
   async handleEvent(
     event: BotEvent,
     bot: Bot,
@@ -292,7 +314,7 @@ const handler: BotHandler = {
       return;
     }
 
-    const rawSessionKey = `${event.channel}:${event.thread_ts ?? event.ts}`;
+    const rawSessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
     const sessionKey = this.resolveSessionKey(rawSessionKey);
     const state = await getState(event.channel, sessionKey);
 

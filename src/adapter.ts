@@ -52,6 +52,8 @@ export interface BotEvent {
   text: string;
   /** Downloaded attachments */
   attachments?: { name: string; localPath: string }[];
+  /** Platform-computed session key; overrides default channel:thread_ts computation */
+  sessionKey?: string;
 }
 
 /**
@@ -97,6 +99,8 @@ export interface BotHandler {
   resolveSessionKey(rawKey: string): string;
   /** Register an alias so that "channel:botReplyTs" resolves to the original sessionKey */
   registerThreadAlias(aliasKey: string, sessionKey: string): void;
+  /** Reset a session: abort if running, delete history, remove from cache */
+  handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
 }
 
 /** @deprecated Use BotHandler */
