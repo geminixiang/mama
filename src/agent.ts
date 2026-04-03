@@ -4,11 +4,10 @@ import {
   AgentSession,
   AuthStorage,
   convertToLlm,
-  createExtensionRuntime,
+  DefaultResourceLoader,
   formatSkillsForPrompt,
   loadSkillsFromDir,
   ModelRegistry,
-  type ResourceLoader,
   SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
@@ -486,17 +485,27 @@ export async function createRunner(
     );
   }
 
-  const resourceLoader: ResourceLoader = {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => systemPrompt,
-    getAppendSystemPrompt: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
+  // Load extensions, skills, prompts, themes via DefaultResourceLoader
+  // This reads ~/.pi/agent/settings.json (packages, extensions enable/disable)
+  // and discovers resources from standard locations + npm/git packages.
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: workspaceDir,
+    systemPrompt,
+  });
+  try {
+    await resourceLoader.reload();
+    const extResult = resourceLoader.getExtensions();
+    if (extResult.errors.length > 0) {
+      for (const err of extResult.errors) {
+        log.logWarning(`[${channelId}] Extension load error: ${err.path}`, err.error);
+      }
+    }
+    log.logInfo(
+      `[${channelId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
+    );
+  } catch (error) {
+    log.logWarning(`[${channelId}] Failed to load resources`, String(error));
+  }
 
   const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
@@ -505,7 +514,7 @@ export async function createRunner(
     agent,
     sessionManager,
     settingsManager,
-    cwd: process.cwd(),
+    cwd: workspaceDir,
     modelRegistry,
     resourceLoader,
     baseToolsOverride,
