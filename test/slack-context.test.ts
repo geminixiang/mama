@@ -44,14 +44,18 @@ function makeEvent(overrides: Partial<SlackEvent> = {}): SlackEvent {
 describe("session key derivation", () => {
   test("top-level mention uses persistent channel session", () => {
     const event = makeEvent({ ts: "1000.0001", thread_ts: undefined });
-    const { message } = createSlackAdapters(event, makeSlackBot());
+    const bot = makeSlackBot();
+    const { message } = createSlackAdapters(event, bot);
     expect(message.sessionKey).toBe("C001");
+    expect(bot.registerThreadAlias).toHaveBeenCalledWith("C001:1000.0001", "C001");
   });
 
   test("thread reply uses isolated per-thread session", () => {
+    const bot = makeSlackBot();
     const event = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
-    const { message } = createSlackAdapters(event, makeSlackBot());
+    const { message } = createSlackAdapters(event, bot);
     expect(message.sessionKey).toBe("C001:1000.0001");
+    expect(bot.registerThreadAlias).not.toHaveBeenCalled();
   });
 
   test("different threads produce different session keys", () => {

@@ -46,6 +46,12 @@ export function createSlackAdapters(
     threadTs: event.thread_ts,
   };
 
+  if (!event.thread_ts && !event.channel.startsWith("D") && message.sessionKey === event.channel) {
+    // Top-level channel sessions reply in a thread rooted at the user's message.
+    // Keep this alias so stop commands inside that thread still target the channel session.
+    slack.registerThreadAlias(`${event.channel}:${event.ts}`, message.sessionKey);
+  }
+
   const platform: PlatformInfo = {
     name: "slack",
     formattingGuide: SLACK_FORMATTING_GUIDE,

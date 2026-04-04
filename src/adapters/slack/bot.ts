@@ -583,6 +583,11 @@ export class SlackBot implements Bot {
       // Thread replies get their own isolated session (channelId:thread_ts).
       const rawSessionKey = e.thread_ts ? `${e.channel}:${e.thread_ts}` : e.channel;
       const sessionKey = this.handler.resolveSessionKey(rawSessionKey);
+      if (!e.thread_ts) {
+        // Replies in the thread created from this top-level mention will come back
+        // with thread_ts = e.ts, but they should still control the shared channel session.
+        this.handler.registerThreadAlias(`${e.channel}:${e.ts}`, sessionKey);
+      }
 
       const slackEvent: SlackEvent = {
         type: "mention",

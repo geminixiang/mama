@@ -738,12 +738,15 @@ export async function createRunner(
       // Exclude the current message (it will be added via prompt())
       // Default sync range is 10 days (handled by syncLogToSessionManager)
       // Thread filter ensures only messages from this session's thread are synced
+      const threadFilter = message.sessionKey.includes(":")
+        ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
+        : { scope: "top-level" as const, rootTs };
       const syncedCount = await syncLogToSessionManager(
         sessionManager,
         channelDir,
         message.id,
         undefined,
-        { rootTs, threadTs: message.threadTs },
+        threadFilter,
       );
       if (syncedCount > 0) {
         log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
