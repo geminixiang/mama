@@ -183,12 +183,22 @@ export function createDiscordAdapters(
     }
   }
 
+  function buildThreadName(): string {
+    const user = (event.userName || "unknown").substring(0, 15);
+    const prefix = `🤖 ${user} · `;
+    const maxSummary = 100 - prefix.length;
+    let summary = event.text.replace(/\n/g, " ").trim();
+    if (!summary) summary = "(attachment)";
+    if (summary.length > maxSummary) summary = summary.substring(0, maxSummary - 1) + "…";
+    return prefix + summary;
+  }
+
   /**
    * Try to create a thread on the main reply message. Falls back silently on error.
    */
   async function tryCreateThread(msgId: string): Promise<void> {
     try {
-      threadChannelId = await bot.createThreadOnMessage(event.channel, msgId, "🤖 Response");
+      threadChannelId = await bot.createThreadOnMessage(event.channel, msgId, buildThreadName());
       // Flush pending thread messages
       const pending = pendingThreadMessages;
       pendingThreadMessages = [];

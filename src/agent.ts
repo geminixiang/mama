@@ -584,6 +584,10 @@ export async function createRunner(
       ): void;
     } | null,
     pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+    stepCounter: 0,
+    thinkingCount: 0,
+    toolCount: 0,
+    runStartTime: 0,
     totalUsage: {
       input: 0,
       output: 0,
@@ -663,12 +667,15 @@ export async function createRunner(
       }
 
       // Post args + result to thread
+      runState.stepCounter++;
+      runState.toolCount++;
+      const stepNum = runState.stepCounter;
       const label = pending?.args ? (pending.args as { label?: string }).label : undefined;
       const argsFormatted = pending
         ? formatToolArgsForSlack(agentEvent.toolName, pending.args as Record<string, unknown>)
         : "(args not found)";
       const duration = (durationMs / 1000).toFixed(1);
-      let threadMessage = `*${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
+      let threadMessage = `🔧 **#${stepNum}** *${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
       if (label) threadMessage += `: ${label}`;
       threadMessage += ` (${duration}s)\n`;
       if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
@@ -776,9 +783,17 @@ export async function createRunner(
         const text = textParts.join("\n");
 
         for (const thinking of thinkingParts) {
+          runState.stepCounter++;
+          runState.thinkingCount++;
+          const thinkingStep = runState.stepCounter;
           log.logThinking(logCtx, thinking);
           queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-          queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
+          queue.enqueueMessage(
+            `💭 **#${thinkingStep}** Thinking\n_${thinking}_`,
+            "thread",
+            "thinking thread",
+            false,
+          );
         }
 
         if (text.trim()) {
@@ -899,6 +914,10 @@ export async function createRunner(
         sessionId: sessionUuid,
       };
       runState.pendingTools.clear();
+      runState.stepCounter = 0;
+      runState.thinkingCount = 0;
+      runState.toolCount = 0;
+      runState.runStartTime = Date.now();
       runState.totalUsage = {
         input: 0,
         output: 0,
@@ -964,6 +983,20 @@ export async function createRunner(
       const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
       const offsetMins = pad(Math.abs(offset) % 60);
       const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
+
+      // Post execution log header as first thread message
+      const promptPreview =
+        message.text.length > 200 ? message.text.substring(0, 197) + "…" : message.text;
+      const headerLines = [
+        "📋 **Execution Log**",
+        "─────────────────",
+        `**User:**\u2003\u2003${message.userName || "unknown"}`,
+        `**Prompt:**\u2002${promptPreview}`,
+        `**Model:**\u2003\u2003${agentConfig.model}`,
+        `**Time:**\u2003\u2003\u2003${timestamp}`,
+      ];
+      runState.queue!.enqueueMessage(headerLines.join("\n"), "thread", "execution header", false);
+
       const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
       let userMessage = `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
 
@@ -1112,20 +1145,27 @@ export async function createRunner(
           attributes: runMetricAttributes,
         });
 
-        const summary = log.logUsageSummary(
-          runState.logCtx!,
-          runState.totalUsage,
-          contextTokens,
-          contextWindow,
+        log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
+
+        // Enhanced thread footer
+        const durationSecs = ((Date.now() - runState.runStartTime) / 1000).toFixed(1);
+        const { input, output, cacheRead } = runState.totalUsage;
+        const steps = runState.stepCounter;
+        const stepDetails = `${runState.toolCount} tools, ${runState.thinkingCount} thinking`;
+        const footerLines = [
+          "📊 **Summary**",
+          "─────────────────",
+          `**Steps:**   ${steps} (${stepDetails})`,
+          `**Tokens:**  ${input.toLocaleString()} in · ${output.toLocaleString()} out · ${cacheRead.toLocaleString()} cache`,
+          `**Cost:**    $${runState.totalUsage.cost.total.toFixed(4)}`,
+          `**Duration:** ${durationSecs}s`,
+        ];
+        const footerText = footerLines.join("
+");
+        runState.queue!.enqueue(
+          () => responseCtx.respondInThread(footerText, { style: "muted" }),
+          "usage summary",
         );
-        // Split long summaries to avoid msg_too_long
-        const summaryParts = splitForSlack(summary);
-        for (const part of summaryParts) {
-          runState.queue!.enqueue(
-            () => responseCtx.respondInThread(part, { style: "muted" }),
-            "usage summary",
-          );
-        }
         await queueChain;
       }
 

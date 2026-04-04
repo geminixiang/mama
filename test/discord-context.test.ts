@@ -96,7 +96,11 @@ describe("respond() — non-threaded (replies to trigger message)", () => {
     const event = makeEvent({ ts: "MSG001", thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("hello");
-    expect(bot.createThreadOnMessage).toHaveBeenCalledWith("CH001", "REPLY001", "🤖 Response");
+    expect(bot.createThreadOnMessage).toHaveBeenCalledWith(
+      "CH001",
+      "REPLY001",
+      "🤖 unknown · hello",
+    );
   });
 
   test("subsequent calls update the same message", async () => {
