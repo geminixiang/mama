@@ -11,7 +11,7 @@ import {
   SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
@@ -20,6 +20,12 @@ import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import {
+  extractSessionSuffix,
+  extractSessionUuid,
+  getSessionDir,
+  resolveSessionFile,
+} from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
 
 export interface PendingMessage {
@@ -443,12 +449,15 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager
-  // Per-session context file: {channelDir}/sessions/{rootTs}/context.jsonl
-  const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
-  const sessionDir = join(channelDir, "sessions", rootTs);
-  mkdirSync(sessionDir, { recursive: true });
-  const contextFile = join(sessionDir, "context.jsonl");
-  const sessionManager = SessionManager.open(contextFile, channelDir);
+  // Session files: {channelDir}/sessions/{timestamp}_{uuid}.jsonl
+  // Active session tracked by: {channelDir}/sessions/current (pointer file)
+  // Group threads use: {channelDir}/sessions/{threadId}/current
+  const sessionDir = getSessionDir(channelDir, sessionKey);
+  const contextFile = resolveSessionFile(sessionDir);
+  const sessionManager = SessionManager.open(contextFile, sessionDir);
+  const sessionUuid = extractSessionUuid(contextFile);
+  // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
+  const rootTs = extractSessionSuffix(sessionKey);
   const settingsManager = createMamaSettingsManager(join(channelDir, ".."));
 
   // Create AuthStorage and ModelRegistry
@@ -523,7 +532,12 @@ export async function createRunner(
   // Mutable per-run state - event handler references this
   const runState = {
     responseCtx: null as ChatResponseContext | null,
-    logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
+    logCtx: null as {
+      channelId: string;
+      userName?: string;
+      channelName?: string;
+      sessionId?: string;
+    } | null,
     queue: null as {
       enqueue(fn: () => Promise<void>, errorContext: string): void;
       enqueueMessage(
@@ -770,6 +784,7 @@ export async function createRunner(
         channelId: sessionChannel,
         userName: message.userName,
         channelName: undefined,
+        sessionId: sessionUuid,
       };
       runState.pendingTools.clear();
       runState.totalUsage = {
