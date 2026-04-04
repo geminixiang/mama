@@ -76,10 +76,13 @@ export class DiscordBot implements Bot {
   private users = new Map<string, { id: string; userName: string; displayName: string }>();
   /** Thread IDs created by this bot — replies in these threads skip the @mention check */
   private ownThreads = new Set<string>();
+  private ownThreadsPath: string;
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
     this.workingDir = config.workingDir;
+    this.ownThreadsPath = join(config.workingDir, "own-threads.json");
+    this.loadOwnThreads();
     this.client = new Client({
       intents: [
         GatewayIntentBits.Guilds,
@@ -89,6 +92,29 @@ export class DiscordBot implements Bot {
       ],
       partials: [Partials.Channel, Partials.Message],
     });
+  }
+
+  private loadOwnThreads(): void {
+    try {
+      if (existsSync(this.ownThreadsPath)) {
+        const data = JSON.parse(readFileSync(this.ownThreadsPath, "utf-8"));
+        if (Array.isArray(data)) {
+          for (const id of data) this.ownThreads.add(id);
+        }
+      }
+    } catch {
+      // Corrupted file — start fresh
+    }
+  }
+
+  private saveOwnThreads(): void {
+    try {
+      const dir = join(this.workingDir);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(this.ownThreadsPath, JSON.stringify([...this.ownThreads]));
+    } catch {
+      // Non-fatal
+    }
   }
 
   // ==========================================================================
@@ -172,6 +198,7 @@ export class DiscordBot implements Bot {
       autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
     });
     this.ownThreads.add(thread.id);
+    this.saveOwnThreads();
     return thread.id;
   }
 
@@ -364,11 +391,7 @@ export class DiscordBot implements Bot {
       // Skip if bot isn't mentioned and it's not a DM
       const isDM = msg.channel.type === 1; // ChannelType.DM = 1
       const isMentioned = msg.mentions.users.has(this.botUserId ?? "");
-      const isThread = msg.channel.isThread();
-      const isInOwnThread = isThread && this.ownThreads.has(msg.channelId);
-      log.logInfo(
-        `[DEBUG] channelId=${msg.channelId} isThread=${isThread} isInOwnThread=${isInOwnThread} ownThreads=[${[...this.ownThreads].join(",")}] isDM=${isDM} isMentioned=${isMentioned}`,
-      );
+      const isInOwnThread = msg.channel.isThread() && this.ownThreads.has(msg.channelId);
       if (!isDM && !isMentioned && !isInOwnThread) return;
 
       const channelId = msg.channelId;
