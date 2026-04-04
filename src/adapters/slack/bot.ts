@@ -75,6 +75,8 @@ export interface SlackEvent {
   files?: Array<{ name?: string; url_private_download?: string; url_private?: string }>;
   /** Processed attachments with local paths (populated after logUserMessage) */
   attachments?: Attachment[];
+  /** Session key passed through to BotEvent so handleEvent uses the correct persistent session */
+  sessionKey?: string;
 }
 
 export interface SlackUser {
@@ -577,9 +579,15 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // Derive session key from thread context (resolve alias for bot-reply-anchored threads)
-      const rootTs = e.thread_ts ?? e.ts;
-      const sessionKey = this.handler.resolveSessionKey(`${e.channel}:${rootTs}`);
+      // Top-level mentions use a persistent channel session.
+      // Thread replies get their own isolated session (channelId:thread_ts).
+      const rawSessionKey = e.thread_ts ? `${e.channel}:${e.thread_ts}` : e.channel;
+      const sessionKey = this.handler.resolveSessionKey(rawSessionKey);
+      if (!e.thread_ts) {
+        // Replies in the thread created from this top-level mention will come back
+        // with thread_ts = e.ts, but they should still control the shared channel session.
+        this.handler.registerThreadAlias(`${e.channel}:${e.ts}`, sessionKey);
+      }
 
       const slackEvent: SlackEvent = {
         type: "mention",
@@ -589,6 +597,7 @@ export class SlackBot implements Bot {
         user: e.user,
         text: e.text.replace(/<@[A-Z0-9]+>/gi, "").trim(),
         files: e.files,
+        sessionKey,
       };
 
       // SYNC: Log to log.jsonl (ALWAYS, even for old messages)
@@ -681,6 +690,7 @@ export class SlackBot implements Bot {
         user: e.user,
         text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
         files: e.files,
+        sessionKey: isDM ? this.handler.resolveSessionKey(e.channel) : undefined,
       };
 
       // SYNC: Log to log.jsonl (ALL messages - channel chatter and DMs)
@@ -711,9 +721,7 @@ export class SlackBot implements Bot {
 
       // Only trigger handler for DMs
       if (isDM) {
-        const dmRootTs = e.thread_ts ?? e.ts;
-        const dmSessionKey = this.handler.resolveSessionKey(`${e.channel}:${dmRootTs}`);
-
+        const dmSessionKey = slackEvent.sessionKey!;
         // Check for stop command - execute immediately, don't queue!
         if (slackEvent.text.toLowerCase().trim() === "stop") {
           if (this.handler.isRunning(dmSessionKey)) {

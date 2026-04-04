@@ -38,6 +38,7 @@ export interface LogContext {
   channelId: string;
   userName?: string;
   channelName?: string; // For display like #dev-team vs C16HET4EQ
+  sessionId?: string;
 }
 
 export interface LogConfig {
@@ -72,6 +73,7 @@ function ctxFields(ctx: LogContext): Record<string, string> {
   const out: Record<string, string> = { channel: ctx.channelId };
   if (ctx.userName) out.user = ctx.userName;
   if (ctx.channelName) out.channelName = ctx.channelName;
+  if (ctx.sessionId) out.sessionId = ctx.sessionId;
   return out;
 }
 
@@ -84,14 +86,13 @@ function timestamp(): string {
 }
 
 function formatContext(ctx: LogContext): string {
-  // DMs: [DM:username]
-  // Channels: [#channel-name:username] or [C16HET4EQ:username] if no name
+  const session = ctx.sessionId ? `:${ctx.sessionId}` : "";
   if (ctx.channelId.startsWith("D")) {
-    return `[DM:${ctx.userName || ctx.channelId}]`;
+    return `[DM:${ctx.userName || ctx.channelId}${session}]`;
   }
   const channel = ctx.channelName || ctx.channelId;
   const user = ctx.userName || "unknown";
-  return `[${channel.startsWith("#") ? channel : `#${channel}`}:${user}]`;
+  return `[${channel.startsWith("#") ? channel : `#${channel}`}:${user}${session}]`;
 }
 
 function truncate(text: string, maxLen: number): string {

@@ -164,6 +164,10 @@ export class TelegramBot implements Bot {
     return result.message_id;
   }
 
+  async postPlainMessage(chatId: number, text: string): Promise<void> {
+    await this.client.api.sendMessage(chatId, text);
+  }
+
   async postReply(chatId: number, replyToMessageId: number, text: string): Promise<number> {
     const result = await this.client.api.sendMessage(chatId, text, {
       parse_mode: "HTML",
@@ -324,12 +328,12 @@ export class TelegramBot implements Bot {
   private isAddressedToBot(text: string, chatType: string): boolean {
     if (chatType === "private") return true;
     if (!this.botUsername) return false;
-    return text.includes(`@${this.botUsername}`);
+    return text.toLowerCase().includes(`@${this.botUsername.toLowerCase()}`);
   }
 
   private cleanText(text: string): string {
     if (!this.botUsername) return text.trim();
-    return text.replace(new RegExp(`@${this.botUsername}`, "g"), "").trim();
+    return text.replace(new RegExp(`@${this.botUsername}`, "gi"), "").trim();
   }
 
   private setupEventHandlers(): void {

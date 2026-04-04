@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { readFileSync, rmSync } from "fs";
+import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
@@ -9,6 +9,7 @@ import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
+import { createNewSessionFile, getSessionDir } from "./session-store.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -286,10 +287,10 @@ const handler: BotHandler = {
       state.runner.abort();
     }
 
-    // Delete session directory on disk
-    const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
-    const sessionDir = join(workingDir, channelId, "sessions", rootTs);
-    rmSync(sessionDir, { recursive: true, force: true });
+    // Create a new session file and update the current pointer
+    const channelDir = join(workingDir, channelId);
+    const sessionDir = getSessionDir(channelDir, sessionKey);
+    createNewSessionFile(sessionDir);
 
     // Remove from in-memory cache
     channelStates.delete(sessionKey);
