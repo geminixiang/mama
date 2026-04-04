@@ -202,7 +202,7 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 
 1. Go to the [Discord Developer Portal](https://discord.com/developers/applications) → **New Application**.
 2. Under **Bot**, enable **Message Content Intent** (required to read message text).
-3. Under **OAuth2 → URL Generator**, select scopes `bot` + permissions `Send Messages`, `Read Message History`, `Attach Files`. Invite the bot to your server with the generated URL.
+3. Under **OAuth2 → URL Generator**, select scopes `bot` + permissions `Send Messages`, `Send Messages in Threads`, `Create Public Threads`, `Read Message History`, `Attach Files`. Invite the bot to your server with the generated URL.
 4. Copy the **Bot Token**.
 
 ```bash

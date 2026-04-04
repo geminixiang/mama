@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/
 bin/
+.claude/settings.local.json
 
 *.env
 .env*
