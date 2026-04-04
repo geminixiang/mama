@@ -21,7 +21,6 @@ export function getSessionDir(channelDir: string, sessionKey: string): string {
  * or the pointed-to file is missing.
  */
 export function resolveSessionFile(sessionDir: string): string {
-  mkdirSync(sessionDir, { recursive: true });
   const pointerFile = join(sessionDir, "current");
   if (existsSync(pointerFile)) {
     const filename = readFileSync(pointerFile, "utf-8").trim();

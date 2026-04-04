@@ -37,8 +37,8 @@ export function createSlackAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    // Top-level: persistent channel session. Thread replies: isolated per-thread session.
-    sessionKey: event.thread_ts ? `${event.channel}:${event.thread_ts}` : event.channel,
+    sessionKey:
+      event.sessionKey ?? (event.thread_ts ? `${event.channel}:${event.thread_ts}` : event.channel),
     userId: event.user,
     userName: user?.userName,
     text: event.text,

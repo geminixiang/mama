@@ -114,25 +114,24 @@ export function createTelegramAdapters(
     return text;
   }
 
+  async function sendOrUpdate(displayText: string): Promise<void> {
+    if (messageId !== null) {
+      await bot.updateMessage(event.channel, String(messageId), displayText);
+    } else if (replyToId !== null) {
+      messageId = await bot.postReply(chatId, replyToId, displayText);
+    } else {
+      messageId = await bot.postMessageRaw(chatId, displayText);
+    }
+  }
+
   const responseCtx: ChatResponseContext = {
     respond: async (text: string) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-          const displayText = truncate(
-            sanitizeTelegramHtml(accumulatedText),
-            MAX_LENGTH,
-            truncationNote,
-          );
-
-          if (messageId !== null) {
-            await bot.updateMessage(event.channel, String(messageId), displayText);
-          } else if (replyToId !== null) {
-            messageId = await bot.postReply(chatId, replyToId, displayText);
-          } else {
-            messageId = await bot.postMessageRaw(chatId, displayText);
-          }
-
+          const sanitized = sanitizeTelegramHtml(text);
+          accumulatedText = accumulatedText ? `${accumulatedText}\n${sanitized}` : sanitized;
+          const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
+          await sendOrUpdate(displayText);
           if (messageId !== null) {
             bot.logBotResponse(event.channel, text, String(messageId));
           }
@@ -147,15 +146,7 @@ export function createTelegramAdapters(
       updatePromise = updatePromise.then(async () => {
         try {
           accumulatedText = truncate(sanitizeTelegramHtml(text), MAX_LENGTH, truncationNote);
-          const displayText = accumulatedText;
-
-          if (messageId !== null) {
-            await bot.updateMessage(event.channel, String(messageId), displayText);
-          } else if (replyToId !== null) {
-            messageId = await bot.postReply(chatId, replyToId, displayText);
-          } else {
-            messageId = await bot.postMessageRaw(chatId, displayText);
-          }
+          await sendOrUpdate(accumulatedText);
         } catch (err) {
           await notifyError(bot, chatId, "replaceResponse", err);
         }

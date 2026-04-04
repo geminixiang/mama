@@ -677,9 +677,6 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // DMs use bare channel ID for persistent session
-      const dmSessionKey = this.handler.resolveSessionKey(e.channel);
-
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
         channel: e.channel,
@@ -688,7 +685,7 @@ export class SlackBot implements Bot {
         user: e.user,
         text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
         files: e.files,
-        sessionKey: isDM ? dmSessionKey : undefined,
+        sessionKey: isDM ? this.handler.resolveSessionKey(e.channel) : undefined,
       };
 
       // SYNC: Log to log.jsonl (ALL messages - channel chatter and DMs)
@@ -719,6 +716,7 @@ export class SlackBot implements Bot {
 
       // Only trigger handler for DMs
       if (isDM) {
+        const dmSessionKey = slackEvent.sessionKey!;
         // Check for stop command - execute immediately, don't queue!
         if (slackEvent.text.toLowerCase().trim() === "stop") {
           if (this.handler.isRunning(dmSessionKey)) {
