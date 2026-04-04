@@ -364,7 +364,11 @@ export class DiscordBot implements Bot {
       // Skip if bot isn't mentioned and it's not a DM
       const isDM = msg.channel.type === 1; // ChannelType.DM = 1
       const isMentioned = msg.mentions.users.has(this.botUserId ?? "");
-      const isInOwnThread = msg.channel.isThread() && this.ownThreads.has(msg.channelId);
+      const isThread = msg.channel.isThread();
+      const isInOwnThread = isThread && this.ownThreads.has(msg.channelId);
+      log.logInfo(
+        `[DEBUG] channelId=${msg.channelId} isThread=${isThread} isInOwnThread=${isInOwnThread} ownThreads=[${[...this.ownThreads].join(",")}] isDM=${isDM} isMentioned=${isMentioned}`,
+      );
       if (!isDM && !isMentioned && !isInOwnThread) return;
 
       const channelId = msg.channelId;
