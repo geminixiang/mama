@@ -20,6 +20,7 @@ function makeDiscordBot(overrides: Partial<DiscordBot> = {}): DiscordBot {
     createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH001"),
     postEmbed: vi.fn().mockResolvedValue("EMBED_MSG001"),
     updateMessageWithComponents: vi.fn().mockResolvedValue(undefined),
+    registerThreadAlias: vi.fn(),
     // Bot interface stubs
     start: vi.fn(),
     postMessage: vi.fn().mockResolvedValue("MSG001"),

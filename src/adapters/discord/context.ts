@@ -199,6 +199,9 @@ export function createDiscordAdapters(
   async function tryCreateThread(msgId: string): Promise<void> {
     try {
       threadChannelId = await bot.createThreadOnMessage(event.channel, msgId, buildThreadName());
+      // Register alias so replies in this thread resolve to the original session
+      const threadSessionKey = `${threadChannelId}:${threadChannelId}`;
+      bot.registerThreadAlias(threadSessionKey, message.sessionKey);
       // Flush pending thread messages
       const pending = pendingThreadMessages;
       pendingThreadMessages = [];

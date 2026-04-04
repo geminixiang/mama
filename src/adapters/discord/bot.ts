@@ -74,6 +74,8 @@ export class DiscordBot implements Bot {
   private startupTime: number = 0;
   private channels = new Map<string, { id: string; name: string }>();
   private users = new Map<string, { id: string; userName: string; displayName: string }>();
+  /** Thread IDs created by this bot — replies in these threads skip the @mention check */
+  private ownThreads = new Set<string>();
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
@@ -169,7 +171,12 @@ export class DiscordBot implements Bot {
       name,
       autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
     });
+    this.ownThreads.add(thread.id);
     return thread.id;
+  }
+
+  registerThreadAlias(aliasKey: string, sessionKey: string): void {
+    this.handler.registerThreadAlias(aliasKey, sessionKey);
   }
 
   async postEmbed(channelId: string, embed: object): Promise<string> {
@@ -357,7 +364,8 @@ export class DiscordBot implements Bot {
       // Skip if bot isn't mentioned and it's not a DM
       const isDM = msg.channel.type === 1; // ChannelType.DM = 1
       const isMentioned = msg.mentions.users.has(this.botUserId ?? "");
-      if (!isDM && !isMentioned) return;
+      const isInOwnThread = msg.channel.isThread() && this.ownThreads.has(msg.channelId);
+      if (!isDM && !isMentioned && !isInOwnThread) return;
 
       const channelId = msg.channelId;
       const userId = msg.author.id;
@@ -381,7 +389,8 @@ export class DiscordBot implements Bot {
       const isInThread = msg.channel.isThread();
       const referencedMsgId = msg.reference?.messageId;
       const threadTs = isInThread ? msg.channelId : referencedMsgId;
-      const sessionKey = `${channelId}:${threadTs ?? msgId}`;
+      const rawSessionKey = `${channelId}:${threadTs ?? msgId}`;
+      const sessionKey = this.handler.resolveSessionKey(rawSessionKey);
 
       const cleanedText = this.stripBotMention(msg.content);
 
