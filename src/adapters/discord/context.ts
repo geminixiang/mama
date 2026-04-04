@@ -37,6 +37,12 @@ export function createDiscordAdapters(
   const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
   const isThreaded = !!event.thread_ts;
 
+  // If already in a thread, reuse it for respondInThread() calls (CoT, tool logs, summary)
+  // instead of trying to create a nested thread (which Discord doesn't support)
+  if (isThreaded) {
+    threadChannelId = event.channel;
+  }
+
   const message: ChatMessage = {
     id: event.ts,
     sessionKey: `${event.channel}:${event.thread_ts ?? event.ts}`,
@@ -252,8 +258,10 @@ export function createDiscordAdapters(
                 .catch(() => {});
             }
 
-            // Auto-create thread on the main reply
-            await tryCreateThread(messageId);
+            // Auto-create thread on the main reply (skip if already in a thread)
+            if (!isThreaded) {
+              await tryCreateThread(messageId);
+            }
           }
 
           if (messageId !== null) {
@@ -292,7 +300,9 @@ export function createDiscordAdapters(
               messageId = await bot.postReply(event.channel, event.ts, firstPart);
             }
 
-            await tryCreateThread(messageId);
+            if (!isThreaded) {
+              await tryCreateThread(messageId);
+            }
           }
 
           // Post overflow parts in thread
