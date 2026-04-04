@@ -3,6 +3,7 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  ThreadAutoArchiveDuration,
   type Collection,
   type Message,
   type Attachment,
@@ -159,6 +160,33 @@ export class DiscordBot implements Bot {
     const replyTarget = await ch.messages.fetch(replyToId);
     const sent = await replyTarget.reply(text);
     return sent.id;
+  }
+
+  async createThreadOnMessage(channelId: string, messageId: string, name: string): Promise<string> {
+    const ch = await this.fetchTextChannel(channelId);
+    const msg = await ch.messages.fetch(messageId);
+    const thread = await msg.startThread({
+      name,
+      autoArchiveDuration: ThreadAutoArchiveDuration.OneHour,
+    });
+    return thread.id;
+  }
+
+  async postEmbed(channelId: string, embed: object): Promise<string> {
+    const ch = await this.fetchTextChannel(channelId);
+    const msg = await ch.send({ embeds: [embed] });
+    return msg.id;
+  }
+
+  async updateMessageWithComponents(
+    channelId: string,
+    messageId: string,
+    text: string,
+    components: object[],
+  ): Promise<void> {
+    const ch = await this.fetchTextChannel(channelId);
+    const msg = await ch.messages.fetch(messageId);
+    await msg.edit({ content: text, components: components as any[] });
   }
 
   async postInThread(channelId: string, threadOrMessageId: string, text: string): Promise<string> {
@@ -399,6 +427,25 @@ export class DiscordBot implements Bot {
           const adapters = createDiscordAdapters(event, this, false);
           return this.handler.handleEvent(event, this, adapters, false);
         });
+      }
+    });
+
+    // Handle button interactions (e.g. Stop button)
+    this.client.on(Events.InteractionCreate, async (interaction) => {
+      if (!interaction.isButton()) return;
+
+      const customId = interaction.customId;
+
+      if (customId.startsWith("mama_stop:")) {
+        const sessionKey = customId.slice("mama_stop:".length);
+        const channelId = interaction.channelId;
+
+        if (this.handler.isRunning(sessionKey)) {
+          this.handler.handleStop(sessionKey, channelId, this);
+          await interaction.reply({ content: "_Stopping..._", ephemeral: true });
+        } else {
+          await interaction.reply({ content: "_Nothing running_", ephemeral: true });
+        }
       }
     });
   }
