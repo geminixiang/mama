@@ -30,18 +30,15 @@ export function createSlackAdapters(
   const rootTs = event.thread_ts ?? event.ts;
   const isThreaded = !!event.thread_ts;
 
-  /** Post first top-level message and register thread alias so stop commands can find this session */
+  /** Post first reply in-thread under the user's message, creating a thread if none exists */
   const postFirstMessage = async (text: string): Promise<string> => {
-    const ts = await slack.postMessage(event.channel, text);
-    if (ts) {
-      slack.registerThreadAlias(`${event.channel}:${ts}`, `${event.channel}:${rootTs}`);
-    }
-    return ts;
+    return slack.postInThread(event.channel, event.ts, text);
   };
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${event.channel}:${rootTs}`,
+    // Top-level: persistent channel session. Thread replies: isolated per-thread session.
+    sessionKey: event.thread_ts ? `${event.channel}:${event.thread_ts}` : event.channel,
     userId: event.user,
     userName: user?.userName,
     text: event.text,
@@ -129,9 +126,8 @@ export function createSlackAdapters(
     respondInThread: async (text: string, options?: { style?: "muted" }) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          // For threaded sessions, anchor to the user's root thread
-          // For channel sessions, anchor to the main bot message
-          const threadAnchor = isThreaded ? rootTs : messageTs;
+          // Always anchor to the thread root (event.thread_ts ?? event.ts)
+          const threadAnchor = rootTs;
           if (threadAnchor) {
             // Truncate thread messages if too long (20K limit for safety)
             const MAX_THREAD_LENGTH = 20000;
