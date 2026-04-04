@@ -165,6 +165,7 @@ describe("TelegramBot attachments", () => {
     expect(getFile).toHaveBeenCalledWith("file-id");
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.telegram.org/file/botTEST_TOKEN/photos/file_123.jpg",
+      undefined,
     );
     expect(attachment).toMatchObject({
       name: "photo.jpg",

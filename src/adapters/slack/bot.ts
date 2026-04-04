@@ -1,12 +1,14 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
+import { appendChannelLog, createBotLogEntry } from "../shared/channel-log.js";
+import { SerialWorkQueue } from "../shared/serial-queue.js";
 import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
@@ -126,39 +128,6 @@ export interface SlackContext {
 export type MomHandler = BotHandler;
 
 // ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
-}
-
-// ============================================================================
 // SlackBot
 // ============================================================================
 
@@ -173,7 +142,7 @@ export class SlackBot implements Bot {
 
   private users = new Map<string, SlackUser>();
   private channels = new Map<string, SlackChannel>();
-  private queues = new Map<string, ChannelQueue>();
+  private queues = new Map<string, SerialWorkQueue>();
   private eventsWatcher: EventsWatcher | null = null;
 
   constructor(
@@ -330,24 +299,14 @@ export class SlackBot implements Bot {
    * This is the ONLY place messages are written to log.jsonl
    */
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channel, entry);
   }
 
   /**
    * Log a bot response to log.jsonl
    */
   logBotResponse(channel: string, text: string, ts: string, threadTs?: string): void {
-    this.logToFile(channel, {
-      date: new Date().toISOString(),
-      ts,
-      threadTs,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    this.logToFile(channel, createBotLogEntry(text, ts, threadTs));
   }
 
   getPlatformInfo(): PlatformInfo {
@@ -392,10 +351,10 @@ export class SlackBot implements Bot {
   // Private - Event Handlers
   // ==========================================================================
 
-  private getQueue(channelId: string): ChannelQueue {
+  private getQueue(channelId: string): SerialWorkQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new SerialWorkQueue("Queue error");
       this.queues.set(channelId, queue);
     }
     return queue;
