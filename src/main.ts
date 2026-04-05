@@ -9,7 +9,12 @@ import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
-import { createNewSessionFile, getSessionDir } from "./session-store.js";
+import {
+  createManagedSessionFile,
+  createManagedSessionFileAtPath,
+  getSessionDir,
+  getThreadSessionFile,
+} from "./session-store.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -146,21 +151,6 @@ interface ChannelState {
 
 const channelStates = new Map<string, ChannelState>();
 
-/**
- * Maps "channel:botReplyTs" → sessionKey.
- * When the bot posts a top-level reply, the Slack thread anchors to that ts.
- * Users replying in that thread will have thread_ts = botReplyTs, which differs
- * from the original sessionKey (channel:userMessageTs). This alias map lets
- * stop commands resolve the correct session even when the ts doesn't match.
- */
-const threadAliases = new Map<string, string>();
-
-function deleteAliasesForSession(sessionKey: string): void {
-  for (const [alias, target] of threadAliases) {
-    if (target === sessionKey) threadAliases.delete(alias);
-  }
-}
-
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
 
@@ -200,7 +190,6 @@ function evictIdleSessions(): void {
   for (const [key, state] of channelStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
       channelStates.delete(key);
-      deleteAliasesForSession(key);
     }
   }
 
@@ -216,9 +205,7 @@ function evictIdleSessions(): void {
 
     const toEvict = channelStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
-      const evictedKey = idleSessions[i].key;
-      channelStates.delete(evictedKey);
-      deleteAliasesForSession(evictedKey);
+      channelStates.delete(idleSessions[i].key);
     }
   }
 }
@@ -272,14 +259,6 @@ const handler: BotHandler = {
     }
   },
 
-  resolveSessionKey(rawKey: string): string {
-    return threadAliases.get(rawKey) ?? rawKey;
-  },
-
-  registerThreadAlias(aliasKey: string, sessionKey: string): void {
-    threadAliases.set(aliasKey, sessionKey);
-  },
-
   async handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
     const state = channelStates.get(sessionKey);
     if (state?.running) {
@@ -287,15 +266,16 @@ const handler: BotHandler = {
       state.runner.abort();
     }
 
-    // Create a new session file and update the current pointer
+    // Channel sessions rotate via current pointer. Thread sessions reset in place.
     const channelDir = join(workingDir, channelId);
-    const sessionDir = getSessionDir(channelDir, sessionKey);
-    createNewSessionFile(sessionDir);
+    if (sessionKey.includes(":")) {
+      createManagedSessionFileAtPath(getThreadSessionFile(channelDir, sessionKey), channelDir);
+    } else {
+      createManagedSessionFile(getSessionDir(channelDir, sessionKey), channelDir);
+    }
 
     // Remove from in-memory cache
     channelStates.delete(sessionKey);
-
-    deleteAliasesForSession(sessionKey);
 
     log.logInfo(`[${channelId}] Session reset: ${sessionKey}`);
     await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
@@ -315,8 +295,7 @@ const handler: BotHandler = {
       return;
     }
 
-    const rawSessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
-    const sessionKey = this.resolveSessionKey(rawSessionKey);
+    const sessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
     const state = await getState(event.channel, sessionKey);
 
     // Start run

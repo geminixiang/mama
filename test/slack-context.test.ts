@@ -21,7 +21,6 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
     getChannel: vi.fn().mockReturnValue(undefined),
     enqueueEvent: vi.fn().mockReturnValue(true),
     logToFile: vi.fn(),
-    registerThreadAlias: vi.fn(),
     ...overrides,
   } as unknown as SlackBot;
 }
@@ -47,7 +46,6 @@ describe("session key derivation", () => {
     const bot = makeSlackBot();
     const { message } = createSlackAdapters(event, bot);
     expect(message.sessionKey).toBe("C001");
-    expect(bot.registerThreadAlias).toHaveBeenCalledWith("C001:1000.0001", "C001");
   });
 
   test("thread reply uses isolated per-thread session", () => {
@@ -55,7 +53,6 @@ describe("session key derivation", () => {
     const event = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
     const { message } = createSlackAdapters(event, bot);
     expect(message.sessionKey).toBe("C001:1000.0001");
-    expect(bot.registerThreadAlias).not.toHaveBeenCalled();
   });
 
   test("different threads produce different session keys", () => {

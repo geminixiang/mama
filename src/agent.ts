@@ -21,10 +21,16 @@ import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
 import {
+  createManagedSessionFileAtPath,
   extractSessionSuffix,
   extractSessionUuid,
+  forkThreadSessionFile,
   getSessionDir,
-  resolveSessionFile,
+  getThreadSessionFile,
+  openManagedSession,
+  resolveChannelSessionFile,
+  resolveManagedSessionFile,
+  tryResolveThreadSession,
 } from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
 
@@ -449,12 +455,40 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager
-  // Session files: {channelDir}/sessions/{timestamp}_{uuid}.jsonl
-  // Active session tracked by: {channelDir}/sessions/current (pointer file)
-  // Group threads use: {channelDir}/sessions/{threadId}/current
+  // Channel sessions use {channelDir}/sessions/current.
+  // Thread sessions use fixed files: {channelDir}/sessions/{threadTs}.jsonl
   const sessionDir = getSessionDir(channelDir, sessionKey);
-  const contextFile = resolveSessionFile(sessionDir);
-  const sessionManager = SessionManager.open(contextFile, sessionDir);
+  const isThread = sessionKey.includes(":");
+
+  let sessionManager!: SessionManager;
+  let contextFile!: string;
+
+  if (isThread) {
+    const threadFile = getThreadSessionFile(channelDir, sessionKey);
+    const existing = tryResolveThreadSession(threadFile);
+    if (existing) {
+      contextFile = existing;
+      sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+    } else {
+      const channelSource = resolveChannelSessionFile(channelDir);
+      if (channelSource) {
+        try {
+          contextFile = forkThreadSessionFile(channelSource, threadFile, channelDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+        } catch {
+          contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+        }
+      } else {
+        contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
+        sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+      }
+    }
+  } else {
+    // Channel/DM session: normal resolve
+    contextFile = resolveManagedSessionFile(sessionDir, channelDir);
+    sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+  }
   const sessionUuid = extractSessionUuid(contextFile);
   // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
   const rootTs = extractSessionSuffix(sessionKey);
