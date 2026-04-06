@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
+import { createServer, type Server } from "http";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
@@ -8,6 +9,7 @@ import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
 import { DiscordBot } from "./adapters/discord/index.js";
 import { TelegramBot } from "./adapters/telegram/index.js";
 import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
+import { LineBot } from "./adapters/line/index.js";
 import { type AgentRunner, createRunner } from "./agent.js";
 import {
   createManagedSessionFile,
@@ -49,12 +51,15 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+const MOM_LINE_CHANNEL_SECRET = process.env.MOM_LINE_CHANNEL_SECRET;
+const MOM_LINE_CHANNEL_ACCESS_TOKEN = process.env.MOM_LINE_CHANNEL_ACCESS_TOKEN;
 
 interface ParsedArgs {
   workingDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
   showVersion?: boolean;
+  webhookPort?: number;
 }
 
 function parseArgs(): ParsedArgs {
@@ -63,6 +68,7 @@ function parseArgs(): ParsedArgs {
   let workingDir: string | undefined;
   let downloadChannelId: string | undefined;
   let showVersion = false;
+  let webhookPort: number | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -76,6 +82,16 @@ function parseArgs(): ParsedArgs {
       downloadChannelId = arg.slice("--download=".length);
     } else if (arg === "--download") {
       downloadChannelId = args[++i];
+    } else if (arg === "--webhook-port") {
+      const port = parseInt(args[++i] || "8080", 10);
+      if (!isNaN(port) && port > 0 && port < 65536) {
+        webhookPort = port;
+      }
+    } else if (arg.startsWith("--webhook-port=")) {
+      const port = parseInt(arg.slice("--webhook-port=".length), 10);
+      if (!isNaN(port) && port > 0 && port < 65536) {
+        webhookPort = port;
+      }
     } else if (!arg.startsWith("-")) {
       workingDir = arg;
     }
@@ -86,6 +102,7 @@ function parseArgs(): ParsedArgs {
     sandbox,
     downloadChannel: downloadChannelId,
     showVersion,
+    webhookPort,
   };
 }
 
@@ -122,13 +139,15 @@ const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: pa
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
 const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
 const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+const hasLine = !!(MOM_LINE_CHANNEL_SECRET && MOM_LINE_CHANNEL_ACCESS_TOKEN);
 
-if (!hasSlack && !hasTelegram && !hasDiscord) {
+if (!hasSlack && !hasTelegram && !hasDiscord && !hasLine) {
   console.error(
     "No platform tokens found. Set one of:\n" +
       "  Slack:    MOM_SLACK_APP_TOKEN + MOM_SLACK_BOT_TOKEN\n" +
       "  Telegram: MOM_TELEGRAM_BOT_TOKEN\n" +
-      "  Discord:  MOM_DISCORD_BOT_TOKEN",
+      "  Discord:  MOM_DISCORD_BOT_TOKEN\n" +
+      "  LINE:     MOM_LINE_CHANNEL_SECRET + MOM_LINE_CHANNEL_ACCESS_TOKEN",
   );
   process.exit(1);
 }
@@ -392,6 +411,48 @@ if (hasDiscord) {
   botsByPlatform.discord = discordBot;
   log.logInfo("Platform: Discord");
 }
+if (hasLine) {
+  const lineBot = new LineBot(handler, {
+    channelSecret: MOM_LINE_CHANNEL_SECRET!,
+    channelAccessToken: MOM_LINE_CHANNEL_ACCESS_TOKEN!,
+    workingDir,
+  });
+  bots.push(lineBot);
+  botsByPlatform.line = lineBot;
+  log.logInfo("Platform: LINE");
+}
+
+// Webhook server for LINE (if enabled)
+let webhookServer: Server | null = null;
+if (hasLine && parsedArgs.webhookPort) {
+  webhookServer = createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/webhook") {
+      let body = "";
+      req.on("data", (chunk) => {
+        body += chunk.toString();
+      });
+      req.on("end", () => {
+        try {
+          const lineBotInstance = botsByPlatform.line as LineBot;
+          const data = JSON.parse(body);
+          lineBotInstance.handleWebhook(data);
+          res.writeHead(200, { "Content-Type": "text/plain" });
+          res.end("OK");
+        } catch {
+          res.writeHead(400, { "Content-Type": "text/plain" });
+          res.end("Bad Request");
+        }
+      });
+    } else {
+      res.writeHead(404, { "Content-Type": "text/plain" });
+      res.end("Not Found");
+    }
+  });
+
+  webhookServer.listen(parsedArgs.webhookPort, () => {
+    log.logInfo(`LINE webhook server listening on port ${parsedArgs.webhookPort}`);
+  });
+}
 
 // Start events watcher with explicit platform routing
 const eventsWatcher = createEventsWatcher(workingDir, botsByPlatform);
@@ -417,6 +478,10 @@ async function shutdown(): Promise<void> {
   }
 
   eventsWatcher.stop();
+
+  if (webhookServer) {
+    webhookServer.close();
+  }
   process.exit(0);
 }
 
