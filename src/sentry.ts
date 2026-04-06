@@ -35,12 +35,12 @@ const SENSITIVE_KEYS = new Set([
 ]);
 
 const ABSOLUTE_PATH_PATTERN =
-  /(?:\/Users\/[^\s"'`]+|\/workspace\/[^\s"'`]+|\/tmp\/[^\s"'`]+|\/var\/folders\/[^\s"'`]+|[A-Za-z]:\\[^\s"'`]+)/g;
+  /(?:\/Users\/[^\s"'`]+|\/workspace\/[^\s"'`]+|\/tmp\/[^\s"'`]+|\/var\/folders\/[^\s"'`]+|[A-Za-z]:\\[^\s"'`]+)/;
 const TOKEN_PATTERNS = [
-  /\bsk-[A-Za-z0-9_-]{12,}\b/g,
-  /\bxox[a-z]-[A-Za-z0-9-]{10,}\b/g,
-  /\bAIza[0-9A-Za-z_-]{20,}\b/g,
-  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/g,
+  /\bsk-[A-Za-z0-9_-]{12,}\b/,
+  /\bxox[a-z]-[A-Za-z0-9-]{10,}\b/,
+  /\bAIza[0-9A-Za-z_-]{20,}\b/,
+  /\bgh[pousr]_[A-Za-z0-9]{20,}\b/,
 ];
 
 export interface SentryRunScopeContext {
@@ -236,9 +236,9 @@ function summarizeValue(value: unknown, key?: string): string {
 }
 
 function sanitizeString(value: string): string {
-  let sanitized = value.replace(ABSOLUTE_PATH_PATTERN, REDACTED_PATH);
+  let sanitized = value.replace(new RegExp(ABSOLUTE_PATH_PATTERN, "g"), REDACTED_PATH);
   for (const pattern of TOKEN_PATTERNS) {
-    sanitized = sanitized.replace(pattern, REDACTED);
+    sanitized = sanitized.replace(new RegExp(pattern, "g"), REDACTED);
   }
   if (sanitized.length > MAX_STRING_LENGTH) {
     return `${sanitized.slice(0, MAX_STRING_LENGTH)}… [truncated ${sanitized.length - MAX_STRING_LENGTH} chars]`;

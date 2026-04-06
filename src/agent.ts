@@ -602,6 +602,7 @@ export async function createRunner(
     if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
 
     const { responseCtx, logCtx, queue, pendingTools } = runState;
+    const baseAttrs = { channel_id: logCtx.channelId, session_id: logCtx.sessionId };
 
     if (event.type === "tool_execution_start") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
@@ -615,8 +616,7 @@ export async function createRunner(
       });
       addLifecycleBreadcrumb("agent.tool.started", {
         tool: agentEvent.toolName,
-        channel_id: logCtx.channelId,
-        session_id: logCtx.sessionId,
+        ...baseAttrs,
       });
 
       log.logToolStart(
@@ -639,24 +639,21 @@ export async function createRunner(
         attributes: metricAttributes({
           tool: agentEvent.toolName,
           error: String(agentEvent.isError),
-          channel_id: logCtx.channelId,
-          session_id: logCtx.sessionId,
+          ...baseAttrs,
         }),
       });
       Sentry.metrics.distribution("agent.tool.duration", durationMs, {
         unit: "millisecond",
         attributes: metricAttributes({
           tool: agentEvent.toolName,
-          channel_id: logCtx.channelId,
-          session_id: logCtx.sessionId,
+          ...baseAttrs,
         }),
       });
       addLifecycleBreadcrumb("agent.tool.completed", {
         tool: agentEvent.toolName,
         error: agentEvent.isError,
         duration_ms: durationMs,
-        channel_id: logCtx.channelId,
-        session_id: logCtx.sessionId,
+        ...baseAttrs,
       });
 
       if (agentEvent.isError) {
@@ -698,8 +695,7 @@ export async function createRunner(
           call_index: runState.llmCallCount,
           provider: model.provider,
           model: agentConfig.model,
-          channel_id: logCtx.channelId,
-          session_id: logCtx.sessionId,
+          ...baseAttrs,
         });
         log.logResponseStart(logCtx);
       }
@@ -730,8 +726,7 @@ export async function createRunner(
           const llmAttributes = metricAttributes({
             provider: model.provider,
             model: agentConfig.model,
-            channel_id: logCtx.channelId,
-            session_id: logCtx.sessionId,
+            ...baseAttrs,
             stop_reason: assistantMsg.stopReason,
             error: Boolean(assistantMsg.errorMessage),
           });
