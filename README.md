@@ -245,7 +245,8 @@ Create `settings.json` in your working directory to override defaults:
   "thinkingLevel": "off",
   "sessionScope": "thread",
   "logFormat": "console",
-  "logLevel": "info"
+  "logLevel": "info",
+  "sentryDsn": "https://examplePublicKey@o0.ingest.sentry.io/0"
 }
 ```
 
@@ -257,6 +258,9 @@ Create `settings.json` in your working directory to override defaults:
 | `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel`           |
 | `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
 | `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
+| `sentryDsn`     | unset               | Sentry DSN (preferred over env `SENTRY_DSN`)             |
+
+When `sentryDsn` is set, mama sends Sentry events with sensitive prompt/tool content redacted before upload.
 
 ### GCP Cloud Logging (Compute Engine)
 
@@ -286,7 +290,7 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
 
 ```
 <working-directory>/
-├── settings.json          # AI provider/model config
+├── settings.json          # AI provider/model/Sentry config
 ├── MEMORY.md              # Global memory (all channels)
 ├── SYSTEM.md              # Installed packages / env changes log
 ├── skills/                # Global skills (CLI tools)

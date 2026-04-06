@@ -2,7 +2,12 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { loadAgentConfig, saveAgentConfig } from "../src/config.js";
+import {
+  loadAgentConfig,
+  resolveSentryDsn,
+  resolveWorkspaceDirFromArgv,
+  saveAgentConfig,
+} from "../src/config.js";
 
 describe("loadAgentConfig", () => {
   let tmpDir: string;
@@ -35,6 +40,12 @@ describe("loadAgentConfig", () => {
     saveAgentConfig(tmpDir, { sessionScope: "channel" });
     const config = loadAgentConfig(tmpDir);
     expect(config.sessionScope).toBe("channel");
+  });
+
+  test("reads sentryDsn from settings.json", () => {
+    saveAgentConfig(tmpDir, { sentryDsn: "https://examplePublicKey@o0.ingest.sentry.io/0" });
+    const config = loadAgentConfig(tmpDir);
+    expect(config.sentryDsn).toBe("https://examplePublicKey@o0.ingest.sentry.io/0");
   });
 
   test("env vars override defaults but not settings.json", () => {
@@ -71,6 +82,45 @@ describe("loadAgentConfig", () => {
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBe("anthropic");
     expect(config.model).toBe("claude-sonnet-4-5");
+  });
+});
+
+describe("resolveWorkspaceDirFromArgv", () => {
+  test("returns the positional workspace dir", () => {
+    expect(resolveWorkspaceDirFromArgv(["--sandbox=host", "/tmp/mama"])).toBe("/tmp/mama");
+  });
+
+  test("skips flag values before resolving workspace dir", () => {
+    expect(resolveWorkspaceDirFromArgv(["--sandbox", "host", "/tmp/mama"])).toBe("/tmp/mama");
+  });
+
+  test("ignores download mode channel ids", () => {
+    expect(resolveWorkspaceDirFromArgv(["--download", "C123"])).toBeUndefined();
+  });
+});
+
+describe("resolveSentryDsn", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `mama-test-sentry-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    delete process.env.SENTRY_DSN;
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("prefers settings.json over env", () => {
+    saveAgentConfig(tmpDir, { sentryDsn: "https://settings.example/1" });
+    process.env.SENTRY_DSN = "https://env.example/1";
+    expect(resolveSentryDsn(tmpDir)).toBe("https://settings.example/1");
+  });
+
+  test("falls back to env when settings.json has no sentryDsn", () => {
+    process.env.SENTRY_DSN = "https://env.example/2";
+    expect(resolveSentryDsn(tmpDir)).toBe("https://env.example/2");
   });
 });
 
