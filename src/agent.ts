@@ -20,6 +20,7 @@ import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import {
   createManagedSessionFileAtPath,
   extractSessionSuffix,
@@ -33,6 +34,7 @@ import {
   tryResolveThreadSession,
 } from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
+import * as Sentry from "@sentry/node";
 
 export interface PendingMessage {
   userName: string;
@@ -589,6 +591,7 @@ export async function createRunner(
       cacheWrite: 0,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
     },
+    llmCallCount: 0,
     stopReason: "stop",
     errorMessage: undefined as string | undefined,
   };
@@ -610,6 +613,11 @@ export async function createRunner(
         args: agentEvent.args,
         startTime: Date.now(),
       });
+      addLifecycleBreadcrumb("agent.tool.started", {
+        tool: agentEvent.toolName,
+        channel_id: logCtx.channelId,
+        session_id: logCtx.sessionId,
+      });
 
       log.logToolStart(
         logCtx,
@@ -626,6 +634,30 @@ export async function createRunner(
       pendingTools.delete(agentEvent.toolCallId);
 
       const durationMs = pending ? Date.now() - pending.startTime : 0;
+
+      Sentry.metrics.count("agent.tool.calls", 1, {
+        attributes: metricAttributes({
+          tool: agentEvent.toolName,
+          error: String(agentEvent.isError),
+          channel_id: logCtx.channelId,
+          session_id: logCtx.sessionId,
+        }),
+      });
+      Sentry.metrics.distribution("agent.tool.duration", durationMs, {
+        unit: "millisecond",
+        attributes: metricAttributes({
+          tool: agentEvent.toolName,
+          channel_id: logCtx.channelId,
+          session_id: logCtx.sessionId,
+        }),
+      });
+      addLifecycleBreadcrumb("agent.tool.completed", {
+        tool: agentEvent.toolName,
+        error: agentEvent.isError,
+        duration_ms: durationMs,
+        channel_id: logCtx.channelId,
+        session_id: logCtx.sessionId,
+      });
 
       if (agentEvent.isError) {
         log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);
@@ -661,6 +693,14 @@ export async function createRunner(
     } else if (event.type === "message_start") {
       const agentEvent = event as AgentEvent & { type: "message_start" };
       if (agentEvent.message.role === "assistant") {
+        runState.llmCallCount += 1;
+        addLifecycleBreadcrumb("agent.llm.call.started", {
+          call_index: runState.llmCallCount,
+          provider: model.provider,
+          model: agentConfig.model,
+          channel_id: logCtx.channelId,
+          session_id: logCtx.sessionId,
+        });
         log.logResponseStart(logCtx);
       }
     } else if (event.type === "message_end") {
@@ -685,6 +725,46 @@ export async function createRunner(
           runState.totalUsage.cost.cacheRead += assistantMsg.usage.cost.cacheRead;
           runState.totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
           runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
+
+          // Per-turn LLM metrics
+          const llmAttributes = metricAttributes({
+            provider: model.provider,
+            model: agentConfig.model,
+            channel_id: logCtx.channelId,
+            session_id: logCtx.sessionId,
+            stop_reason: assistantMsg.stopReason,
+            error: Boolean(assistantMsg.errorMessage),
+          });
+          Sentry.metrics.count("agent.llm.calls", 1, { attributes: llmAttributes });
+          Sentry.metrics.distribution("agent.llm.tokens_in", assistantMsg.usage.input, {
+            attributes: llmAttributes,
+          });
+          Sentry.metrics.distribution("agent.llm.tokens_out", assistantMsg.usage.output, {
+            attributes: llmAttributes,
+          });
+          if (assistantMsg.usage.cacheRead > 0) {
+            Sentry.metrics.distribution("agent.llm.cache_read", assistantMsg.usage.cacheRead, {
+              attributes: llmAttributes,
+            });
+          }
+          if (assistantMsg.usage.cacheWrite > 0) {
+            Sentry.metrics.distribution("agent.llm.cache_write", assistantMsg.usage.cacheWrite, {
+              attributes: llmAttributes,
+            });
+          }
+          Sentry.metrics.distribution("agent.llm.cost_per_turn", assistantMsg.usage.cost.total, {
+            attributes: llmAttributes,
+          });
+          addLifecycleBreadcrumb("agent.llm.call.completed", {
+            call_index: runState.llmCallCount,
+            provider: model.provider,
+            model: agentConfig.model,
+            stop_reason: assistantMsg.stopReason,
+            error: Boolean(assistantMsg.errorMessage),
+            input_tokens: assistantMsg.usage.input,
+            output_tokens: assistantMsg.usage.output,
+            cost_total_usd: assistantMsg.usage.cost.total,
+          });
         }
 
         const content = agentEvent.message.content;
@@ -831,6 +911,7 @@ export async function createRunner(
         cacheWrite: 0,
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
       };
+      runState.llmCallCount = 0;
       runState.stopReason = "stop";
       runState.errorMessage = undefined;
 
@@ -926,6 +1007,14 @@ export async function createRunner(
         imageAttachmentCount: imageAttachments.length,
       };
       await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+      addLifecycleBreadcrumb("agent.prompt.sent", {
+        provider: model.provider,
+        model: agentConfig.model,
+        channel_id: sessionChannel,
+        session_id: sessionUuid,
+        attachment_count: message.attachments?.length ?? 0,
+        image_attachment_count: imageAttachments.length,
+      });
 
       await session.prompt(
         userMessage,
@@ -997,6 +1086,36 @@ export async function createRunner(
             lastAssistantMessage.usage.cacheWrite
           : 0;
         const contextWindow = model.contextWindow || 200000;
+
+        // Run-level Sentry metrics
+        const { totalUsage } = runState;
+        const runMetricAttributes = metricAttributes({
+          provider: model.provider,
+          model: agentConfig.model,
+          channel_id: sessionChannel,
+          session_id: sessionUuid,
+          stop_reason: runState.stopReason,
+          llm_calls: runState.llmCallCount,
+        });
+        Sentry.metrics.distribution("agent.run.tokens_in", totalUsage.input, {
+          attributes: runMetricAttributes,
+        });
+        Sentry.metrics.distribution("agent.run.tokens_out", totalUsage.output, {
+          attributes: runMetricAttributes,
+        });
+        Sentry.metrics.distribution("agent.run.cache_read", totalUsage.cacheRead, {
+          attributes: runMetricAttributes,
+        });
+        Sentry.metrics.distribution("agent.run.cache_write", totalUsage.cacheWrite, {
+          attributes: runMetricAttributes,
+        });
+        Sentry.metrics.distribution("agent.run.cost", totalUsage.cost.total, {
+          attributes: runMetricAttributes,
+        });
+        Sentry.metrics.gauge("agent.context.utilization", contextTokens / contextWindow, {
+          unit: "ratio",
+          attributes: runMetricAttributes,
+        });
 
         const summary = log.logUsageSummary(
           runState.logCtx!,

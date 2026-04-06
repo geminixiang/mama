@@ -8,6 +8,7 @@ export interface AgentConfig {
   sessionScope?: "thread" | "channel";
   logFormat?: "console" | "json";
   logLevel?: "trace" | "debug" | "info" | "warn" | "error";
+  sentryDsn?: string;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -19,21 +20,28 @@ const DEFAULTS: AgentConfig = {
   logLevel: "info",
 };
 
-export function loadAgentConfig(workspaceDir: string): AgentConfig {
+function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
   const settingsPath = join(workspaceDir, "settings.json");
 
-  let fromFile: Partial<AgentConfig> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      const raw = readFileSync(settingsPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        fromFile = parsed as Partial<AgentConfig>;
-      }
-    } catch {
-      // Ignore parse errors, fall through to env/defaults
-    }
+  if (!existsSync(settingsPath)) {
+    return {};
   }
+
+  try {
+    const raw = readFileSync(settingsPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Partial<AgentConfig>;
+    }
+  } catch {
+    // Ignore parse errors, fall through to env/defaults
+  }
+
+  return {};
+}
+
+export function loadAgentConfig(workspaceDir: string): AgentConfig {
+  const fromFile = loadRawAgentConfig(workspaceDir);
 
   const provider = fromFile.provider || process.env.MOM_AI_PROVIDER || DEFAULTS.provider;
   const model = fromFile.model || process.env.MOM_AI_MODEL || DEFAULTS.model;
@@ -41,8 +49,45 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
   const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
+  const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
 
-  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel };
+  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel, sentryDsn };
+}
+
+export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+
+    if (arg === "--sandbox" || arg === "--download") {
+      i += 1;
+      continue;
+    }
+
+    if (arg === "--version" || arg === "-v" || arg === "-V") {
+      continue;
+    }
+
+    if (arg.startsWith("--sandbox=") || arg.startsWith("--download=")) {
+      continue;
+    }
+
+    if (!arg.startsWith("-")) {
+      return arg;
+    }
+  }
+
+  return undefined;
+}
+
+export function resolveSentryDsn(workspaceDir?: string): string | undefined {
+  if (workspaceDir) {
+    const fromFile = loadRawAgentConfig(workspaceDir);
+    if (fromFile.sentryDsn) {
+      return fromFile.sentryDsn;
+    }
+  }
+
+  return process.env.SENTRY_DSN;
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {

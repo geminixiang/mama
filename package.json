@@ -44,6 +44,7 @@
     "@mariozechner/pi-agent-core": "^0.63.1",
     "@mariozechner/pi-ai": "^0.63.1",
     "@mariozechner/pi-coding-agent": "^0.63.1",
+    "@sentry/node": "^10.47.0",
     "@sinclair/typebox": "^0.34.49",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.0",

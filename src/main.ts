@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import "./instrument.js";
+
 import { join, resolve } from "path";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
@@ -19,7 +21,9 @@ import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
+import * as Sentry from "@sentry/node";
 
 // ============================================================================
 // Config
@@ -307,35 +311,94 @@ const handler: BotHandler = {
     log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
 
     // Wrap in-flight run tracking
-    const runPromise = (async () => {
-      try {
-        const { message, responseCtx, platform } = adapters;
+    Sentry.metrics.count("agent.run.started", 1, {
+      attributes: { channel: event.channel },
+    });
+    Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size + 1);
 
-        // Run the agent
-        await responseCtx.setTyping(true);
-        await responseCtx.setWorking(true);
-        const result = await state.runner.run(message, responseCtx, platform);
-        await responseCtx.setWorking(false);
+    const runPromise = Sentry.startSpan(
+      { name: "agent.run", op: "agent", attributes: { channelId: event.channel, sessionKey } },
+      async () => {
+        return Sentry.withScope(async (scope) => {
+          const { message, responseCtx, platform } = adapters;
+          applyRunScope(scope, {
+            channelId: event.channel,
+            sessionKey,
+            messageId: message.id,
+            platform: platform.name,
+            userId: message.userId,
+            userName: message.userName,
+            threadTs: message.threadTs,
+            isEvent: _isEvent,
+          });
+          addLifecycleBreadcrumb("agent.run.started", {
+            channel_id: event.channel,
+            platform: platform.name,
+            has_attachments: (message.attachments?.length ?? 0) > 0,
+          });
 
-        if (result.stopReason === "aborted" && state.stopRequested) {
-          if (state.stopMessageTs) {
-            await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
-            state.stopMessageTs = undefined;
-          } else {
-            await bot.postMessage(event.channel, "_Stopped_");
+          try {
+            await responseCtx.setTyping(true);
+            await responseCtx.setWorking(true);
+            const result = await state.runner.run(message, responseCtx, platform);
+            await responseCtx.setWorking(false);
+
+            const durationMs = Date.now() - state.startedAt!;
+            Sentry.metrics.distribution("agent.run.duration", durationMs, {
+              unit: "millisecond",
+              attributes: {
+                channel: event.channel,
+                platform: platform.name,
+                stop_reason: result.stopReason,
+              },
+            });
+            Sentry.metrics.count("agent.run.completed", 1, {
+              attributes: {
+                channel: event.channel,
+                platform: platform.name,
+                stop_reason: result.stopReason,
+              },
+            });
+            addLifecycleBreadcrumb("agent.run.completed", {
+              channel_id: event.channel,
+              platform: platform.name,
+              stop_reason: result.stopReason,
+              duration_ms: durationMs,
+            });
+
+            if (result.stopReason === "aborted" && state.stopRequested) {
+              if (state.stopMessageTs) {
+                await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+                state.stopMessageTs = undefined;
+              } else {
+                await bot.postMessage(event.channel, "_Stopped_");
+              }
+            }
+          } catch (err) {
+            scope.setContext("agent_run_error", {
+              channelId: event.channel,
+              sessionKey,
+              platform: adapters.platform.name,
+              messageId: adapters.message.id,
+              threadTs: adapters.message.threadTs,
+            });
+            Sentry.captureException(err);
+            Sentry.metrics.count("agent.run.errors", 1, {
+              attributes: { channel: event.channel, platform: adapters.platform.name },
+            });
+            log.logWarning(
+              `[${event.channel}] Run error`,
+              err instanceof Error ? err.message : String(err),
+            );
+          } finally {
+            state.running = false;
+            state.lastAccessedAt = Date.now();
+            Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size - 1);
+            evictIdleSessions();
           }
-        }
-      } catch (err) {
-        log.logWarning(
-          `[${event.channel}] Run error`,
-          err instanceof Error ? err.message : String(err),
-        );
-      } finally {
-        state.running = false;
-        state.lastAccessedAt = Date.now();
-        evictIdleSessions();
-      }
-    })();
+        });
+      },
+    );
 
     inFlightRuns.add(runPromise);
     try {
@@ -417,6 +480,7 @@ async function shutdown(): Promise<void> {
   }
 
   eventsWatcher.stop();
+  await Sentry.close(5000);
   process.exit(0);
 }
 
