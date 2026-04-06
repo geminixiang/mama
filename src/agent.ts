@@ -11,7 +11,7 @@ import {
   SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
@@ -20,6 +20,18 @@ import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import {
+  createManagedSessionFileAtPath,
+  extractSessionSuffix,
+  extractSessionUuid,
+  forkThreadSessionFile,
+  getSessionDir,
+  getThreadSessionFile,
+  openManagedSession,
+  resolveChannelSessionFile,
+  resolveManagedSessionFile,
+  tryResolveThreadSession,
+} from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
 
 export interface PendingMessage {
@@ -443,12 +455,43 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager
-  // Per-session context file: {channelDir}/sessions/{rootTs}/context.jsonl
-  const rootTs = sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
-  const sessionDir = join(channelDir, "sessions", rootTs);
-  mkdirSync(sessionDir, { recursive: true });
-  const contextFile = join(sessionDir, "context.jsonl");
-  const sessionManager = SessionManager.open(contextFile, channelDir);
+  // Channel sessions use {channelDir}/sessions/current.
+  // Thread sessions use fixed files: {channelDir}/sessions/{threadTs}.jsonl
+  const sessionDir = getSessionDir(channelDir, sessionKey);
+  const isThread = sessionKey.includes(":");
+
+  let sessionManager!: SessionManager;
+  let contextFile!: string;
+
+  if (isThread) {
+    const threadFile = getThreadSessionFile(channelDir, sessionKey);
+    const existing = tryResolveThreadSession(threadFile);
+    if (existing) {
+      contextFile = existing;
+      sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+    } else {
+      const channelSource = resolveChannelSessionFile(channelDir);
+      if (channelSource) {
+        try {
+          contextFile = forkThreadSessionFile(channelSource, threadFile, channelDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+        } catch {
+          contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+        }
+      } else {
+        contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
+        sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+      }
+    }
+  } else {
+    // Channel/DM session: normal resolve
+    contextFile = resolveManagedSessionFile(sessionDir, channelDir);
+    sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+  }
+  const sessionUuid = extractSessionUuid(contextFile);
+  // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
+  const rootTs = extractSessionSuffix(sessionKey);
   const settingsManager = createMamaSettingsManager(join(channelDir, ".."));
 
   // Create AuthStorage and ModelRegistry
@@ -523,7 +566,12 @@ export async function createRunner(
   // Mutable per-run state - event handler references this
   const runState = {
     responseCtx: null as ChatResponseContext | null,
-    logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
+    logCtx: null as {
+      channelId: string;
+      userName?: string;
+      channelName?: string;
+      sessionId?: string;
+    } | null,
     queue: null as {
       enqueue(fn: () => Promise<void>, errorContext: string): void;
       enqueueMessage(
@@ -724,12 +772,15 @@ export async function createRunner(
       // Exclude the current message (it will be added via prompt())
       // Default sync range is 10 days (handled by syncLogToSessionManager)
       // Thread filter ensures only messages from this session's thread are synced
+      const threadFilter = message.sessionKey.includes(":")
+        ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
+        : { scope: "top-level" as const, rootTs };
       const syncedCount = await syncLogToSessionManager(
         sessionManager,
         channelDir,
         message.id,
         undefined,
-        { rootTs, threadTs: message.threadTs },
+        threadFilter,
       );
       if (syncedCount > 0) {
         log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
@@ -770,6 +821,7 @@ export async function createRunner(
         channelId: sessionChannel,
         userName: message.userName,
         channelName: undefined,
+        sessionId: sessionUuid,
       };
       runState.pendingTools.clear();
       runState.totalUsage = {

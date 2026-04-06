@@ -21,7 +21,6 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
     getChannel: vi.fn().mockReturnValue(undefined),
     enqueueEvent: vi.fn().mockReturnValue(true),
     logToFile: vi.fn(),
-    registerThreadAlias: vi.fn(),
     ...overrides,
   } as unknown as SlackBot;
 }
@@ -42,26 +41,28 @@ function makeEvent(overrides: Partial<SlackEvent> = {}): SlackEvent {
 // ============================================================================
 
 describe("session key derivation", () => {
-  test("non-threaded event: sessionKey = channelId:ts", () => {
+  test("top-level mention uses persistent channel session", () => {
     const event = makeEvent({ ts: "1000.0001", thread_ts: undefined });
-    const { message } = createSlackAdapters(event, makeSlackBot());
-    expect(message.sessionKey).toBe("C001:1000.0001");
+    const bot = makeSlackBot();
+    const { message } = createSlackAdapters(event, bot);
+    expect(message.sessionKey).toBe("C001");
   });
 
-  test("threaded event: sessionKey = channelId:thread_ts", () => {
+  test("thread reply uses isolated per-thread session", () => {
+    const bot = makeSlackBot();
     const event = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
-    const { message } = createSlackAdapters(event, makeSlackBot());
+    const { message } = createSlackAdapters(event, bot);
     expect(message.sessionKey).toBe("C001:1000.0001");
   });
 
-  test("different threads in same channel produce different session keys", () => {
+  test("different threads produce different session keys", () => {
     const event1 = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
     const event2 = makeEvent({ ts: "1000.0006", thread_ts: "1000.0004" });
     const { message: m1 } = createSlackAdapters(event1, makeSlackBot());
     const { message: m2 } = createSlackAdapters(event2, makeSlackBot());
-    expect(m1.sessionKey).not.toBe(m2.sessionKey);
     expect(m1.sessionKey).toBe("C001:1000.0001");
     expect(m2.sessionKey).toBe("C001:1000.0004");
+    expect(m1.sessionKey).not.toBe(m2.sessionKey);
   });
 
   test("message id is always event.ts (not thread_ts)", () => {
@@ -76,22 +77,26 @@ describe("session key derivation", () => {
 // ============================================================================
 
 describe("respond() — non-threaded", () => {
-  test("first call posts to channel (not in thread)", async () => {
+  test("first call posts in-thread under the user's message", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("hello");
-    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("hello"));
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "1000.0001",
+      expect.stringContaining("hello"),
+    );
+    expect(bot.postMessage).not.toHaveBeenCalled();
   });
 
   test("subsequent calls update the same message", async () => {
-    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG1") });
+    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG1") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("first");
     await responseCtx.respond("second");
-    expect(bot.postMessage).toHaveBeenCalledTimes(1);
+    expect(bot.postInThread).toHaveBeenCalledTimes(1);
     expect(bot.updateMessage).toHaveBeenCalledWith(
       "C001",
       "MSG1",
@@ -134,16 +139,21 @@ describe("respond() — threaded", () => {
 // ============================================================================
 
 describe("respondInThread()", () => {
-  test("non-threaded: anchors to bot's main message ts", async () => {
-    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG") });
+  test("non-threaded: anchors to event.ts (rootTs), not bot message ts", async () => {
+    const postInThreadMock = vi
+      .fn()
+      .mockResolvedValueOnce("BOT_MSG")
+      .mockResolvedValueOnce("THREAD_MSG");
+    const bot = makeSlackBot({ postInThread: postInThreadMock });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
-    // Must call respond() first to create the main message
     await responseCtx.respond("main");
     await responseCtx.respondInThread("detail");
-    expect(bot.postInThread).toHaveBeenCalledWith(
+    // respondInThread always uses rootTs (event.ts), not the bot reply ts
+    expect(postInThreadMock).toHaveBeenNthCalledWith(
+      2,
       "C001",
-      "BOT_MSG",
+      "1000.0001",
       expect.stringContaining("detail"),
     );
   });
@@ -163,12 +173,17 @@ describe("respondInThread()", () => {
     );
   });
 
-  test("non-threaded: does nothing if no main message posted yet", async () => {
+  test("non-threaded: anchors to event.ts even without a prior respond()", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
+    // rootTs is always available (event.ts), so respondInThread posts immediately
     await responseCtx.respondInThread("detail");
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "1000.0001",
+      expect.stringContaining("detail"),
+    );
   });
 });
 
@@ -223,7 +238,7 @@ describe("setTyping()", () => {
 
 describe("text accumulation", () => {
   test("multiple respond() calls accumulate text with newlines", async () => {
-    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("line1");
@@ -235,7 +250,7 @@ describe("text accumulation", () => {
   });
 
   test("replaceResponse() replaces accumulated text entirely", async () => {
-    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("original text");
@@ -246,12 +261,12 @@ describe("text accumulation", () => {
   });
 
   test("text is truncated at 35K chars with truncation note", async () => {
-    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     const longText = "x".repeat(36000);
     await responseCtx.respond(longText);
-    const postedText = vi.mocked(bot.postMessage).mock.calls[0][1] as string;
+    const postedText = vi.mocked(bot.postInThread).mock.calls[0][2] as string;
     expect(postedText.length).toBeLessThan(36000);
     expect(postedText).toContain("message truncated");
   });
@@ -264,8 +279,10 @@ describe("text accumulation", () => {
 describe("deleteResponse()", () => {
   test("deletes main message and all thread messages", async () => {
     const bot = makeSlackBot({
-      postMessage: vi.fn().mockResolvedValue("MAIN"),
-      postInThread: vi.fn().mockResolvedValue("THREAD1"),
+      postInThread: vi
+        .fn()
+        .mockResolvedValueOnce("MAIN") // from respond()
+        .mockResolvedValueOnce("THREAD1"), // from respondInThread()
     });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
@@ -312,101 +329,13 @@ describe("platform info", () => {
 // Cross-thread isolation (Phase 1: 高優先級)
 // ============================================================================
 
-describe("cross-thread isolation", () => {
-  test("different thread_ts in same channel should have different sessionKey", () => {
-    const event1 = makeEvent({ ts: "1000.0001", thread_ts: "1000.0001" });
-    const event2 = makeEvent({ ts: "1000.0002", thread_ts: "1000.0002" });
+describe("cross-channel isolation", () => {
+  test("top-level mentions in same channel share channel session, thread replies are isolated", () => {
+    const topLevel = makeEvent({ ts: "1000.0001", thread_ts: undefined });
+    const threadReply = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
     const bot = makeSlackBot();
-    const { message: msg1 } = createSlackAdapters(event1, bot);
-    const { message: msg2 } = createSlackAdapters(event2, bot);
-    expect(msg1.sessionKey).not.toBe(msg2.sessionKey);
-    expect(msg1.sessionKey).toContain("1000.0001");
-    expect(msg2.sessionKey).toContain("1000.0002");
-  });
-
-  test("messages in same thread should share same sessionKey", () => {
-    const event1 = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
-    const event2 = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
-    const bot = makeSlackBot();
-    const { message: msg1 } = createSlackAdapters(event1, bot);
-    const { message: msg2 } = createSlackAdapters(event2, bot);
-    expect(msg1.sessionKey).toBe(msg2.sessionKey);
-  });
-});
-
-// ============================================================================
-// registerThreadAlias on first respond() (Phase 1: 高優先級)
-// ============================================================================
-
-describe("registerThreadAlias on first respond()", () => {
-  test("should call registerThreadAlias on first respond() in non-threaded message", async () => {
-    const registerThreadAlias = vi.fn();
-    const bot = makeSlackBot({
-      postMessage: vi.fn().mockResolvedValue("T001"),
-      registerThreadAlias,
-    });
-    const event = makeEvent({ thread_ts: undefined });
-    const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respond("hello");
-    expect(registerThreadAlias).toHaveBeenCalledWith("C001:T001", "C001:1000.0001");
-  });
-
-  test("should NOT call registerThreadAlias when responding in existing thread", async () => {
-    const registerThreadAlias = vi.fn();
-    const bot = makeSlackBot({
-      postInThread: vi.fn().mockResolvedValue("T002"),
-      registerThreadAlias,
-    });
-    const event = makeEvent({ thread_ts: "1000.0001" });
-    const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respondInThread("reply in thread");
-    expect(registerThreadAlias).not.toHaveBeenCalled();
-  });
-
-  test("should NOT register alias for threaded events (alias only for new threads)", async () => {
-    // For threaded events, the session is identified by thread_ts, so no alias needed
-    const registerThreadAlias = vi.fn();
-    const bot = makeSlackBot({
-      postInThread: vi.fn().mockResolvedValue("T002"),
-      registerThreadAlias,
-    });
-    const event = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
-    const { responseCtx } = createSlackAdapters(event, bot);
-    // respond() uses postInThread for threaded events - no alias needed
-    await responseCtx.respond("reply in thread");
-    expect(registerThreadAlias).not.toHaveBeenCalled();
-  });
-
-  test("should NOT register duplicate alias if messageTs already exists", async () => {
-    const registerThreadAlias = vi.fn();
-    const bot = makeSlackBot({
-      postMessage: vi.fn().mockResolvedValue("T001"),
-      postInThread: vi.fn().mockResolvedValue("T002"),
-      registerThreadAlias,
-    });
-    const event = makeEvent({ thread_ts: undefined });
-    const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respond("first");
-    await responseCtx.respondInThread("second");
-    // Only called once on first respond()
-    expect(registerThreadAlias).toHaveBeenCalledTimes(1);
-  });
-
-  test("stop command can find session via registerThreadAlias mapping", async () => {
-    // This test verifies the alias mechanism works for stop command routing
-    const threadAliasMap = new Map<string, string>();
-    const bot = makeSlackBot({
-      postMessage: vi.fn().mockResolvedValue("T001"),
-      registerThreadAlias: vi.fn().mockImplementation((key, alias) => {
-        threadAliasMap.set(key, alias);
-      }),
-    });
-    const event = makeEvent({ thread_ts: undefined });
-    const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respond("hello");
-    // Simulate stop command looking up via alias
-    const aliasKey = "C001:T001";
-    expect(threadAliasMap.get(aliasKey)).toBe("C001:1000.0001");
+    expect(createSlackAdapters(topLevel, bot).message.sessionKey).toBe("C001");
+    expect(createSlackAdapters(threadReply, bot).message.sessionKey).toBe("C001:1000.0001");
   });
 });
 
@@ -454,34 +383,29 @@ describe("same-thread multi-round follow-up", () => {
 // ============================================================================
 
 describe("thread_ts boundary values", () => {
-  test("event without thread_ts should use event.ts as rootTs", () => {
+  test("no thread_ts → bare channelId session", () => {
     const event = makeEvent({ ts: "1000.0001", thread_ts: undefined });
-    const { message } = createSlackAdapters(event, makeSlackBot());
-    expect(message.sessionKey).toBe("C001:1000.0001");
+    expect(createSlackAdapters(event, makeSlackBot()).message.sessionKey).toBe("C001");
   });
 
-  test("event with thread_ts should use thread_ts as rootTs", () => {
+  test("with thread_ts → channelId:thread_ts session", () => {
     const event = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
-    const { message } = createSlackAdapters(event, makeSlackBot());
-    expect(message.sessionKey).toBe("C001:1000.0001");
+    expect(createSlackAdapters(event, makeSlackBot()).message.sessionKey).toBe("C001:1000.0001");
   });
 
-  test("event with empty string thread_ts is treated as-is (known edge case)", () => {
-    // Note: JavaScript ?? operator treats empty string as truthy, so rootTs becomes ""
-    // This is a known edge case - empty string !== undefined
+  test("empty string thread_ts is treated as no thread (falsy)", () => {
     const event = makeEvent({ ts: "1000.0001", thread_ts: "" });
-    const { message } = createSlackAdapters(event, makeSlackBot());
-    // Current behavior: empty string is used as rootTs (not ideal but expected with ?? operator)
-    expect(message.sessionKey).toBe("C001:");
+    expect(createSlackAdapters(event, makeSlackBot()).message.sessionKey).toBe("C001");
   });
 
-  test("DM channel (no thread_ts) should have unique session per message", () => {
+  test("DM channel should share a single persistent session across messages", () => {
     const event1 = makeEvent({ channel: "D001", ts: "1000.0001", thread_ts: undefined });
     const event2 = makeEvent({ channel: "D001", ts: "1000.0002", thread_ts: undefined });
     const bot = makeSlackBot();
     const { message: msg1 } = createSlackAdapters(event1, bot);
     const { message: msg2 } = createSlackAdapters(event2, bot);
-    expect(msg1.sessionKey).not.toBe(msg2.sessionKey);
+    expect(msg1.sessionKey).toBe("D001");
+    expect(msg2.sessionKey).toBe("D001");
   });
 
   test("setTyping in thread should set assistant status with correct rootTs", async () => {

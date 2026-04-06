@@ -45,13 +45,21 @@ We actively track the upstream `pi-mom` and plan to:
 ## Features
 
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
-- **Thread sessions** — each thread / reply chain gets its own isolated conversation context
-- **Concurrent threads** — multiple threads in the same channel run independently
+- **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
+- **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
 - **Sandbox execution** — run agent commands on host or inside a Docker container
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
 - **Multi-provider** — configure any provider/model supported by `pi-ai`
+
+## Platform Session Model
+
+| Platform | User Interaction Structure                | `sessionKey` Rule                                                    | Default Session Model                                                                | Special Handling Needed | Notes                                                                                            |
+| -------- | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Slack    | channel top-level + thread replies        | top-level: `channelId`; thread: `channelId:threadTs`                 | channel keeps one persistent session; thread forks from channel into its own session | High                    | channel -> thread inherits context via fork; thread -> channel does not merge back automatically |
+| Discord  | normal messages, replies, thread channels | `channelId:threadTsOrMsgId`                                          | replies / thread channels naturally map to isolated sessions                         | Low                     | no aliasing layer needed; session identity is determined directly from the Discord event         |
+| Telegram | private chats, group replies              | private chat: `chatId`; group reply chain: `chatId:replyToIdOrMsgId` | private chats use one long session; groups split by reply chain                      | Medium                  | Telegram has no native thread model; group sessions are modeled from reply chains                |
 
 ## Requirements
 
@@ -164,7 +172,11 @@ export MOM_SLACK_BOT_TOKEN=xoxb-...
 mama [--sandbox=host|docker:<container>] <working-directory>
 ```
 
-The bot responds when `@mentioned` in any channel or via DM. Each Slack thread is a separate session.
+The bot responds when `@mentioned` in any channel or via DM.
+
+- **Top-level channel messages** — share one persistent channel session.
+- **Thread replies** — fork from the channel session into an isolated thread session.
+- **Thread memory** — inherited at fork time only; thread changes do not merge back into the channel automatically.
 
 ---
 
@@ -286,8 +298,9 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
     ├── scratch/           # Agent working directory
     ├── skills/            # Channel-specific skills
     └── sessions/
-        └── <thread-ts>/
-            └── context.jsonl   # LLM conversation context
+        ├── current                      # Pointer for the channel-level session
+        ├── 2026-04-05T18-04-31-010Z_1d92b3ad.jsonl
+        └── <thread-ts>.jsonl            # Fixed-path thread session
 ```
 
 ## Docker Sandbox

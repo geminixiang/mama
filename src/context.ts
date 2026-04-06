@@ -53,6 +53,8 @@ interface LogMessage {
  * preventing cross-thread context contamination.
  */
 export interface ThreadFilter {
+  /** Filter mode: a specific thread, or top-level messages only for persistent channel/chat sessions */
+  scope?: "thread" | "top-level";
   /** The root message timestamp (user's original message ts, derived from sessionKey) */
   rootTs: string;
   /** The thread anchor timestamp (bot's first reply ts, used as thread_ts by Slack replies) */
@@ -122,18 +124,26 @@ export async function syncLogToSessionManager(
 
       // Thread filtering: only sync messages belonging to this session's thread
       if (threadFilter) {
-        if (logMsg.threadTs) {
-          // Thread reply: only include if threadTs matches our thread anchor or rootTs
-          if (
-            logMsg.threadTs !== threadFilter.threadTs &&
-            logMsg.threadTs !== threadFilter.rootTs
-          ) {
+        if (threadFilter.scope === "top-level") {
+          // Persistent channel/chat sessions should only ingest top-level messages.
+          // This avoids pulling in unrelated replies from other threads.
+          if (logMsg.threadTs) {
             continue;
           }
         } else {
-          // Top-level message: only include if it's this session's root message
-          if (slackTs !== threadFilter.rootTs) {
-            continue;
+          if (logMsg.threadTs) {
+            // Thread reply: only include if threadTs matches our thread anchor or rootTs
+            if (
+              logMsg.threadTs !== threadFilter.threadTs &&
+              logMsg.threadTs !== threadFilter.rootTs
+            ) {
+              continue;
+            }
+          } else {
+            // Top-level message: only include if it's this session's root message
+            if (slackTs !== threadFilter.rootTs) {
+              continue;
+            }
           }
         }
       }

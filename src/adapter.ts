@@ -95,10 +95,6 @@ export interface BotHandler {
   handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
   /** Force stop a running session (bypass normal stop mechanism) */
   forceStop(sessionKey: string): void;
-  /** Resolve a raw session key through thread aliases (returns input if no alias exists) */
-  resolveSessionKey(rawKey: string): string;
-  /** Register an alias so that "channel:botReplyTs" resolves to the original sessionKey */
-  registerThreadAlias(aliasKey: string, sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
   handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
 }
