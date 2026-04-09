@@ -74,15 +74,8 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
   return undefined;
 }
 
-export function resolveSentryDsn(stateDir?: string): string | undefined {
-  if (stateDir) {
-    const config = loadAgentConfig(stateDir);
-    if (config.sentryDsn) {
-      return config.sentryDsn;
-    }
-  }
-
-  return process.env.SENTRY_DSN;
+export function resolveSentryDsn(stateDir: string): string | undefined {
+  return loadAgentConfig(stateDir).sentryDsn;
 }
 
 export function saveAgentConfig(stateDir: string, config: AgentConfig): void {

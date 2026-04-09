@@ -63,10 +63,16 @@ const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
 /** Base URL of the web login portal, e.g. https://platform.trygemini.xyz */
 const MOM_LINK_URL = process.env.MOM_LINK_URL;
-/** Port for the link callback HTTP server. If unset, the server is not started. */
+/**
+ * Port for the link callback HTTP server.
+ * Defaults to 8181 when MOM_LINK_URL is set (behind a reverse proxy).
+ * If neither is set, the server is not started.
+ */
 const MOM_LINK_PORT = process.env.MOM_LINK_PORT
   ? parseInt(process.env.MOM_LINK_PORT, 10)
-  : undefined;
+  : MOM_LINK_URL
+    ? 8181
+    : undefined;
 
 interface ParsedArgs {
   workingDir?: string;

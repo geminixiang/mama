@@ -80,19 +80,16 @@ describe("resolveSentryDsn", () => {
   });
 
   afterEach(() => {
-    delete process.env.SENTRY_DSN;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("prefers settings.json over env", () => {
+  test("reads sentryDsn from settings.json", () => {
     saveAgentConfig(tmpDir, { sentryDsn: "https://settings.example/1" });
-    process.env.SENTRY_DSN = "https://env.example/1";
     expect(resolveSentryDsn(tmpDir)).toBe("https://settings.example/1");
   });
 
-  test("falls back to env when settings.json has no sentryDsn", () => {
-    process.env.SENTRY_DSN = "https://env.example/2";
-    expect(resolveSentryDsn(tmpDir)).toBe("https://env.example/2");
+  test("returns undefined when settings.json has no sentryDsn", () => {
+    expect(resolveSentryDsn(tmpDir)).toBeUndefined();
   });
 });
 
