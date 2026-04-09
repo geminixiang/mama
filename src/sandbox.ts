@@ -402,6 +402,26 @@ export class UserAwareExecutor implements Executor {
     return this._currentUserId;
   }
 
+  /**
+   * Reload vault config and clear the executor cache so credential changes
+   * (env file updates, vault.json edits, token rotations) take effect.
+   * Call once per run, before setting currentUserId.
+   */
+  refreshVault(): void {
+    this.vaultManager.reload();
+    this.executors.clear();
+
+    // Rebuild fallback executor in case system actor config changed
+    const systemVault = this.vaultManager.resolveSystemActor();
+    if (systemVault) {
+      const systemConfig = this.applySandboxOverride(systemVault, this.baseConfig);
+      const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
+      this.fallbackExecutor = createExecutor(systemConfig, env);
+    } else {
+      this.fallbackExecutor = createExecutor(this.baseConfig);
+    }
+  }
+
   private getExecutor(): Executor {
     if (!this._currentUserId) {
       return this.fallbackExecutor;
@@ -438,6 +458,7 @@ export class UserAwareExecutor implements Executor {
   /** Apply a vault's sandbox override to the base config without re-resolving by userId. */
   private applySandboxOverride(
     vault: {
+      dir?: string;
       sandboxOverride?: {
         type?: string;
         container?: string;
@@ -455,7 +476,10 @@ export class UserAwareExecutor implements Executor {
       return { type: "docker", container: override.container || `mama-sandbox-system` };
     }
     if (override.type === "firecracker" && override.vmId) {
-      const hostPath = baseConfig.type === "firecracker" ? baseConfig.hostPath : "/workspace";
+      // hostPath is a host-side path, not the guest mount point.
+      // Inherit from base config if also Firecracker, otherwise use vault dir.
+      const hostPath =
+        baseConfig.type === "firecracker" ? baseConfig.hostPath : vault.dir || "/workspace";
       return {
         type: "firecracker",
         vmId: override.vmId,

@@ -851,11 +851,14 @@ export async function createRunner(
       // Ensure channel directory exists
       await mkdir(channelDir, { recursive: true });
 
-      // Set active actor for per-user sandbox routing BEFORE building system prompt,
-      // so workspacePath reflects the actor's sandbox type.
+      // Refresh vault config and clear executor cache so credential changes
+      // (env file updates, vault.json edits, token rotations) take effect.
+      // Then set the active actor BEFORE building system prompt, so workspacePath
+      // reflects the actor's sandbox type.
       // "EVENT" is a synthetic userId from the events system — treat it as no-user
       // so the executor falls back to the systemActor vault.
       if (executor instanceof UserAwareExecutor) {
+        executor.refreshVault();
         executor.currentUserId = message.userId === "EVENT" ? undefined : message.userId;
         workspacePath = getWorkspacePath();
       }
