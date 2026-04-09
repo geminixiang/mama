@@ -1,8 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
-import type { UserBindingStore } from "./bindings.js";
 import type { InMemoryLinkTokenStore } from "./link-token.js";
+import { resolveLoginProvider } from "./login.js";
 import * as log from "./log.js";
-import { DockerProvisioner } from "./provisioner.js";
 import type { VaultManager } from "./vault.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -12,6 +11,7 @@ export type NotifyFn = (platform: string, channelId: string, message: string) =>
 
 interface LinkCompleteBody {
   token: string;
+  credential: string;
 }
 
 // ── startLinkServer ────────────────────────────────────────────────────────────
@@ -27,10 +27,8 @@ interface LinkCompleteBody {
 export function startLinkServer(
   port: number,
   linkTokenStore: InMemoryLinkTokenStore,
-  _bindingStore: UserBindingStore,
-  _vaultManager: VaultManager,
+  vaultManager: VaultManager,
   notify: NotifyFn,
-  _provisioner?: DockerProvisioner,
 ): void {
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", `http://localhost:${port}`);
@@ -57,7 +55,20 @@ export function startLinkServer(
       }
 
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(renderCredentialPlaceholderPage(rawToken));
+      const provider = resolveLoginProvider(linkToken.providerId);
+      if (!provider) {
+        res.end(renderErrorPage("This login provider is not supported by the server."));
+        return;
+      }
+      res.end(
+        renderCredentialPage(
+          rawToken,
+          provider.label,
+          provider.secretLabel,
+          provider.placeholder,
+          provider.helpText,
+        ),
+      );
       return;
     }
 
@@ -76,7 +87,7 @@ export function startLinkServer(
       });
       req.on("end", () => {
         if (bodyTooLarge) return;
-        handleLinkComplete(body, linkTokenStore, notify, res);
+        handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
       });
       return;
     }
@@ -103,7 +114,13 @@ function esc(s: string): string {
   );
 }
 
-function renderCredentialPlaceholderPage(token: string): string {
+function renderCredentialPage(
+  token: string,
+  providerLabel: string,
+  secretLabel: string,
+  placeholder: string,
+  helpText: string,
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -114,6 +131,8 @@ function renderCredentialPlaceholderPage(token: string): string {
     body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; text-align: center; }
     h1 { font-size: 1.4rem; margin-bottom: 8px; }
     p { color: #555; font-size: 0.95rem; }
+    label { display: block; margin-top: 20px; margin-bottom: 6px; text-align: left; font-weight: 600; font-size: 0.9rem; }
+    input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; border: 1px solid #ccc; border-radius: 8px; }
     button { margin-top: 24px; padding: 12px 32px; font-size: 1rem; background: #1a1a1a; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
     button:hover { background: #333; }
     button:disabled { background: #999; cursor: default; }
@@ -123,41 +142,52 @@ function renderCredentialPlaceholderPage(token: string): string {
   </style>
 </head>
 <body>
-  <h1>Credential Login</h1>
+  <h1>${esc(providerLabel)}</h1>
   <p>Your personal sandbox is already provisioned automatically.</p>
-  <p>This portal is reserved for storing API keys and OAuth tokens in your vault, but that flow is not implemented in this build yet.</p>
-  <button id="btn" onclick="connect()">Acknowledge</button>
+  <p>${esc(helpText)}</p>
+  <label for="credential">${esc(secretLabel)}</label>
+  <input id="credential" type="password" placeholder="${esc(placeholder)}" autocomplete="off">
+  <button id="btn" onclick="connect()">Store Secret</button>
   <div id="result"></div>
   <script>
     async function connect() {
       const btn = document.getElementById('btn');
+      const credential = document.getElementById('credential').value.trim();
+      if (!credential) {
+        const result = document.getElementById('result');
+        result.style.display = 'block';
+        result.className = 'err';
+        result.textContent = 'Please enter a value.';
+        return;
+      }
       btn.disabled = true;
-      btn.textContent = 'Finishing…';
+      btn.textContent = 'Saving…';
       const result = document.getElementById('result');
       try {
         const r = await fetch('/api/link/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: '${esc(token)}' }),
+          body: JSON.stringify({ token: '${esc(token)}', credential }),
         });
         const data = await r.json();
         result.style.display = 'block';
         if (r.ok) {
           result.className = 'ok';
-          result.textContent = data.message ?? 'No credentials were stored. You can close this tab.';
+          result.textContent = data.message ?? 'Credential stored. You can close this tab.';
           btn.style.display = 'none';
+          document.getElementById('credential').disabled = true;
         } else {
           result.className = 'err';
           result.textContent = 'Error: ' + (data.error ?? r.status);
           btn.disabled = false;
-          btn.textContent = 'Acknowledge';
+          btn.textContent = 'Store Secret';
         }
       } catch (err) {
         result.style.display = 'block';
         result.className = 'err';
         result.textContent = 'Network error: ' + err.message;
         btn.disabled = false;
-        btn.textContent = 'Acknowledge';
+        btn.textContent = 'Store Secret';
       }
     }
   </script>
@@ -178,6 +208,7 @@ function renderErrorPage(message: string): string {
 async function handleLinkComplete(
   body: string,
   linkTokenStore: InMemoryLinkTokenStore,
+  vaultManager: VaultManager,
   notify: NotifyFn,
   res: ServerResponse,
 ): Promise<void> {
@@ -196,31 +227,46 @@ async function handleLinkComplete(
     return;
   }
 
-  const linkToken = linkTokenStore.consume(data.token);
+  if (!data.credential?.trim()) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing required field: credential" }));
+    return;
+  }
+
+  const linkToken = linkTokenStore.peek(data.token);
   if (!linkToken) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Invalid or expired token" }));
     return;
   }
 
+  const provider = resolveLoginProvider(linkToken.providerId);
+  if (!provider) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unsupported login provider" }));
+    return;
+  }
+
+  vaultManager.upsertEnv(linkToken.vaultId, { [provider.envKey]: data.credential.trim() });
+  linkTokenStore.consume(data.token);
+
   log.logInfo(
-    `Credential login placeholder acknowledged for ${linkToken.platform}/${linkToken.platformUserId}`,
+    `Stored ${provider.envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
   );
 
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(
     JSON.stringify({
       ok: true,
-      message:
-        "Credential onboarding is not implemented yet. Your sandbox is already provisioned automatically.",
+      message: `${provider.label} stored successfully in your vault.`,
     }),
   );
 
   notify(
     linkToken.platform,
     linkToken.channelId,
-    "Credential onboarding is not implemented yet. Your personal sandbox is already provisioned automatically.",
+    `${provider.label} stored successfully in vault \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
-    log.logWarning("Failed to notify user after login placeholder", err.message);
+    log.logWarning("Failed to notify user after credential login", err.message);
   });
 }

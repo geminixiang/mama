@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import { createTelegramAdapters } from "./context.js";
 
@@ -98,7 +99,7 @@ export class TelegramBot implements Bot {
       { command: "help", description: "Show available commands" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
-      { command: "login", description: "Link your account to use personal credentials" },
+      { command: "login", description: "Store a provider credential in your vault" },
     ]);
 
     this.setupEventHandlers();
@@ -369,7 +370,7 @@ export class TelegramBot implements Bot {
           "/help — Show this help",
           "/stop — Stop ongoing conversation",
           "/new — Reset conversation history and start fresh",
-          "/login — Link your account to use personal credentials",
+          "/login <provider> — Store a provider credential in your vault",
           "",
           "You can also send a regular message to chat with the agent.",
         ].join("\n"),
@@ -395,7 +396,7 @@ export class TelegramBot implements Bot {
     this.client.command("login", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this);
+      await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, mc.text);
     });
 
     // --- Catch-all for regular (non-command) messages ---
@@ -408,6 +409,11 @@ export class TelegramBot implements Bot {
       if (!this.isAddressedToBot(mc.text, mc.chatType)) return;
 
       const cleanedText = this.cleanText(mc.text);
+
+      if (parseLoginCommand(cleanedText)) {
+        await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, cleanedText);
+        return;
+      }
 
       // Process attachments
       const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -155,6 +155,24 @@ describe("FileVaultManager", () => {
     const mgr = new FileVaultManager(tmpDir);
     const vault = mgr.resolve("U123");
     expect(vault!.env).toEqual({});
+  });
+
+  test("upsertEnv creates and merges vault env entries", () => {
+    writeVaultJson({
+      vaults: { U123: { displayName: "Alice" } },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.upsertEnv("U123", { OPENAI_API_KEY: "sk-old" });
+    mgr.upsertEnv("U123", { GITHUB_TOKEN: "ghp_123", OPENAI_API_KEY: "sk-new" });
+
+    expect(mgr.resolve("U123")?.env).toEqual({
+      GITHUB_TOKEN: "ghp_123",
+      OPENAI_API_KEY: "sk-new",
+    });
+    expect(readFileSync(join(vaultsDir, "U123", "env"), "utf-8")).toBe(
+      "GITHUB_TOKEN=ghp_123\nOPENAI_API_KEY=sk-new\n",
+    );
   });
 
   // ── getSandboxConfig ──────────────────────────────────────────────────────

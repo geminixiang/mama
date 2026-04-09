@@ -6,6 +6,8 @@ export interface LinkToken {
   token: string;
   platform: "slack" | "discord" | "telegram";
   platformUserId: string;
+  vaultId: string;
+  providerId: string;
   /** Channel/chat to notify when binding completes */
   channelId: string;
   expiresAt: number;
@@ -27,6 +29,8 @@ export class InMemoryLinkTokenStore {
     platform: "slack" | "discord" | "telegram",
     platformUserId: string,
     channelId: string,
+    vaultId: string,
+    providerId: string,
   ): LinkToken {
     // Invalidate any existing token for this user so old links stop working
     for (const [key, t] of this.tokens) {
@@ -39,6 +43,8 @@ export class InMemoryLinkTokenStore {
       token: randomBytes(16).toString("hex"),
       platform,
       platformUserId,
+      vaultId,
+      providerId,
       channelId,
       expiresAt: Date.now() + TTL_MS,
       used: false,

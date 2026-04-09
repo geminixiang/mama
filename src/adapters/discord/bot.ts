@@ -15,6 +15,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } fr
 import { basename, join } from "path";
 
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import { createDiscordAdapters } from "./context.js";
 
@@ -393,8 +394,8 @@ export class DiscordBot implements Bot {
       }
 
       // Handle login command
-      if (cleanedText.toLowerCase() === "login" || cleanedText.toLowerCase() === "/login") {
-        await this.handler.handleLogin("discord", userId, channelId, this);
+      if (parseLoginCommand(cleanedText)) {
+        await this.handler.handleLogin("discord", userId, channelId, this, cleanedText);
         return;
       }
 

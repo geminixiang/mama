@@ -67,6 +67,8 @@ export interface VaultManager {
    * No-op if the key already exists (idempotent).
    */
   addEntry(key: string, entry: VaultEntry): void;
+  /** Merge environment variables into vaults/<key>/env and persist them to disk. */
+  upsertEnv(key: string, env: Record<string, string>): void;
 }
 
 // ── parseEnvFile ───────────────────────────────────────────────────────────────
@@ -258,6 +260,26 @@ export class FileVaultManager implements VaultManager {
       writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", "utf-8");
     } catch (err) {
       console.error(`vault: failed to write ${this.configPath}:`, err);
+    }
+  }
+
+  upsertEnv(key: string, env: Record<string, string>): void {
+    const dir = join(this.vaultsDir, key);
+    const envPath = join(dir, "env");
+    try {
+      mkdirSync(dir, { recursive: true });
+      const existing = existsSync(envPath)
+        ? parseEnvFile(readFileSync(envPath, "utf-8"))
+        : ({} as Record<string, string>);
+      const merged = { ...existing, ...env };
+      const content =
+        Object.entries(merged)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([envKey, value]) => `${envKey}=${value}`)
+          .join("\n") + "\n";
+      writeFileSync(envPath, content, "utf-8");
+    } catch (err) {
+      console.error(`vault: failed to write env file for "${key}":`, err);
     }
   }
 

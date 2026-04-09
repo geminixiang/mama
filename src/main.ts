@@ -22,6 +22,7 @@ import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./link-server.js";
+import { formatSupportedLoginProviders, parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerProvisioner } from "./provisioner.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -195,6 +196,35 @@ const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
 const IDLE_TIMEOUT_MS = 3600000;
 
+function normalizeLoginBaseUrl(): string | undefined {
+  if (MOM_LINK_URL) {
+    return MOM_LINK_URL.replace(/\/+$/, "");
+  }
+  if (MOM_LINK_PORT) {
+    return `http://localhost:${MOM_LINK_PORT}`;
+  }
+  return undefined;
+}
+
+function ensureLoginVault(platform: string, platformUserId: string): string {
+  const vaultId =
+    sandbox.type === "docker-auto"
+      ? DockerProvisioner.vaultId(platform, platformUserId)
+      : (bindingStore.resolve(platform, platformUserId)?.vaultId ?? platformUserId);
+  const platformTag =
+    platform === "slack" || platform === "discord" || platform === "telegram"
+      ? platform
+      : undefined;
+  vaultManager.addEntry(vaultId, {
+    displayName: `${platform}:${platformUserId}`,
+    platform: platformTag,
+    ...(sandbox.type === "docker-auto"
+      ? { sandbox: { type: "docker", container: DockerProvisioner.containerName(vaultId) } }
+      : {}),
+  });
+  return vaultId;
+}
+
 async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
   const key = sessionKey ?? channelId;
   let state = channelStates.get(key);
@@ -324,15 +354,63 @@ const handler: BotHandler = {
   },
 
   async handleLogin(
-    _platform: string,
-    _platformUserId: string,
+    platform: string,
+    platformUserId: string,
     channelId: string,
     bot: Bot,
+    commandText: string,
   ): Promise<void> {
+    const parsed = parseLoginCommand(commandText);
+    if (!parsed) {
+      return;
+    }
+
+    if (!parsed.providerId) {
+      await bot.postMessage(
+        channelId,
+        `Usage: \`/login <provider>\`\nSupported providers: ${formatSupportedLoginProviders()}`,
+      );
+      return;
+    }
+
+    if (!parsed.provider) {
+      await bot.postMessage(
+        channelId,
+        `Unsupported provider \`${parsed.providerId}\`.\nSupported providers: ${formatSupportedLoginProviders()}`,
+      );
+      return;
+    }
+
+    if (parsed.extraArgs.length > 0) {
+      await bot.postMessage(
+        channelId,
+        "Use `/login <provider>` only. Do not paste secrets directly into chat.",
+      );
+      return;
+    }
+
+    const baseUrl = normalizeLoginBaseUrl();
+    if (!baseUrl) {
+      await bot.postMessage(
+        channelId,
+        "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+      );
+      return;
+    }
+
+    const vaultId = ensureLoginVault(platform, platformUserId);
     await bot.postMessage(
       channelId,
-      "Your personal sandbox and vault are provisioned automatically. " +
-        "`/login` is reserved for credential onboarding and is not implemented yet.",
+      `Open this link to store your ${parsed.provider.label} in your personal vault ` +
+        `(expires in 15 minutes):\n${baseUrl}/link?token=${
+          linkTokenStore.create(
+            platform as "slack" | "discord" | "telegram",
+            platformUserId,
+            channelId,
+            vaultId,
+            parsed.provider.id,
+          ).token
+        }`,
     );
   },
 
@@ -476,17 +554,10 @@ log.logStartup(workingDir, sandboxDesc);
 
 // Start link callback server if port is configured
 if (MOM_LINK_PORT) {
-  startLinkServer(
-    MOM_LINK_PORT,
-    linkTokenStore,
-    bindingStore,
-    vaultManager,
-    async (platform, channelId, msg) => {
-      const bot = botsByPlatform[platform];
-      if (bot) await bot.postMessage(channelId, msg);
-    },
-    provisioner,
-  );
+  startLinkServer(MOM_LINK_PORT, linkTokenStore, vaultManager, async (platform, channelId, msg) => {
+    const bot = botsByPlatform[platform];
+    if (bot) await bot.postMessage(channelId, msg);
+  });
 }
 
 // Create platform bots

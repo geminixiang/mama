@@ -5,6 +5,7 @@ import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
+import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { createSlackAdapters } from "./context.js";
@@ -633,8 +634,8 @@ export class SlackBot implements Bot {
       }
 
       // Check for login command
-      if (slackEvent.text.toLowerCase().trim() === "login") {
-        this.handler.handleLogin("slack", e.user, e.channel, this);
+      if (parseLoginCommand(slackEvent.text)) {
+        this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
         ack();
         return;
       }
@@ -749,8 +750,8 @@ export class SlackBot implements Bot {
         }
 
         // Check for login command
-        if (slackEvent.text.toLowerCase().trim() === "login") {
-          this.handler.handleLogin("slack", e.user, e.channel, this);
+        if (parseLoginCommand(slackEvent.text)) {
+          this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
           ack();
           return;
         }
