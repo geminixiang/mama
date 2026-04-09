@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { UserAwareExecutor } from "../src/sandbox.js";
+import { ActorExecutionResolver } from "../src/execution-resolver.js";
+import { DockerProvisioner } from "../src/provisioner.js";
 import { FileVaultManager, parseEnvFile, type VaultConfig } from "../src/vault.js";
 
 // ── parseEnvFile ──────────────────────────────────────────────────────────────
@@ -292,9 +293,9 @@ describe("FileVaultManager", () => {
   });
 });
 
-// ── UserAwareExecutor ─────────────────────────────────────────────────────────
+// ── ActorExecutionResolver ────────────────────────────────────────────────────
 
-describe("UserAwareExecutor", () => {
+describe("ActorExecutionResolver", () => {
   let tmpDir: string;
   let vaultsDir: string;
 
@@ -312,48 +313,41 @@ describe("UserAwareExecutor", () => {
     writeFileSync(join(vaultsDir, "vault.json"), JSON.stringify(config));
   }
 
-  test("strict mode throws when user has no vault", () => {
+  test("strict mode throws when user has no vault", async () => {
     writeVaultJson({ vaults: {}, strict: true });
     const mgr = new FileVaultManager(tmpDir);
-    const executor = new UserAwareExecutor({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
 
-    executor.currentUserId = "UNKNOWN_USER";
-    expect(() => executor.getWorkspacePath("/tmp")).toThrow(/No vault configured/);
+    await expect(resolver.resolve({ platform: "slack", userId: "UNKNOWN_USER" })).rejects.toThrow(
+      /No vault configured/,
+    );
   });
 
-  test("non-strict mode falls back to base config for unknown user", () => {
+  test("non-strict mode falls back to base config for unknown user", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const executor = new UserAwareExecutor({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
 
-    executor.currentUserId = "UNKNOWN_USER";
-    // Should not throw, uses base host executor
+    const executor = await resolver.resolve({ platform: "slack", userId: "UNKNOWN_USER" });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
   });
 
-  test("undefined currentUserId uses fallback executor", () => {
+  test("system actor uses fallback executor", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const executor = new UserAwareExecutor({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
 
-    executor.currentUserId = undefined;
-    // Falls through to fallback, which is host
+    const executor = await resolver.resolve({ platform: "slack", userId: undefined });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
   });
 
-  test("refreshVault clears cached executors so credential changes take effect", () => {
-    // Start with Alice having a host sandbox
-    writeVaultJson({
-      vaults: { U1: { displayName: "Alice" } },
-    });
+  test("refresh picks up vault changes for later resolves", async () => {
+    writeVaultJson({ vaults: { U1: { displayName: "Alice" } } });
     const mgr = new FileVaultManager(tmpDir);
-    const executor = new UserAwareExecutor({ type: "host" }, mgr);
-
-    // First access caches an executor for U1
-    executor.currentUserId = "U1";
+    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
+    let executor = await resolver.resolve({ platform: "slack", userId: "U1" });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
 
-    // Update vault.json to give Alice a docker sandbox
     writeVaultJson({
       vaults: {
         U1: {
@@ -362,28 +356,16 @@ describe("UserAwareExecutor", () => {
         },
       },
     });
-
-    // Without refresh, stale cache returns host path
-    expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
-
-    // After refresh, cache is cleared and new config is used
-    executor.refreshVault();
-    executor.currentUserId = "U1";
-    expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
-    // Docker executor returns /workspace for any input, but the key assertion
-    // is that refreshVault didn't throw and the executor was re-created
+    resolver.refresh();
+    executor = await resolver.resolve({ platform: "slack", userId: "U1" });
+    expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
   });
 
-  test("refreshVault rebuilds fallback executor when system actor changes", () => {
+  test("system actor refresh picks up new system sandbox", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const executor = new UserAwareExecutor({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
 
-    // Initially no system actor
-    executor.currentUserId = undefined;
-    expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
-
-    // Add system actor with docker sandbox
     writeVaultJson({
       vaults: {
         _sys: {
@@ -393,10 +375,38 @@ describe("UserAwareExecutor", () => {
       },
       systemActor: "_sys",
     });
-
-    executor.refreshVault();
-    executor.currentUserId = undefined;
-    // Fallback now uses docker executor which returns /workspace
+    resolver.refresh();
+    const executor = await resolver.resolve({ platform: "slack", userId: undefined });
     expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
+  });
+
+  test("docker-auto mode never falls back to host for unlinked users", async () => {
+    writeVaultJson({ vaults: {} });
+    const mgr = new FileVaultManager(tmpDir);
+    const resolver = new ActorExecutionResolver(
+      { type: "docker-auto", image: "ubuntu:24.04" },
+      mgr,
+    );
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
+    expect(mgr.resolve(DockerProvisioner.vaultId("slack", "U123"))).toBeDefined();
+  });
+
+  test("docker-auto mode uses platform-namespaced vault ids", async () => {
+    writeVaultJson({ vaults: {} });
+    const mgr = new FileVaultManager(tmpDir);
+    const resolver = new ActorExecutionResolver(
+      { type: "docker-auto", image: "ubuntu:24.04" },
+      mgr,
+    );
+
+    await resolver.resolve({ platform: "slack", userId: "U123" });
+    await resolver.resolve({ platform: "discord", userId: "U123" });
+
+    expect(mgr.resolve(DockerProvisioner.vaultId("slack", "U123"))?.displayName).toBe("slack:U123");
+    expect(mgr.resolve(DockerProvisioner.vaultId("discord", "U123"))?.displayName).toBe(
+      "discord:U123",
+    );
   });
 });

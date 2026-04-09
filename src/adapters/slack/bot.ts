@@ -632,6 +632,13 @@ export class SlackBot implements Bot {
         return;
       }
 
+      // Check for login command
+      if (slackEvent.text.toLowerCase().trim() === "login") {
+        this.handler.handleLogin("slack", e.user, e.channel, this);
+        ack();
+        return;
+      }
+
       // SYNC: Check if busy (per-thread)
       if (this.handler.isRunning(sessionKey)) {
         this.postMessage(
@@ -737,6 +744,13 @@ export class SlackBot implements Bot {
           } else {
             this.postMessage(e.channel, "_Nothing running_");
           }
+          ack();
+          return;
+        }
+
+        // Check for login command
+        if (slackEvent.text.toLowerCase().trim() === "login") {
+          this.handler.handleLogin("slack", e.user, e.channel, this);
           ack();
           return;
         }

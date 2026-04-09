@@ -20,6 +20,10 @@ import {
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { FileUserBindingStore } from "./bindings.js";
+import { startLinkServer } from "./link-server.js";
+import { InMemoryLinkTokenStore } from "./link-token.js";
+import { DockerProvisioner } from "./provisioner.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
@@ -54,6 +58,12 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+/** Base URL of the web login portal, e.g. https://platform.trygemini.xyz */
+const MOM_LINK_URL = process.env.MOM_LINK_URL;
+/** Port for the link callback HTTP server. If unset, the server is not started. */
+const MOM_LINK_PORT = process.env.MOM_LINK_PORT
+  ? parseInt(process.env.MOM_LINK_PORT, 10)
+  : undefined;
 
 interface ParsedArgs {
   workingDir?: string;
@@ -145,6 +155,19 @@ if (vaultManager.isEnabled()) {
   console.log("  Vault system enabled. Per-user credential routing active.");
 }
 
+const bindingStore = new FileUserBindingStore(workingDir);
+if (bindingStore.isEnabled()) {
+  console.log("  Binding store enabled. Platform user → vault routing active.");
+}
+
+const provisioner =
+  sandbox.type === "docker-auto" ? new DockerProvisioner(sandbox.image, workingDir) : undefined;
+
+const linkTokenStore = new InMemoryLinkTokenStore();
+
+// Purge expired link tokens every 5 minutes
+setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
+
 // ============================================================================
 // State (per channel)
 // ============================================================================
@@ -179,7 +202,16 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
     const channelDir = join(workingDir, channelId);
     state = {
       running: false,
-      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir, vaultManager),
+      runner: await createRunner(
+        sandbox,
+        key,
+        channelId,
+        channelDir,
+        workingDir,
+        vaultManager,
+        bindingStore,
+        provisioner,
+      ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
@@ -289,6 +321,19 @@ const handler: BotHandler = {
 
     log.logInfo(`[${channelId}] Session reset: ${sessionKey}`);
     await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
+  },
+
+  async handleLogin(
+    _platform: string,
+    _platformUserId: string,
+    channelId: string,
+    bot: Bot,
+  ): Promise<void> {
+    await bot.postMessage(
+      channelId,
+      "Your personal sandbox and vault are provisioned automatically. " +
+        "`/login` is reserved for credential onboarding and is not implemented yet.",
+    );
   },
 
   async handleEvent(
@@ -424,8 +469,25 @@ const sandboxDesc =
     ? "host"
     : sandbox.type === "docker"
       ? `docker:${sandbox.container}`
-      : `firecracker:${sandbox.vmId}`;
+      : sandbox.type === "docker-auto"
+        ? `docker-auto:${sandbox.image}`
+        : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
+
+// Start link callback server if port is configured
+if (MOM_LINK_PORT) {
+  startLinkServer(
+    MOM_LINK_PORT,
+    linkTokenStore,
+    bindingStore,
+    vaultManager,
+    async (platform, channelId, msg) => {
+      const bot = botsByPlatform[platform];
+      if (bot) await bot.postMessage(channelId, msg);
+    },
+    provisioner,
+  );
+}
 
 // Create platform bots
 const bots: Bot[] = [];

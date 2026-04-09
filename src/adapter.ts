@@ -97,6 +97,8 @@ export interface BotHandler {
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
   handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  /** Generate a login link and post it to the user. No-op if link login is not configured. */
+  handleLogin(platform: string, platformUserId: string, channelId: string, bot: Bot): Promise<void>;
 }
 
 /** @deprecated Use BotHandler */

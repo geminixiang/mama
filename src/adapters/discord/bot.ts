@@ -392,6 +392,12 @@ export class DiscordBot implements Bot {
         return;
       }
 
+      // Handle login command
+      if (cleanedText.toLowerCase() === "login" || cleanedText.toLowerCase() === "/login") {
+        await this.handler.handleLogin("discord", userId, channelId, this);
+        return;
+      }
+
       if (this.handler.isRunning(sessionKey)) {
         await this.postMessage(channelId, "_Already working. Say `stop` to cancel._");
       } else {

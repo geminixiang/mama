@@ -13,6 +13,7 @@ function makeHandler(): BotHandler {
     handleStop: vi.fn(),
     forceStop: vi.fn(),
     handleNew: vi.fn(),
+    handleLogin: vi.fn(),
   };
 }
 

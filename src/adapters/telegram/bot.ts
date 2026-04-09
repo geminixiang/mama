@@ -98,6 +98,7 @@ export class TelegramBot implements Bot {
       { command: "help", description: "Show available commands" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
+      { command: "login", description: "Link your account to use personal credentials" },
     ]);
 
     this.setupEventHandlers();
@@ -368,6 +369,7 @@ export class TelegramBot implements Bot {
           "/help — Show this help",
           "/stop — Stop ongoing conversation",
           "/new — Reset conversation history and start fresh",
+          "/login — Link your account to use personal credentials",
           "",
           "You can also send a regular message to chat with the agent.",
         ].join("\n"),
@@ -388,6 +390,12 @@ export class TelegramBot implements Bot {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
       await this.handler.handleNew(mc.sessionKey, mc.chatId, this);
+    });
+
+    this.client.command("login", async (ctx) => {
+      const mc = this.extractMessageContext(ctx.message);
+      if (!mc) return;
+      await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this);
     });
 
     // --- Catch-all for regular (non-command) messages ---

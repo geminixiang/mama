@@ -1,14 +1,24 @@
 import { spawn } from "child_process";
-import type { VaultManager } from "./vault.js";
 
 export type SandboxConfig =
   | { type: "host" }
   | { type: "docker"; container: string }
+  | { type: "docker-auto"; image: string }
   | { type: "firecracker"; vmId: string; hostPath: string; sshUser?: string; sshPort?: number };
 
 export function parseSandboxArg(value: string): SandboxConfig {
   if (value === "host") {
     return { type: "host" };
+  }
+  if (value.startsWith("docker-auto:")) {
+    const image = value.slice("docker-auto:".length);
+    if (!image) {
+      console.error(
+        "Error: docker-auto sandbox requires an image name (e.g., docker-auto:ubuntu:24.04)",
+      );
+      process.exit(1);
+    }
+    return { type: "docker-auto", image };
   }
   if (value.startsWith("docker:")) {
     const container = value.slice("docker:".length);
@@ -49,13 +59,24 @@ export function parseSandboxArg(value: string): SandboxConfig {
     return { type: "firecracker", vmId, hostPath, sshUser, sshPort };
   }
   console.error(
-    `Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', or 'firecracker:<vm-id>:<host-path>'`,
+    `Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', 'docker-auto:<image>', or 'firecracker:<vm-id>:<host-path>'`,
   );
   process.exit(1);
 }
 
 export async function validateSandbox(config: SandboxConfig): Promise<void> {
   if (config.type === "host") {
+    return;
+  }
+
+  if (config.type === "docker-auto") {
+    try {
+      await execSimple("docker", ["--version"]);
+    } catch {
+      console.error("Error: Docker is not installed or not in PATH");
+      process.exit(1);
+    }
+    console.log(`  Docker auto-provisioning enabled. Image: ${config.image}`);
     return;
   }
 
@@ -161,12 +182,19 @@ function execSimple(cmd: string, args: string[]): Promise<string> {
  * Create an executor that runs commands either on host, in Docker container, or in Firecracker VM.
  * Optional `env` injects environment variables into every command executed.
  */
-export function createExecutor(config: SandboxConfig, env?: Record<string, string>): Executor {
+export function createExecutor(
+  config: SandboxConfig,
+  env?: Record<string, string>,
+  ensureReady?: () => Promise<void>,
+): Executor {
   if (config.type === "host") {
     return new HostExecutor(env);
   }
   if (config.type === "docker") {
-    return new DockerExecutor(config.container, env);
+    return new DockerExecutor(config.container, env, ensureReady);
+  }
+  if (config.type === "docker-auto") {
+    throw new Error("docker-auto must be resolved to a concrete executor before execution");
   }
   return new FirecrackerExecutor(config.vmId, config.hostPath, config.sshUser, config.sshPort, env);
 }
@@ -282,9 +310,16 @@ class DockerExecutor implements Executor {
   constructor(
     private container: string,
     private env?: Record<string, string>,
+    private ensureReady?: () => Promise<void>,
   ) {}
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+    if (this.ensureReady) {
+      await this.ensureReady();
+    } else {
+      await ensureDockerContainerRunning(this.container);
+    }
+
     // Build -e flags for env injection into docker exec
     const envFlags = this.env
       ? Object.entries(this.env)
@@ -365,132 +400,18 @@ function shellEscape(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/**
- * Executor that routes commands to per-user sandboxes based on the current actor.
- * The agent loop is sequential per-channel, so setting currentUserId before each
- * session.prompt() is safe — no concurrent execution within a single session.
- */
-export class UserAwareExecutor implements Executor {
-  private executors = new Map<string, Executor>();
-  private fallbackExecutor: Executor;
-  private _currentUserId: string | undefined;
-
-  constructor(
-    private baseConfig: SandboxConfig,
-    private vaultManager: VaultManager,
-  ) {
-    // Fallback executor uses system actor vault if configured, otherwise base config.
-    // We apply the sandbox override directly from the resolved vault rather than
-    // re-resolving through getSandboxConfig, because the system actor uses a
-    // synthetic userId ("__system__") that won't match any vault key.
-    const systemVault = vaultManager.resolveSystemActor();
-    if (systemVault) {
-      const systemConfig = this.applySandboxOverride(systemVault, baseConfig);
-      const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
-      this.fallbackExecutor = createExecutor(systemConfig, env);
-    } else {
-      this.fallbackExecutor = createExecutor(baseConfig);
+async function ensureDockerContainerRunning(container: string): Promise<void> {
+  try {
+    const running = await execSimple("docker", ["inspect", "-f", "{{.State.Running}}", container]);
+    if (running.trim() === "true") {
+      return;
     }
-  }
-
-  /** Set the current actor's userId. Call before each session.prompt(). */
-  set currentUserId(id: string | undefined) {
-    this._currentUserId = id;
-  }
-
-  get currentUserId(): string | undefined {
-    return this._currentUserId;
-  }
-
-  /**
-   * Reload vault config and clear the executor cache so credential changes
-   * (env file updates, vault.json edits, token rotations) take effect.
-   * Call once per run, before setting currentUserId.
-   */
-  refreshVault(): void {
-    this.vaultManager.reload();
-    this.executors.clear();
-
-    // Rebuild fallback executor in case system actor config changed
-    const systemVault = this.vaultManager.resolveSystemActor();
-    if (systemVault) {
-      const systemConfig = this.applySandboxOverride(systemVault, this.baseConfig);
-      const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
-      this.fallbackExecutor = createExecutor(systemConfig, env);
-    } else {
-      this.fallbackExecutor = createExecutor(this.baseConfig);
-    }
-  }
-
-  private getExecutor(): Executor {
-    if (!this._currentUserId) {
-      return this.fallbackExecutor;
-    }
-
-    let executor = this.executors.get(this._currentUserId);
-    if (!executor) {
-      const vault = this.vaultManager.resolve(this._currentUserId);
-
-      // Strict mode: fail fast if user has no vault
-      if (!vault && this.vaultManager.isStrict()) {
-        throw new Error(
-          `No vault configured for user "${this._currentUserId}". ` +
-            `Ask an admin to add this user to vaults/vault.json.`,
-        );
-      }
-
-      const config = this.vaultManager.getSandboxConfig(this._currentUserId, this.baseConfig);
-      const env = vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
-      executor = createExecutor(config, env);
-      this.executors.set(this._currentUserId, executor);
-    }
-    return executor;
-  }
-
-  async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
-    return this.getExecutor().exec(command, options);
-  }
-
-  getWorkspacePath(hostPath: string): string {
-    return this.getExecutor().getWorkspacePath(hostPath);
-  }
-
-  /** Apply a vault's sandbox override to the base config without re-resolving by userId. */
-  private applySandboxOverride(
-    vault: {
-      dir?: string;
-      sandboxOverride?: {
-        type?: string;
-        container?: string;
-        vmId?: string;
-        sshUser?: string;
-        sshPort?: number;
-      };
-    },
-    baseConfig: SandboxConfig,
-  ): SandboxConfig {
-    const override = vault.sandboxOverride;
-    if (!override?.type) return baseConfig;
-
-    if (override.type === "docker") {
-      return { type: "docker", container: override.container || `mama-sandbox-system` };
-    }
-    if (override.type === "firecracker" && override.vmId) {
-      // hostPath is a host-side path, not the guest mount point.
-      // Inherit from base config if also Firecracker, otherwise use vault dir.
-      const hostPath =
-        baseConfig.type === "firecracker" ? baseConfig.hostPath : vault.dir || "/workspace";
-      return {
-        type: "firecracker",
-        vmId: override.vmId,
-        hostPath,
-        sshUser: override.sshUser,
-        sshPort: override.sshPort,
-      };
-    }
-    if (override.type === "host") {
-      return { type: "host" };
-    }
-    return baseConfig;
+    await execSimple("docker", ["start", container]);
+  } catch (error) {
+    const details = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Docker container "${container}" is not available. ` +
+        `Expected a pre-existing container or docker-auto provisioning to keep it running.\n${details}`.trim(),
+    );
   }
 }

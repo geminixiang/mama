@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { SandboxConfig } from "./sandbox.js";
 
@@ -62,6 +62,11 @@ export interface VaultManager {
   isStrict(): boolean;
   /** Resolve the system actor vault (for events/scheduled tasks with no userId) */
   resolveSystemActor(): ResolvedVault | undefined;
+  /**
+   * Add or update a vault entry and persist to disk.
+   * No-op if the key already exists (idempotent).
+   */
+  addEntry(key: string, entry: VaultEntry): void;
 }
 
 // ── parseEnvFile ───────────────────────────────────────────────────────────────
@@ -239,6 +244,21 @@ export class FileVaultManager implements VaultManager {
       results.push(this.buildResolved(key, key, entry));
     }
     return results;
+  }
+
+  addEntry(key: string, entry: VaultEntry): void {
+    if (!this.config) {
+      this.config = { vaults: {} };
+    }
+    // Idempotent: skip if already exists
+    if (this.config.vaults[key]) return;
+    this.config.vaults[key] = entry;
+    try {
+      mkdirSync(this.vaultsDir, { recursive: true });
+      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", "utf-8");
+    } catch (err) {
+      console.error(`vault: failed to write ${this.configPath}:`, err);
+    }
   }
 
   // ── private ────────────────────────────────────────────────────────────────

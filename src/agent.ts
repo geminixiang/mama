@@ -18,8 +18,11 @@ import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
-import { createExecutor, UserAwareExecutor, type SandboxConfig } from "./sandbox.js";
+import type { UserBindingStore } from "./bindings.js";
+import type { DockerProvisioner } from "./provisioner.js";
+import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { VaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import {
@@ -419,6 +422,8 @@ export async function createRunner(
   channelDir: string,
   workspaceDir: string,
   vaultManager?: VaultManager,
+  bindingStore?: UserBindingStore,
+  provisioner?: DockerProvisioner,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
 
@@ -428,12 +433,25 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executor = vaultManager?.isEnabled()
-    ? new UserAwareExecutor(sandboxConfig, vaultManager)
-    : createExecutor(sandboxConfig);
+  const executionResolver =
+    vaultManager &&
+    (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "docker-auto")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
+      : undefined;
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+  };
   const workspaceBase = channelDir.replace(`/${channelId}`, "");
-  // Compute workspace path from the executor. For UserAwareExecutor, this resolves
-  // based on the current actor, so it must be called after setting currentUserId.
+  // Compute workspace path from the current executor. This may change per run.
   const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
   let workspacePath = getWorkspacePath();
 
@@ -857,9 +875,12 @@ export async function createRunner(
       // reflects the actor's sandbox type.
       // "EVENT" is a synthetic userId from the events system — treat it as no-user
       // so the executor falls back to the systemActor vault.
-      if (executor instanceof UserAwareExecutor) {
-        executor.refreshVault();
-        executor.currentUserId = message.userId === "EVENT" ? undefined : message.userId;
+      if (executionResolver) {
+        executionResolver.refresh();
+        activeExecutor = await executionResolver.resolve({
+          platform: platform.name,
+          userId: message.userId === "EVENT" ? undefined : message.userId,
+        });
         workspacePath = getWorkspacePath();
       }
 
