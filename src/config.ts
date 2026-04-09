@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 
 export interface AgentConfig {
-  provider: string;
-  model: string;
+  provider?: string;
+  model?: string;
   thinkingLevel?: string;
   sessionScope?: "thread" | "channel";
   logFormat?: "console" | "json";
@@ -11,47 +11,42 @@ export interface AgentConfig {
   sentryDsn?: string;
 }
 
-const DEFAULTS: AgentConfig = {
+const SETTINGS_TEMPLATE: AgentConfig = {
   provider: "anthropic",
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   thinkingLevel: "off",
   sessionScope: "thread",
   logFormat: "console",
   logLevel: "info",
 };
 
-function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
-  const settingsPath = join(workspaceDir, "settings.json");
-
-  if (!existsSync(settingsPath)) {
-    return {};
-  }
-
+export function loadAgentConfig(stateDir: string): AgentConfig {
+  const settingsPath = join(stateDir, "settings.json");
   try {
     const raw = readFileSync(settingsPath, "utf-8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
-      return parsed as Partial<AgentConfig>;
+      return parsed as AgentConfig;
     }
   } catch {
-    // Ignore parse errors, fall through to env/defaults
+    // File missing or malformed
   }
-
   return {};
 }
 
-export function loadAgentConfig(workspaceDir: string): AgentConfig {
-  const fromFile = loadRawAgentConfig(workspaceDir);
-
-  const provider = fromFile.provider || process.env.MOM_AI_PROVIDER || DEFAULTS.provider;
-  const model = fromFile.model || process.env.MOM_AI_MODEL || DEFAULTS.model;
-  const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
-  const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
-  const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
-  const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
-  const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
-
-  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel, sentryDsn };
+/**
+ * Ensure settings.json exists in stateDir.
+ * If missing, writes a default template and returns it.
+ * If it already exists, loads and returns the current config.
+ */
+export function ensureSettingsFile(stateDir: string): { created: boolean; config: AgentConfig } {
+  const settingsPath = join(stateDir, "settings.json");
+  if (!existsSync(settingsPath)) {
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify(SETTINGS_TEMPLATE, null, 2) + "\n", "utf-8");
+    return { created: true, config: SETTINGS_TEMPLATE };
+  }
+  return { created: false, config: loadAgentConfig(stateDir) };
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
@@ -79,39 +74,31 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
   return undefined;
 }
 
-export function resolveSentryDsn(workspaceDir?: string): string | undefined {
-  if (workspaceDir) {
-    const fromFile = loadRawAgentConfig(workspaceDir);
-    if (fromFile.sentryDsn) {
-      return fromFile.sentryDsn;
+export function resolveSentryDsn(stateDir?: string): string | undefined {
+  if (stateDir) {
+    const config = loadAgentConfig(stateDir);
+    if (config.sentryDsn) {
+      return config.sentryDsn;
     }
   }
 
   return process.env.SENTRY_DSN;
 }
 
-export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
-  const settingsPath = join(workspaceDir, "settings.json");
+export function saveAgentConfig(stateDir: string, config: AgentConfig): void {
+  const settingsPath = join(stateDir, "settings.json");
 
-  let existing: Partial<AgentConfig> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      const raw = readFileSync(settingsPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        existing = parsed as Partial<AgentConfig>;
-      }
-    } catch {
-      // Start fresh if file is malformed
+  let existing: AgentConfig = {};
+  try {
+    const raw = readFileSync(settingsPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      existing = parsed as AgentConfig;
     }
+  } catch {
+    // Start fresh if file is missing or malformed
   }
 
-  const merged = { ...existing, ...config };
-
-  const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  writeFileSync(settingsPath, JSON.stringify(merged, null, 2), "utf-8");
+  mkdirSync(dirname(settingsPath), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify({ ...existing, ...config }, null, 2), "utf-8");
 }

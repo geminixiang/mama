@@ -241,7 +241,7 @@ Create `settings.json` in your working directory to override defaults:
 ```json
 {
   "provider": "anthropic",
-  "model": "claude-sonnet-4-5",
+  "model": "claude-sonnet-4-6",
   "thinkingLevel": "off",
   "sessionScope": "thread",
   "logFormat": "console",
@@ -253,7 +253,7 @@ Create `settings.json` in your working directory to override defaults:
 | Field           | Default             | Description                                              |
 | --------------- | ------------------- | -------------------------------------------------------- |
 | `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)                     |
-| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)                         |
+| `model`         | `claude-sonnet-4-6` | Model name (env: `MOM_AI_MODEL`)                         |
 | `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
 | `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel`           |
 | `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |

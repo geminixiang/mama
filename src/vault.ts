@@ -118,8 +118,8 @@ export class FileVaultManager implements VaultManager {
   private readonly vaultsDir: string;
   private readonly configPath: string;
 
-  constructor(workspaceDir: string) {
-    this.vaultsDir = join(workspaceDir, "vaults");
+  constructor(stateDir: string) {
+    this.vaultsDir = join(stateDir, "vaults");
     this.configPath = join(this.vaultsDir, "vault.json");
     this.reload();
   }

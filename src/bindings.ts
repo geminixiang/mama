@@ -62,8 +62,8 @@ export class FileUserBindingStore implements UserBindingStore {
   private config: BindingsConfig | null = null;
   private readonly configPath: string;
 
-  constructor(workspaceDir: string) {
-    this.configPath = join(workspaceDir, "vaults", "bindings.json");
+  constructor(stateDir: string) {
+    this.configPath = join(stateDir, "vaults", "bindings.json");
     this.reload();
   }
 

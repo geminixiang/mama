@@ -424,8 +424,9 @@ export async function createRunner(
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
   provisioner?: DockerProvisioner,
+  stateDir?: string,
 ): Promise<AgentRunner> {
-  const agentConfig = loadAgentConfig(workspaceDir);
+  const agentConfig = loadAgentConfig(stateDir ?? workspaceDir);
 
   // Initialize logger with settings from config
   log.initLogger({

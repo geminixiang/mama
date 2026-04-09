@@ -3,6 +3,7 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
+import { homedir } from "os";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
@@ -27,6 +28,7 @@ import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerProvisioner } from "./provisioner.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
+import { ensureSettingsFile } from "./config.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -68,6 +70,7 @@ const MOM_LINK_PORT = process.env.MOM_LINK_PORT
 
 interface ParsedArgs {
   workingDir?: string;
+  stateDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
   showVersion?: boolean;
@@ -77,6 +80,7 @@ function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
   let sandbox: SandboxConfig = { type: "host" };
   let workingDir: string | undefined;
+  let stateDirArg: string | undefined;
   let downloadChannelId: string | undefined;
   let showVersion = false;
 
@@ -88,6 +92,10 @@ function parseArgs(): ParsedArgs {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
       sandbox = parseSandboxArg(args[++i] || "");
+    } else if (arg.startsWith("--state-dir=")) {
+      stateDirArg = arg.slice("--state-dir=".length);
+    } else if (arg === "--state-dir") {
+      stateDirArg = args[++i];
     } else if (arg.startsWith("--download=")) {
       downloadChannelId = arg.slice("--download=".length);
     } else if (arg === "--download") {
@@ -99,6 +107,7 @@ function parseArgs(): ParsedArgs {
 
   return {
     workingDir: workingDir ? resolve(workingDir) : undefined,
+    stateDir: stateDirArg ? resolve(stateDirArg) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
     showVersion,
@@ -126,13 +135,28 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] [--state-dir=<path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+// stateDir holds operator-managed files (vaults, settings, bindings).
+// Defaults to ~/.mama to keep secrets outside the project workspace mounted into sandboxes.
+const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+
+// Ensure settings.json exists; create a template if first run.
+const { created: settingsCreated, config: agentSettings } = ensureSettingsFile(stateDir);
+if (settingsCreated) {
+  console.log(`Created default settings: ${join(stateDir, "settings.json")}`);
+  console.log("Review and update provider/model before starting.");
+}
+
+if (!agentSettings.provider || !agentSettings.model) {
+  console.error(`Error: 'provider' and 'model' must be set in ${join(stateDir, "settings.json")}`);
+  process.exit(1);
+}
 
 // Validate platform tokens
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
@@ -151,12 +175,12 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
 
 await validateSandbox(sandbox);
 
-const vaultManager = new FileVaultManager(workingDir);
+const vaultManager = new FileVaultManager(stateDir);
 if (vaultManager.isEnabled()) {
   console.log("  Vault system enabled. Per-user credential routing active.");
 }
 
-const bindingStore = new FileUserBindingStore(workingDir);
+const bindingStore = new FileUserBindingStore(stateDir);
 if (bindingStore.isEnabled()) {
   console.log("  Binding store enabled. Platform user → vault routing active.");
 }
@@ -241,6 +265,7 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
         vaultManager,
         bindingStore,
         provisioner,
+        stateDir,
       ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
