@@ -24,7 +24,7 @@ describe("loadAgentConfig", () => {
   test("returns defaults when no settings.json and no env vars", () => {
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(config.model).toBe("claude-sonnet-4-6");
     expect(config.thinkingLevel).toBe("off");
     expect(config.sessionScope).toBe("thread");
   });
@@ -81,7 +81,7 @@ describe("loadAgentConfig", () => {
     writeFileSync(join(tmpDir, "settings.json"), "{ invalid json }", "utf-8");
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(config.model).toBe("claude-sonnet-4-6");
   });
 });
 

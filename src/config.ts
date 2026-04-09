@@ -13,7 +13,7 @@ export interface AgentConfig {
 
 const DEFAULTS: AgentConfig = {
   provider: "anthropic",
-  model: "claude-sonnet-4-5",
+  model: "claude-sonnet-4-6",
   thinkingLevel: "off",
   sessionScope: "thread",
   logFormat: "console",
