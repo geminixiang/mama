@@ -151,6 +151,8 @@ const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: pa
 // stateDir holds operator-managed files (vaults, settings, bindings).
 // Defaults to ~/.mama to keep secrets outside the project workspace mounted into sandboxes.
 const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+// Share stateDir with instrument.ts (for Sentry config loading)
+process.env.MAMA_STATE_DIR = stateDir;
 
 // Ensure settings.json exists; create a template if first run.
 const { created: settingsCreated, config: agentSettings } = ensureSettingsFile(stateDir);

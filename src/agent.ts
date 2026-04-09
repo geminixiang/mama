@@ -450,6 +450,9 @@ export async function createRunner(
     getWorkspacePath(hostPath) {
       return activeExecutor.getWorkspacePath(hostPath);
     },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
   };
   const workspaceBase = channelDir.replace(`/${channelId}`, "");
   // Compute workspace path from the current executor. This may change per run.
@@ -914,13 +917,16 @@ export async function createRunner(
       }
 
       // Update system prompt with fresh memory, channel/user info, and skills
+      // Use the actual executor's sandbox config, not the initial config,
+      // to ensure accurate environment description for the model
       const memory = await getMemory(channelDir);
       const skills = loadMamaSkills(channelDir, workspacePath);
+      const actualSandboxConfig = executor.getSandboxConfig();
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
         memory,
-        sandboxConfig,
+        actualSandboxConfig,
         platform,
         skills,
       );

@@ -78,6 +78,24 @@ export function resolveSentryDsn(stateDir: string): string | undefined {
   return loadAgentConfig(stateDir).sentryDsn;
 }
 
+/**
+ * Resolve Sentry DSN from settings.json, checking both the new stateDir location
+ * (default: ~/.mama/settings.json) and the legacy workspace location for backwards compatibility.
+ * Returns undefined if not found in either location.
+ */
+export function resolveSentryDsnFromConfig(
+  stateDir: string,
+  workingDir?: string,
+): string | undefined {
+  // First check the new stateDir location
+  const stateDirDsn = resolveSentryDsn(stateDir);
+  if (stateDirDsn) {
+    return stateDirDsn;
+  }
+  // Fall back to legacy workspace location for backwards compatibility
+  return workingDir ? resolveSentryDsn(workingDir) : undefined;
+}
+
 export function saveAgentConfig(stateDir: string, config: AgentConfig): void {
   const settingsPath = join(stateDir, "settings.json");
 

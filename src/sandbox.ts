@@ -211,6 +211,12 @@ export interface Executor {
    * Docker: returns /workspace
    */
   getWorkspacePath(hostPath: string): string;
+
+  /**
+   * Get the current sandbox config used by this executor
+   * Used to build accurate system prompts for the model
+   */
+  getSandboxConfig(): SandboxConfig;
 }
 
 export interface ExecOptions {
@@ -318,6 +324,10 @@ class HostExecutor implements Executor {
   getWorkspacePath(hostPath: string): string {
     return hostPath;
   }
+
+  getSandboxConfig(): SandboxConfig {
+    return { type: "host" };
+  }
 }
 
 class DockerExecutor implements Executor {
@@ -342,6 +352,10 @@ class DockerExecutor implements Executor {
   getWorkspacePath(_hostPath: string): string {
     // Docker container sees /workspace
     return "/workspace";
+  }
+
+  getSandboxConfig(): SandboxConfig {
+    return { type: "docker", container: this.container };
   }
 }
 
@@ -376,6 +390,16 @@ class FirecrackerExecutor implements Executor {
   getWorkspacePath(_hostPath: string): string {
     // Firecracker VM sees /workspace (assumes hostPath is mounted there)
     return "/workspace";
+  }
+
+  getSandboxConfig(): SandboxConfig {
+    return {
+      type: "firecracker",
+      vmId: this.vmId,
+      hostPath: this.hostPath,
+      sshUser: this.sshUser,
+      sshPort: this.sshPort,
+    };
   }
 }
 

@@ -87,7 +87,11 @@ export class ActorExecutionResolver {
 
     const config = this.applySandboxOverride(systemVault, this.baseConfig);
     const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
-    return createExecutor(config, env);
+    // For docker-auto mode, we need getEnsureReady to auto-provision the container
+    // System vault uses userId from the vault config for container naming
+    const vaultKey = systemVault.userId;
+    const ensureReady = this.getEnsureReady(vaultKey, config);
+    return createExecutor(config, env, ensureReady);
   }
 
   private getEnsureReady(
