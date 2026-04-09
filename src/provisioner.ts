@@ -3,6 +3,7 @@ import { promisify } from "util";
 import * as log from "./log.js";
 
 const execFileAsync = promisify(execFile);
+type ExecFileAsync = typeof execFileAsync;
 
 // ── DockerProvisioner ──────────────────────────────────────────────────────────
 
@@ -12,12 +13,13 @@ const execFileAsync = promisify(execFile);
  * configured base image and mounted to the shared workspace.
  */
 export class DockerProvisioner {
-  /** Tracks vaultIds whose containers are known to be running, to avoid redundant `docker inspect` calls. */
+  /** Tracks vaultIds whose containers were last observed running. */
   private running = new Set<string>();
 
   constructor(
     private readonly image: string,
     private readonly workspaceDir: string,
+    private readonly execFileImpl: ExecFileAsync = execFileAsync,
   ) {}
 
   /** Sanitize an identifier segment for use in vault keys and container names. */
@@ -44,7 +46,7 @@ export class DockerProvisioner {
 
   /**
    * Ensure a container exists and is running for the given vaultId.
-   * - If container is running (cached or confirmed via inspect): no-op.
+   * - If container is running: no-op.
    * - If container exists but stopped: start it.
    * - If container does not exist: create it from the base image.
    *
@@ -53,12 +55,8 @@ export class DockerProvisioner {
   async provision(vaultId: string): Promise<string> {
     const containerName = DockerProvisioner.containerName(vaultId);
 
-    if (this.running.has(vaultId)) {
-      return containerName;
-    }
-
     try {
-      const { stdout } = await execFileAsync("docker", [
+      const { stdout } = await this.execFileImpl("docker", [
         "inspect",
         "-f",
         "{{.State.Running}}",
@@ -69,7 +67,7 @@ export class DockerProvisioner {
         this.running.add(vaultId);
         return containerName;
       }
-      await execFileAsync("docker", ["start", containerName]);
+      await this.execFileImpl("docker", ["start", containerName]);
       log.logInfo(`Provisioner: started existing container ${containerName}`);
       this.running.add(vaultId);
       return containerName;
@@ -78,7 +76,7 @@ export class DockerProvisioner {
     }
 
     log.logInfo(`Provisioner: creating container ${containerName} from image ${this.image}`);
-    await execFileAsync("docker", [
+    await this.execFileImpl("docker", [
       "run",
       "-d",
       "--name",
@@ -99,7 +97,7 @@ export class DockerProvisioner {
     const containerName = DockerProvisioner.containerName(vaultId);
     this.running.delete(vaultId);
     try {
-      await execFileAsync("docker", ["rm", "-f", containerName]);
+      await this.execFileImpl("docker", ["rm", "-f", containerName]);
       log.logInfo(`Provisioner: removed container ${containerName}`);
     } catch (err) {
       log.logWarning(

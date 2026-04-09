@@ -224,6 +224,20 @@ export interface ExecResult {
   code: number;
 }
 
+export function buildDockerExecCommand(
+  container: string,
+  command: string,
+  env?: Record<string, string>,
+): string {
+  const envFlags = env
+    ? Object.entries(env)
+        .map(([k, v]) => `-e ${shellEscape(`${k}=${v}`)}`)
+        .join(" ")
+    : "";
+  const envPart = envFlags ? `${envFlags} ` : "";
+  return `docker exec ${envPart}-w /workspace ${container} sh -c ${shellEscape(command)}`;
+}
+
 class HostExecutor implements Executor {
   constructor(private env?: Record<string, string>) {}
 
@@ -320,14 +334,7 @@ class DockerExecutor implements Executor {
       await ensureDockerContainerRunning(this.container);
     }
 
-    // Build -e flags for env injection into docker exec
-    const envFlags = this.env
-      ? Object.entries(this.env)
-          .map(([k, v]) => `-e ${shellEscape(`${k}=${v}`)}`)
-          .join(" ")
-      : "";
-    const envPart = envFlags ? `${envFlags} ` : "";
-    const dockerCmd = `docker exec ${envPart}${this.container} sh -c ${shellEscape(command)}`;
+    const dockerCmd = buildDockerExecCommand(this.container, command, this.env);
     const hostExecutor = new HostExecutor();
     return hostExecutor.exec(dockerCmd, options);
   }
