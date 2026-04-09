@@ -19,7 +19,8 @@ import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.j
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
-import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import { createExecutor, UserAwareExecutor, type SandboxConfig } from "./sandbox.js";
+import type { VaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import {
   createManagedSessionFileAtPath,
@@ -417,6 +418,7 @@ export async function createRunner(
   channelId: string,
   channelDir: string,
   workspaceDir: string,
+  vaultManager?: VaultManager,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
 
@@ -426,8 +428,14 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executor = createExecutor(sandboxConfig);
-  const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+  const executor = vaultManager?.isEnabled()
+    ? new UserAwareExecutor(sandboxConfig, vaultManager)
+    : createExecutor(sandboxConfig);
+  const workspaceBase = channelDir.replace(`/${channelId}`, "");
+  // Compute workspace path from the executor. For UserAwareExecutor, this resolves
+  // based on the current actor, so it must be called after setting currentUserId.
+  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
   const { tools, setUploadFunction } = createMamaTools(executor);
@@ -842,6 +850,15 @@ export async function createRunner(
 
       // Ensure channel directory exists
       await mkdir(channelDir, { recursive: true });
+
+      // Set active actor for per-user sandbox routing BEFORE building system prompt,
+      // so workspacePath reflects the actor's sandbox type.
+      // "EVENT" is a synthetic userId from the events system — treat it as no-user
+      // so the executor falls back to the systemActor vault.
+      if (executor instanceof UserAwareExecutor) {
+        executor.currentUserId = message.userId === "EVENT" ? undefined : message.userId;
+        workspacePath = getWorkspacePath();
+      }
 
       // Sync messages from log.jsonl that arrived while we were offline or busy
       // Exclude the current message (it will be added via prompt())

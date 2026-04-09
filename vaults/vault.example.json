@@ -1,0 +1,38 @@
+{
+  "$comment": "Copy this file to vault.json and edit to enable per-user credential routing.",
+  "vaults": {
+    "U12345": {
+      "displayName": "Alice",
+      "platform": "slack",
+      "mounts": [".gcloud", ".ssh", ".kube", ".gitconfig"],
+      "envFile": true,
+      "sandbox": {
+        "type": "docker",
+        "container": "mama-sandbox-alice"
+      }
+    },
+    "U67890": {
+      "displayName": "Bob",
+      "platform": "slack",
+      "mounts": [".gcloud", ".ssh"],
+      "envFile": true,
+      "sandbox": {
+        "type": "docker",
+        "container": "mama-sandbox-bob"
+      }
+    },
+    "_shared": {
+      "displayName": "Shared (fallback)",
+      "mounts": [],
+      "envFile": true
+    },
+    "_system": {
+      "displayName": "System (events/scheduled tasks)",
+      "mounts": [],
+      "envFile": true
+    }
+  },
+  "fallback": "_shared",
+  "systemActor": "_system",
+  "strict": false
+}

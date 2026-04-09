@@ -1,4 +1,5 @@
 import { spawn } from "child_process";
+import type { VaultManager } from "./vault.js";
 
 export type SandboxConfig =
   | { type: "host" }
@@ -157,16 +158,17 @@ function execSimple(cmd: string, args: string[]): Promise<string> {
 }
 
 /**
- * Create an executor that runs commands either on host, in Docker container, or in Firecracker VM
+ * Create an executor that runs commands either on host, in Docker container, or in Firecracker VM.
+ * Optional `env` injects environment variables into every command executed.
  */
-export function createExecutor(config: SandboxConfig): Executor {
+export function createExecutor(config: SandboxConfig, env?: Record<string, string>): Executor {
   if (config.type === "host") {
-    return new HostExecutor();
+    return new HostExecutor(env);
   }
   if (config.type === "docker") {
-    return new DockerExecutor(config.container);
+    return new DockerExecutor(config.container, env);
   }
-  return new FirecrackerExecutor(config.vmId, config.hostPath, config.sshUser, config.sshPort);
+  return new FirecrackerExecutor(config.vmId, config.hostPath, config.sshUser, config.sshPort, env);
 }
 
 export interface Executor {
@@ -195,6 +197,8 @@ export interface ExecResult {
 }
 
 class HostExecutor implements Executor {
+  constructor(private env?: Record<string, string>) {}
+
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     return new Promise((resolve, reject) => {
       const shell = process.platform === "win32" ? "cmd" : "sh";
@@ -203,6 +207,7 @@ class HostExecutor implements Executor {
       const child = spawn(shell, [...shellArgs, command], {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        ...(this.env && { env: { ...process.env, ...this.env } }),
       });
 
       let stdout = "";
@@ -274,11 +279,20 @@ class HostExecutor implements Executor {
 }
 
 class DockerExecutor implements Executor {
-  constructor(private container: string) {}
+  constructor(
+    private container: string,
+    private env?: Record<string, string>,
+  ) {}
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
-    // Wrap command for docker exec
-    const dockerCmd = `docker exec ${this.container} sh -c ${shellEscape(command)}`;
+    // Build -e flags for env injection into docker exec
+    const envFlags = this.env
+      ? Object.entries(this.env)
+          .map(([k, v]) => `-e ${shellEscape(`${k}=${v}`)}`)
+          .join(" ")
+      : "";
+    const envPart = envFlags ? `${envFlags} ` : "";
+    const dockerCmd = `docker exec ${envPart}${this.container} sh -c ${shellEscape(command)}`;
     const hostExecutor = new HostExecutor();
     return hostExecutor.exec(dockerCmd, options);
   }
@@ -295,15 +309,24 @@ class FirecrackerExecutor implements Executor {
     private hostPath: string,
     private sshUser: string = "root",
     private sshPort: number = 22,
+    private env?: Record<string, string>,
   ) {}
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+    // Prefix command with env vars for SSH execution
+    const envPrefix = this.env
+      ? Object.entries(this.env)
+          .map(([k, v]) => `${k}=${shellEscape(v)}`)
+          .join(" ") + " "
+      : "";
+    const wrappedCommand = `${envPrefix}${command}`;
+
     // Use direct SSH to execute command in the Firecracker VM
     // The workspace inside the VM is expected to be mounted at /workspace
     const sshCmd =
       this.sshPort === 22
-        ? `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${this.sshUser}@${this.vmId} sh -c ${shellEscape(command)}`
-        : `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${this.sshPort} ${this.sshUser}@${this.vmId} sh -c ${shellEscape(command)}`;
+        ? `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${this.sshUser}@${this.vmId} sh -c ${shellEscape(wrappedCommand)}`
+        : `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${this.sshPort} ${this.sshUser}@${this.vmId} sh -c ${shellEscape(wrappedCommand)}`;
     const hostExecutor = new HostExecutor();
     return hostExecutor.exec(sshCmd, options);
   }
@@ -340,4 +363,110 @@ function killProcessTree(pid: number): void {
 function shellEscape(s: string): string {
   // Escape for passing to sh -c
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Executor that routes commands to per-user sandboxes based on the current actor.
+ * The agent loop is sequential per-channel, so setting currentUserId before each
+ * session.prompt() is safe — no concurrent execution within a single session.
+ */
+export class UserAwareExecutor implements Executor {
+  private executors = new Map<string, Executor>();
+  private fallbackExecutor: Executor;
+  private _currentUserId: string | undefined;
+
+  constructor(
+    private baseConfig: SandboxConfig,
+    private vaultManager: VaultManager,
+  ) {
+    // Fallback executor uses system actor vault if configured, otherwise base config.
+    // We apply the sandbox override directly from the resolved vault rather than
+    // re-resolving through getSandboxConfig, because the system actor uses a
+    // synthetic userId ("__system__") that won't match any vault key.
+    const systemVault = vaultManager.resolveSystemActor();
+    if (systemVault) {
+      const systemConfig = this.applySandboxOverride(systemVault, baseConfig);
+      const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
+      this.fallbackExecutor = createExecutor(systemConfig, env);
+    } else {
+      this.fallbackExecutor = createExecutor(baseConfig);
+    }
+  }
+
+  /** Set the current actor's userId. Call before each session.prompt(). */
+  set currentUserId(id: string | undefined) {
+    this._currentUserId = id;
+  }
+
+  get currentUserId(): string | undefined {
+    return this._currentUserId;
+  }
+
+  private getExecutor(): Executor {
+    if (!this._currentUserId) {
+      return this.fallbackExecutor;
+    }
+
+    let executor = this.executors.get(this._currentUserId);
+    if (!executor) {
+      const vault = this.vaultManager.resolve(this._currentUserId);
+
+      // Strict mode: fail fast if user has no vault
+      if (!vault && this.vaultManager.isStrict()) {
+        throw new Error(
+          `No vault configured for user "${this._currentUserId}". ` +
+            `Ask an admin to add this user to vaults/vault.json.`,
+        );
+      }
+
+      const config = this.vaultManager.getSandboxConfig(this._currentUserId, this.baseConfig);
+      const env = vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
+      executor = createExecutor(config, env);
+      this.executors.set(this._currentUserId, executor);
+    }
+    return executor;
+  }
+
+  async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
+    return this.getExecutor().exec(command, options);
+  }
+
+  getWorkspacePath(hostPath: string): string {
+    return this.getExecutor().getWorkspacePath(hostPath);
+  }
+
+  /** Apply a vault's sandbox override to the base config without re-resolving by userId. */
+  private applySandboxOverride(
+    vault: {
+      sandboxOverride?: {
+        type?: string;
+        container?: string;
+        vmId?: string;
+        sshUser?: string;
+        sshPort?: number;
+      };
+    },
+    baseConfig: SandboxConfig,
+  ): SandboxConfig {
+    const override = vault.sandboxOverride;
+    if (!override?.type) return baseConfig;
+
+    if (override.type === "docker") {
+      return { type: "docker", container: override.container || `mama-sandbox-system` };
+    }
+    if (override.type === "firecracker" && override.vmId) {
+      const hostPath = baseConfig.type === "firecracker" ? baseConfig.hostPath : "/workspace";
+      return {
+        type: "firecracker",
+        vmId: override.vmId,
+        hostPath,
+        sshUser: override.sshUser,
+        sshPort: override.sshPort,
+      };
+    }
+    if (override.type === "host") {
+      return { type: "host" };
+    }
+    return baseConfig;
+  }
 }

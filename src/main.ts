@@ -21,6 +21,7 @@ import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileVaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -139,6 +140,11 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
 
 await validateSandbox(sandbox);
 
+const vaultManager = new FileVaultManager(workingDir);
+if (vaultManager.isEnabled()) {
+  console.log("  Vault system enabled. Per-user credential routing active.");
+}
+
 // ============================================================================
 // State (per channel)
 // ============================================================================
@@ -173,7 +179,7 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
     const channelDir = join(workingDir, channelId);
     state = {
       running: false,
-      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir),
+      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir, vaultManager),
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
