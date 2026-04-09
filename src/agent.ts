@@ -21,7 +21,7 @@ import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { UserBindingStore } from "./bindings.js";
-import type { DockerProvisioner } from "./provisioner.js";
+import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { VaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
@@ -423,7 +423,7 @@ export async function createRunner(
   workspaceDir: string,
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
-  provisioner?: DockerProvisioner,
+  provisioner?: DockerContainerManager,
   stateDir?: string,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(stateDir ?? workspaceDir);

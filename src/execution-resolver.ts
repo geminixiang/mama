@@ -1,5 +1,5 @@
 import type { UserBindingStore } from "./bindings.js";
-import { DockerProvisioner } from "./provisioner.js";
+import { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { ResolvedVault, VaultEntry, VaultManager } from "./vault.js";
 
@@ -13,7 +13,7 @@ export class ActorExecutionResolver {
     private baseConfig: SandboxConfig,
     private vaultManager: VaultManager,
     private bindingStore?: UserBindingStore,
-    private provisioner?: DockerProvisioner,
+    private provisioner?: DockerContainerManager,
   ) {}
 
   refresh(): void {
@@ -44,7 +44,7 @@ export class ActorExecutionResolver {
 
   private resolveVaultKey(platform: string, userId: string): string {
     if (this.baseConfig.type === "docker-auto") {
-      return DockerProvisioner.vaultId(platform, userId);
+      return DockerContainerManager.vaultId(platform, userId);
     }
 
     if (!this.bindingStore) {
@@ -62,7 +62,7 @@ export class ActorExecutionResolver {
     const entry: VaultEntry = {
       displayName: `${platform}:${userId}`,
       platform: this.asVaultPlatform(platform),
-      sandbox: { type: "docker", container: DockerProvisioner.containerName(vaultKey) },
+      sandbox: { type: "docker", container: DockerContainerManager.containerName(vaultKey) },
     };
     this.vaultManager.addEntry(vaultKey, entry);
   }
@@ -99,7 +99,7 @@ export class ActorExecutionResolver {
     }
 
     return async () => {
-      const expected = config.container || DockerProvisioner.containerName(vaultKey);
+      const expected = config.container || DockerContainerManager.containerName(vaultKey);
       const actual = await this.provisioner?.provision(vaultKey);
       if (actual && actual !== expected) {
         throw new Error(

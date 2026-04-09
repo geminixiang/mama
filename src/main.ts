@@ -25,7 +25,7 @@ import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./link-server.js";
 import { formatSupportedLoginProviders, parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
-import { DockerProvisioner } from "./provisioner.js";
+import { DockerContainerManager } from "./provisioner.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
@@ -192,7 +192,9 @@ if (bindingStore.isEnabled()) {
 }
 
 const provisioner =
-  sandbox.type === "docker-auto" ? new DockerProvisioner(sandbox.image, workingDir) : undefined;
+  sandbox.type === "docker-auto"
+    ? new DockerContainerManager(sandbox.image, workingDir)
+    : undefined;
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 
@@ -226,6 +228,11 @@ const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
 const IDLE_TIMEOUT_MS = 3600000;
 
+// Stop idle containers every hour (same cadence as session eviction)
+if (provisioner) {
+  setInterval(() => provisioner.stopIdle(IDLE_TIMEOUT_MS), IDLE_TIMEOUT_MS).unref();
+}
+
 function normalizeLoginBaseUrl(): string | undefined {
   if (MOM_LINK_URL) {
     return MOM_LINK_URL.replace(/\/+$/, "");
@@ -239,7 +246,7 @@ function normalizeLoginBaseUrl(): string | undefined {
 function ensureLoginVault(platform: string, platformUserId: string): string {
   const vaultId =
     sandbox.type === "docker-auto"
-      ? DockerProvisioner.vaultId(platform, platformUserId)
+      ? DockerContainerManager.vaultId(platform, platformUserId)
       : (bindingStore.resolve(platform, platformUserId)?.vaultId ?? platformUserId);
   const platformTag =
     platform === "slack" || platform === "discord" || platform === "telegram"
@@ -249,7 +256,7 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
     displayName: `${platform}:${platformUserId}`,
     platform: platformTag,
     ...(sandbox.type === "docker-auto"
-      ? { sandbox: { type: "docker", container: DockerProvisioner.containerName(vaultId) } }
+      ? { sandbox: { type: "docker", container: DockerContainerManager.containerName(vaultId) } }
       : {}),
   });
   return vaultId;
