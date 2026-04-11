@@ -17,6 +17,7 @@ import {
   getSessionDir,
   getThreadSessionFile,
 } from "./session-store.js";
+import { startAdminServer, type SessionInfo } from "./admin.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -408,6 +409,32 @@ const handler: BotHandler = {
     }
   },
 };
+
+// ============================================================================
+// Admin dashboard
+// ============================================================================
+
+const adminPort = parseInt(process.env.MOM_ADMIN_PORT ?? "3333", 10);
+startAdminServer({
+  port: adminPort,
+  getSessions: (): SessionInfo[] => {
+    const result: SessionInfo[] = [];
+    for (const [sessionKey, state] of channelStates) {
+      const step = state.runner.getCurrentStep();
+      result.push({
+        sessionKey,
+        running: state.running,
+        stopRequested: state.stopRequested,
+        lastAccessedAt: state.lastAccessedAt,
+        startedAt: state.startedAt,
+        lastActivityAt: state.lastActivityAt,
+        currentTool: step?.label ?? step?.toolName,
+      });
+    }
+    return result;
+  },
+  forceStop: (sessionKey: string) => handler.forceStop(sessionKey),
+});
 
 // ============================================================================
 // Start
