@@ -247,6 +247,8 @@ export function createDiscordAdapters(
             stopTyping();
             if (isThreaded && event.thread_ts) {
               messageId = await bot.postInThread(event.channel, event.thread_ts, firstPart);
+            } else if (isEvent) {
+              messageId = await bot.postMessage(event.channel, firstPart);
             } else {
               messageId = await bot.postReply(event.channel, event.ts, firstPart);
             }
@@ -296,6 +298,8 @@ export function createDiscordAdapters(
             stopTyping();
             if (isThreaded && event.thread_ts) {
               messageId = await bot.postInThread(event.channel, event.thread_ts, firstPart);
+            } else if (isEvent) {
+              messageId = await bot.postMessage(event.channel, firstPart);
             } else {
               messageId = await bot.postReply(event.channel, event.ts, firstPart);
             }
