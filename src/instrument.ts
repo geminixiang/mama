@@ -1,3 +1,4 @@
+import * as os from "os";
 import * as Sentry from "@sentry/node";
 import { resolveSentryDsnFromConfig, resolveWorkspaceDirFromArgv } from "./config.js";
 import { createSentryInitOptions } from "./sentry.js";
@@ -7,7 +8,7 @@ import { createSentryInitOptions } from "./sentry.js";
 const getSentryDsn = () => {
   const workingDir = resolveWorkspaceDirFromArgv();
   // stateDir defaults to ~/.mama (same as main.ts)
-  const stateDir = process.env.MAMA_STATE_DIR || require("os").homedir() + "/.mama";
+  const stateDir = process.env.MAMA_STATE_DIR || os.homedir() + "/.mama";
   return resolveSentryDsnFromConfig(stateDir, workingDir);
 };
 

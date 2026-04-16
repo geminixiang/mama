@@ -151,7 +151,7 @@ function buildSystemPrompt(
   skills: Skill[],
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
-  const isDocker = sandboxConfig.type === "docker";
+  const isDocker = sandboxConfig.type === "docker" || sandboxConfig.type === "docker-auto";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
