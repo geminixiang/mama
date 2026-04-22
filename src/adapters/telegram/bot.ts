@@ -99,7 +99,7 @@ export class TelegramBot implements Bot {
       { command: "help", description: "Show available commands" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
-      { command: "login", description: "Store an env key/value secret in your vault" },
+      { command: "login", description: "Open secure login page for your vault" },
     ]);
 
     this.setupEventHandlers();
@@ -370,7 +370,7 @@ export class TelegramBot implements Bot {
           "/help — Show this help",
           "/stop — Stop ongoing conversation",
           "/new — Reset conversation history and start fresh",
-          "/login [ENV_KEY] — Store an env key/value secret in your vault",
+          "/login — Open secure login page for your vault",
           "",
           "You can also send a regular message to chat with the agent.",
         ].join("\n"),

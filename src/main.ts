@@ -23,7 +23,7 @@ import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./link-server.js";
-import { formatSupportedLoginMappings, parseLoginCommand } from "./login.js";
+import { parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -432,24 +432,6 @@ const handler: BotHandler = {
       return;
     }
 
-    if (parsed.extraArgs.length > 0) {
-      await bot.postMessage(
-        channelId,
-        "Use `/login [ENV_KEY]` only. Do not paste secrets directly into chat.",
-      );
-      return;
-    }
-
-    if (parsed.modeHint !== "oauth" && parsed.rawKey && !parsed.envKeyHint) {
-      await bot.postMessage(
-        channelId,
-        `Invalid key \`${parsed.rawKey}\`. Use env-style keys (letters, numbers, underscore).\n` +
-          `Examples: \`/login OPENAI_API_KEY\` or \`/login openai\`\n` +
-          `Common mappings: ${formatSupportedLoginMappings()}`,
-      );
-      return;
-    }
-
     const baseUrl = normalizeLoginBaseUrl();
     if (!baseUrl) {
       await bot.postMessage(
@@ -460,12 +442,7 @@ const handler: BotHandler = {
     }
 
     const vaultId = ensureLoginVault(platform, platformUserId);
-    const loginLabel =
-      parsed.modeHint === "oauth"
-        ? parsed.oauthServiceIdHint
-          ? `${parsed.oauthServiceIdHint} OAuth`
-          : "OAuth credential"
-        : (parsed.preset?.label ?? parsed.envKeyHint ?? "a secret");
+    const loginLabel = "credential";
     await bot.postMessage(
       channelId,
       `Open this link to store ${loginLabel} in your personal vault ` +
@@ -475,7 +452,7 @@ const handler: BotHandler = {
             platformUserId,
             channelId,
             vaultId,
-            parsed.oauthServiceIdHint ?? parsed.rawKey ?? parsed.envKeyHint ?? "",
+            "",
           ).token
         }`,
     );

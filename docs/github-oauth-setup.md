@@ -57,5 +57,7 @@ mama --sandbox=image:ubuntu:24.04 /path/to/workspace
 Then in Telegram run:
 
 ```text
-/login github_oauth
+/login
 ```
+
+Then choose `OAuth login` and `GitHub` on the login page.

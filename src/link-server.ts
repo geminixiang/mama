@@ -3,7 +3,6 @@ import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import type { InMemoryLinkTokenStore } from "./link-token.js";
 import {
   getOAuthServices,
-  resolveLoginPreset,
   resolveOAuthService,
   type LoginCredentialKind,
   type OAuthService,
@@ -80,24 +79,19 @@ export function startLinkServer(
         return;
       }
 
-      const preset = linkToken.providerId ? resolveLoginPreset(linkToken.providerId) : undefined;
       const oauthServiceHint = linkToken.providerId
         ? resolveOAuthService(linkToken.providerId)
         : undefined;
       const oauthServices = getOAuthServices();
-      const defaultMode: LoginCredentialKind =
-        preset?.kind === "oauth" || !!oauthServiceHint ? "oauth" : "api_key";
+      const defaultMode: LoginCredentialKind = oauthServiceHint ? "oauth" : "api_key";
 
-      const title = preset?.label ?? "Store Secret";
-      const helpText = preset
-        ? preset.helpText
+      const title = oauthServiceHint ? `${oauthServiceHint.label} OAuth` : "Store Secret";
+      const helpText = oauthServiceHint
+        ? `Authorize ${oauthServiceHint.label} and store tokens in your personal vault.`
         : "Set any environment variable key/value pair in your personal vault.";
-      const secretLabel = preset?.secretLabel ?? "Secret value";
-      const placeholder = preset?.placeholder ?? "sk-...";
-      const initialEnvKey =
-        defaultMode === "api_key" && preset?.kind === "api_key"
-          ? preset.envKey
-          : (linkToken.providerId ?? "");
+      const secretLabel = "Secret value";
+      const placeholder = "sk-...";
+      const initialEnvKey = "";
 
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
       res.end(

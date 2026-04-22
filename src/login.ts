@@ -14,74 +14,9 @@ export interface OAuthService {
   refreshTokenEnvKey?: string;
 }
 
-export interface LoginPreset {
-  id: string;
-  kind: LoginCredentialKind;
-  label: string;
-  secretLabel: string;
-  envKey: string;
-  placeholder: string;
-  helpText: string;
-  aliases: string[];
-  oauthClientIdEnvKey?: string;
-  oauthClientSecretEnvKey?: string;
-  oauthRefreshTokenEnvKey?: string;
-}
-
 export interface ParsedLoginCommand {
-  rawKey?: string;
-  envKeyHint?: string;
-  preset?: LoginPreset;
-  modeHint?: LoginCredentialKind;
-  oauthServiceIdHint?: string;
-  extraArgs: string[];
+  command: "login" | "/login";
 }
-
-const LOGIN_PRESETS: LoginPreset[] = [
-  {
-    id: "anthropic",
-    kind: "api_key",
-    label: "Anthropic API key",
-    secretLabel: "API key",
-    envKey: "ANTHROPIC_API_KEY",
-    placeholder: "sk-ant-...",
-    helpText: "Stored as ANTHROPIC_API_KEY in your vault env file.",
-    aliases: ["anthropic", "anthropic_api_key", "claude"],
-  },
-  {
-    id: "github",
-    kind: "api_key",
-    label: "GitHub token",
-    secretLabel: "Personal access token",
-    envKey: "GITHUB_TOKEN",
-    placeholder: "ghp_...",
-    helpText: "Stored as GITHUB_TOKEN in your vault env file.",
-    aliases: ["github", "github_token", "gh", "gh_token"],
-  },
-  {
-    id: "openai",
-    kind: "api_key",
-    label: "OpenAI API key",
-    secretLabel: "API key",
-    envKey: "OPENAI_API_KEY",
-    placeholder: "sk-...",
-    helpText: "Stored as OPENAI_API_KEY in your vault env file.",
-    aliases: ["openai", "openai_api_key", "chatgpt"],
-  },
-  {
-    id: "oauth",
-    kind: "oauth",
-    label: "OAuth credential",
-    secretLabel: "Client secret",
-    envKey: "OAUTH_CLIENT_SECRET",
-    placeholder: "client-secret-...",
-    helpText: "Stores OAuth client credentials in your vault env file.",
-    aliases: ["oauth", "oauth_credential"],
-    oauthClientIdEnvKey: "OAUTH_CLIENT_ID",
-    oauthClientSecretEnvKey: "OAUTH_CLIENT_SECRET",
-    oauthRefreshTokenEnvKey: "OAUTH_REFRESH_TOKEN",
-  },
-];
 
 const BUILTIN_OAUTH_SERVICES: OAuthService[] = [
   {
@@ -98,21 +33,6 @@ const BUILTIN_OAUTH_SERVICES: OAuthService[] = [
     refreshTokenEnvKey: "GITHUB_OAUTH_REFRESH_TOKEN",
   },
 ];
-
-export function getLoginPresets(): LoginPreset[] {
-  return LOGIN_PRESETS;
-}
-
-export function resolveLoginPreset(input: string): LoginPreset | undefined {
-  const normalized = input.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return LOGIN_PRESETS.find(
-    (preset) =>
-      preset.id === normalized ||
-      preset.envKey.toLowerCase() === normalized ||
-      preset.aliases.includes(normalized),
-  );
-}
 
 export function getOAuthServices(): OAuthService[] {
   const raw = process.env.MOM_OAUTH_SERVICES_JSON?.trim();
@@ -148,6 +68,7 @@ export function getOAuthServices(): OAuthService[] {
         ) {
           return null;
         }
+
         return {
           id: id.toLowerCase(),
           label,
@@ -190,10 +111,6 @@ export function resolveOAuthService(input: string): OAuthService | undefined {
   );
 }
 
-function isValidEnvKey(input: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(input);
-}
-
 export function parseLoginCommand(text: string): ParsedLoginCommand | null {
   const tokens = text.trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return null;
@@ -203,29 +120,5 @@ export function parseLoginCommand(text: string): ParsedLoginCommand | null {
     return null;
   }
 
-  const rawKey = tokens[1];
-  const oauthService = rawKey ? resolveOAuthService(rawKey) : undefined;
-  const preset = rawKey
-    ? (resolveLoginPreset(rawKey) ?? (oauthService ? resolveLoginPreset("oauth") : undefined))
-    : undefined;
-  const modeHint: LoginCredentialKind | undefined =
-    preset?.kind ?? (oauthService ? "oauth" : undefined);
-  const envKeyHint =
-    modeHint === "oauth"
-      ? undefined
-      : (preset?.envKey ?? (rawKey && isValidEnvKey(rawKey) ? rawKey : undefined));
-  return {
-    rawKey,
-    envKeyHint,
-    preset,
-    modeHint,
-    oauthServiceIdHint: oauthService?.id,
-    extraArgs: tokens.slice(2),
-  };
-}
-
-export function formatSupportedLoginMappings(): string {
-  return getLoginPresets()
-    .map((preset) => `\`${preset.id}\` -> \`${preset.envKey}\``)
-    .join(", ");
+  return { command: command as "login" | "/login" };
 }
