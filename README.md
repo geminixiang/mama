@@ -184,6 +184,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 
 1. Message [@BotFather](https://t.me/BotFather) → `/newbot` to create a bot and get the **Bot Token**.
 2. Optionally disable privacy mode (`/setprivacy → Disable`) so the bot can read group messages without being `@mentioned`.
+3. For GitHub OAuth login setup, see [docs/github-oauth-setup.md](docs/github-oauth-setup.md).
 
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...

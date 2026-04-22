@@ -23,7 +23,7 @@ import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./link-server.js";
-import { formatSupportedLoginProviders, parseLoginCommand } from "./login.js";
+import { formatSupportedLoginMappings, parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -244,8 +244,8 @@ let isShuttingDown = false;
 
 /** Maximum number of cached sessions */
 const MAX_SESSIONS = 500;
-/** Idle timeout before a non-running session can be evicted (1 hour) */
-const IDLE_TIMEOUT_MS = 3600000;
+/** Idle timeout before a non-running session can be evicted (10 minutes) */
+const IDLE_TIMEOUT_MS = 600000;
 
 if (provisioner) {
   await provisioner.reconcile();
@@ -432,26 +432,20 @@ const handler: BotHandler = {
       return;
     }
 
-    if (!parsed.providerId) {
-      await bot.postMessage(
-        channelId,
-        `Usage: \`/login <provider>\`\nSupported providers: ${formatSupportedLoginProviders()}`,
-      );
-      return;
-    }
-
-    if (!parsed.provider) {
-      await bot.postMessage(
-        channelId,
-        `Unsupported provider \`${parsed.providerId}\`.\nSupported providers: ${formatSupportedLoginProviders()}`,
-      );
-      return;
-    }
-
     if (parsed.extraArgs.length > 0) {
       await bot.postMessage(
         channelId,
-        "Use `/login <provider>` only. Do not paste secrets directly into chat.",
+        "Use `/login [ENV_KEY]` only. Do not paste secrets directly into chat.",
+      );
+      return;
+    }
+
+    if (parsed.modeHint !== "oauth" && parsed.rawKey && !parsed.envKeyHint) {
+      await bot.postMessage(
+        channelId,
+        `Invalid key \`${parsed.rawKey}\`. Use env-style keys (letters, numbers, underscore).\n` +
+          `Examples: \`/login OPENAI_API_KEY\` or \`/login openai\`\n` +
+          `Common mappings: ${formatSupportedLoginMappings()}`,
       );
       return;
     }
@@ -466,16 +460,22 @@ const handler: BotHandler = {
     }
 
     const vaultId = ensureLoginVault(platform, platformUserId);
+    const loginLabel =
+      parsed.modeHint === "oauth"
+        ? parsed.oauthServiceIdHint
+          ? `${parsed.oauthServiceIdHint} OAuth`
+          : "OAuth credential"
+        : (parsed.preset?.label ?? parsed.envKeyHint ?? "a secret");
     await bot.postMessage(
       channelId,
-      `Open this link to store your ${parsed.provider.label} in your personal vault ` +
+      `Open this link to store ${loginLabel} in your personal vault ` +
         `(expires in 15 minutes):\n${baseUrl}/link?token=${
           linkTokenStore.create(
             platform as "slack" | "discord" | "telegram",
             platformUserId,
             channelId,
             vaultId,
-            parsed.provider.id,
+            parsed.oauthServiceIdHint ?? parsed.rawKey ?? parsed.envKeyHint ?? "",
           ).token
         }`,
     );

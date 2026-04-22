@@ -1,6 +1,13 @@
+import { createHash, randomBytes } from "crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
 import type { InMemoryLinkTokenStore } from "./link-token.js";
-import { resolveLoginProvider } from "./login.js";
+import {
+  getOAuthServices,
+  resolveLoginPreset,
+  resolveOAuthService,
+  type LoginCredentialKind,
+  type OAuthService,
+} from "./login.js";
 import * as log from "./log.js";
 import type { VaultManager } from "./vault.js";
 
@@ -11,8 +18,24 @@ export type NotifyFn = (platform: string, channelId: string, message: string) =>
 
 interface LinkCompleteBody {
   token: string;
-  credential: string;
+  mode?: LoginCredentialKind;
+  envKey?: string;
+  credential?: string;
 }
+
+interface OAuthStartBody {
+  token: string;
+  serviceId: string;
+}
+
+interface PendingOAuthState {
+  linkToken: string;
+  serviceId: string;
+  codeVerifier: string;
+  expiresAt: number;
+}
+
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 // ── startLinkServer ────────────────────────────────────────────────────────────
 
@@ -21,8 +44,10 @@ interface LinkCompleteBody {
  *
  * Routes:
  *   GET  /health              — health check
- *   GET  /link?token=xxx      — placeholder credential onboarding page
- *   POST /api/link/complete   — placeholder completion endpoint
+ *   GET  /link?token=xxx      — credential onboarding page
+ *   POST /api/link/complete   — API key completion endpoint
+ *   POST /api/oauth/start     — creates provider OAuth redirect URL
+ *   GET  /oauth/callback      — OAuth callback endpoint
  */
 export function startLinkServer(
   port: number,
@@ -30,8 +55,10 @@ export function startLinkServer(
   vaultManager: VaultManager,
   notify: NotifyFn,
 ): void {
+  const oauthStates = new Map<string, PendingOAuthState>();
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+    const url = new URL(req.url ?? "/", requestBaseUrl(req));
 
     if (req.method === "GET" && url.pathname === "/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -39,7 +66,6 @@ export function startLinkServer(
       return;
     }
 
-    // Placeholder credential onboarding page.
     if (req.method === "GET" && url.pathname === "/link") {
       const rawToken = url.searchParams.get("token") ?? "";
       const linkToken = linkTokenStore.peek(rawToken);
@@ -54,40 +80,69 @@ export function startLinkServer(
         return;
       }
 
+      const preset = linkToken.providerId ? resolveLoginPreset(linkToken.providerId) : undefined;
+      const oauthServiceHint = linkToken.providerId
+        ? resolveOAuthService(linkToken.providerId)
+        : undefined;
+      const oauthServices = getOAuthServices();
+      const defaultMode: LoginCredentialKind =
+        preset?.kind === "oauth" || !!oauthServiceHint ? "oauth" : "api_key";
+
+      const title = preset?.label ?? "Store Secret";
+      const helpText = preset
+        ? preset.helpText
+        : "Set any environment variable key/value pair in your personal vault.";
+      const secretLabel = preset?.secretLabel ?? "Secret value";
+      const placeholder = preset?.placeholder ?? "sk-...";
+      const initialEnvKey =
+        defaultMode === "api_key" && preset?.kind === "api_key"
+          ? preset.envKey
+          : (linkToken.providerId ?? "");
+
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      const provider = resolveLoginProvider(linkToken.providerId);
-      if (!provider) {
-        res.end(renderErrorPage("This login provider is not supported by the server."));
-        return;
-      }
       res.end(
         renderCredentialPage(
           rawToken,
-          provider.label,
-          provider.secretLabel,
-          provider.placeholder,
-          provider.helpText,
+          title,
+          defaultMode,
+          initialEnvKey,
+          secretLabel,
+          placeholder,
+          helpText,
+          oauthServices,
+          oauthServiceHint?.id,
         ),
       );
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/link/complete") {
-      let body = "";
-      let bodyTooLarge = false;
-      req.on("data", (chunk: Buffer) => {
-        if (bodyTooLarge) return;
-        body += chunk.toString();
-        if (body.length > 4096) {
-          bodyTooLarge = true;
-          res.writeHead(413);
-          res.end();
-          req.destroy();
-        }
+      void readJsonBody(req, res, async (body) => {
+        await handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
       });
-      req.on("end", () => {
-        if (bodyTooLarge) return;
-        handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
+      return;
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/oauth/start") {
+      void readJsonBody(req, res, async (body) => {
+        await handleOAuthStart(body, req, linkTokenStore, oauthStates, res);
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/oauth/callback") {
+      void handleOAuthCallback(
+        url,
+        req,
+        linkTokenStore,
+        vaultManager,
+        notify,
+        oauthStates,
+        res,
+      ).catch((err: Error) => {
+        log.logWarning("OAuth callback failed", err.message);
+        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(renderErrorPage("OAuth callback failed. Please retry /login."));
       });
       return;
     }
@@ -105,6 +160,42 @@ export function startLinkServer(
   });
 }
 
+function requestBaseUrl(req: IncomingMessage): string {
+  const protoRaw = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim();
+  const proto = protoRaw || "http";
+  const host =
+    ((req.headers["x-forwarded-host"] as string | undefined)?.split(",")[0]?.trim() ??
+      req.headers.host ??
+      `localhost`) ||
+    `localhost`;
+  return `${proto}://${host}`;
+}
+
+async function readJsonBody(
+  req: IncomingMessage,
+  res: ServerResponse,
+  onBody: (body: string) => Promise<void>,
+): Promise<void> {
+  let body = "";
+  let bodyTooLarge = false;
+
+  req.on("data", (chunk: Buffer) => {
+    if (bodyTooLarge) return;
+    body += chunk.toString();
+    if (body.length > 16 * 1024) {
+      bodyTooLarge = true;
+      res.writeHead(413);
+      res.end();
+      req.destroy();
+    }
+  });
+
+  req.on("end", async () => {
+    if (bodyTooLarge) return;
+    await onBody(body);
+  });
+}
+
 // ── HTML helpers ───────────────────────────────────────────────────────────────
 
 function esc(s: string): string {
@@ -116,11 +207,22 @@ function esc(s: string): string {
 
 function renderCredentialPage(
   token: string,
-  providerLabel: string,
+  title: string,
+  defaultMode: LoginCredentialKind,
+  initialEnvKey: string,
   secretLabel: string,
   placeholder: string,
   helpText: string,
+  oauthServices: OAuthService[],
+  oauthServiceIdHint?: string,
 ): string {
+  const oauthOptions = oauthServices
+    .map((service) => {
+      const selected = service.id === oauthServiceIdHint ? ' selected="selected"' : "";
+      return `<option value="${esc(service.id)}"${selected}>${esc(service.label)}</option>`;
+    })
+    .join("\n");
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -128,66 +230,135 @@ function renderCredentialPage(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Login — mama</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 480px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; text-align: center; }
+    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; text-align: center; }
     h1 { font-size: 1.4rem; margin-bottom: 8px; }
     p { color: #555; font-size: 0.95rem; }
     label { display: block; margin-top: 20px; margin-bottom: 6px; text-align: left; font-weight: 600; font-size: 0.9rem; }
-    input { width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; border: 1px solid #ccc; border-radius: 8px; }
+    input, select { width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; border: 1px solid #ccc; border-radius: 8px; }
     button { margin-top: 24px; padding: 12px 32px; font-size: 1rem; background: #1a1a1a; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
     button:hover { background: #333; }
     button:disabled { background: #999; cursor: default; }
     #result { margin-top: 20px; padding: 12px; border-radius: 6px; display: none; }
     #result.ok { background: #d3f9d8; color: #1a4d2e; }
     #result.err { background: #ffc9c9; color: #5c1a1a; }
+    .mode { margin-top: 20px; text-align: left; }
+    .mode label { display: inline-flex; align-items: center; margin-right: 18px; font-weight: 500; }
+    .mode input { width: auto; margin-right: 6px; }
+    .panel { display: none; }
+    .panel.active { display: block; }
   </style>
 </head>
 <body>
-  <h1>${esc(providerLabel)}</h1>
+  <h1>${esc(title)}</h1>
   <p>Your personal sandbox is already provisioned automatically.</p>
   <p>${esc(helpText)}</p>
-  <label for="credential">${esc(secretLabel)}</label>
-  <input id="credential" type="password" placeholder="${esc(placeholder)}" autocomplete="off">
-  <button id="btn" onclick="connect()">Store Secret</button>
+  <div class="mode">
+    <label><input type="radio" name="mode" value="api_key" ${defaultMode === "api_key" ? "checked" : ""}> API key</label>
+    <label><input type="radio" name="mode" value="oauth" ${defaultMode === "oauth" ? "checked" : ""}> OAuth login</label>
+  </div>
+
+  <div id="api-panel" class="panel">
+    <label for="envKey">Environment key</label>
+    <input id="envKey" type="text" placeholder="OPENAI_API_KEY" value="${esc(initialEnvKey)}" autocomplete="off">
+    <label for="credential">${esc(secretLabel)}</label>
+    <input id="credential" type="password" placeholder="${esc(placeholder)}" autocomplete="off">
+  </div>
+
+  <div id="oauth-panel" class="panel">
+    <label for="oauthService">OAuth service</label>
+    <select id="oauthService">${oauthOptions}</select>
+    <p style="text-align:left;margin-top:10px">You'll be redirected to the selected service's authorization page.</p>
+  </div>
+
+  <button id="btn" onclick="connect()">Continue</button>
   <div id="result"></div>
   <script>
+    const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+    function selectedMode() {
+      return document.querySelector('input[name="mode"]:checked').value;
+    }
+
+    function showResult(message, ok) {
+      const result = document.getElementById('result');
+      result.style.display = 'block';
+      result.className = ok ? 'ok' : 'err';
+      result.textContent = message;
+    }
+
+    function syncPanels() {
+      const api = document.getElementById('api-panel');
+      const oauth = document.getElementById('oauth-panel');
+      const mode = selectedMode();
+      api.className = mode === 'api_key' ? 'panel active' : 'panel';
+      oauth.className = mode === 'oauth' ? 'panel active' : 'panel';
+    }
+
+    for (const radio of document.querySelectorAll('input[name="mode"]')) {
+      radio.addEventListener('change', syncPanels);
+    }
+
+    syncPanels();
+
     async function connect() {
       const btn = document.getElementById('btn');
-      const credential = document.getElementById('credential').value.trim();
-      if (!credential) {
-        const result = document.getElementById('result');
-        result.style.display = 'block';
-        result.className = 'err';
-        result.textContent = 'Please enter a value.';
-        return;
-      }
+      const mode = selectedMode();
       btn.disabled = true;
-      btn.textContent = 'Saving…';
-      const result = document.getElementById('result');
+      btn.textContent = mode === 'oauth' ? 'Redirecting…' : 'Saving…';
+
       try {
+        if (mode === 'oauth') {
+          const serviceId = document.getElementById('oauthService').value;
+          const r = await fetch('/api/oauth/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: '${esc(token)}', serviceId }),
+          });
+          const data = await r.json();
+          if (!r.ok) {
+            showResult('Error: ' + (data.error ?? r.status), false);
+            btn.disabled = false;
+            btn.textContent = 'Continue';
+            return;
+          }
+          window.location.href = data.redirectUrl;
+          return;
+        }
+
+        const envKey = document.getElementById('envKey').value.trim();
+        const credential = document.getElementById('credential').value.trim();
+        if (!envKeyPattern.test(envKey)) {
+          showResult('Please enter a valid environment key.', false);
+          btn.disabled = false;
+          btn.textContent = 'Continue';
+          return;
+        }
+        if (!credential) {
+          showResult('Please enter a value.', false);
+          btn.disabled = false;
+          btn.textContent = 'Continue';
+          return;
+        }
+
         const r = await fetch('/api/link/complete', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: '${esc(token)}', credential }),
+          body: JSON.stringify({ token: '${esc(token)}', mode: 'api_key', envKey, credential }),
         });
         const data = await r.json();
-        result.style.display = 'block';
         if (r.ok) {
-          result.className = 'ok';
-          result.textContent = data.message ?? 'Credential stored. You can close this tab.';
+          showResult(data.message ?? 'Credential stored. You can close this tab.', true);
           btn.style.display = 'none';
-          document.getElementById('credential').disabled = true;
+          for (const input of document.querySelectorAll('input,select')) input.disabled = true;
         } else {
-          result.className = 'err';
-          result.textContent = 'Error: ' + (data.error ?? r.status);
+          showResult('Error: ' + (data.error ?? r.status), false);
           btn.disabled = false;
-          btn.textContent = 'Store Secret';
+          btn.textContent = 'Continue';
         }
       } catch (err) {
-        result.style.display = 'block';
-        result.className = 'err';
-        result.textContent = 'Network error: ' + err.message;
+        showResult('Network error: ' + err.message, false);
         btn.disabled = false;
-        btn.textContent = 'Store Secret';
+        btn.textContent = 'Continue';
       }
     }
   </script>
@@ -203,7 +374,15 @@ function renderErrorPage(message: string): string {
 </head><body><div class="box">${esc(message)}</div></body></html>`;
 }
 
-// ── handleLinkComplete ─────────────────────────────────────────────────────────
+function renderSuccessPage(message: string): string {
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>Linked — mama</title>
+<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1a1a1a}
+.box{background:#d3f9d8;color:#1a4d2e;padding:16px;border-radius:8px}</style>
+</head><body><div class="box">${esc(message)} You can close this tab.</div></body></html>`;
+}
+
+// ── API-key completion ────────────────────────────────────────────────────────
 
 async function handleLinkComplete(
   body: string,
@@ -227,7 +406,16 @@ async function handleLinkComplete(
     return;
   }
 
-  if (!data.credential?.trim()) {
+  const envKey = data.envKey?.trim() ?? "";
+  const credential = data.credential?.trim() ?? "";
+
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey)) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid envKey format" }));
+    return;
+  }
+
+  if (!credential) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Missing required field: credential" }));
     return;
@@ -240,33 +428,254 @@ async function handleLinkComplete(
     return;
   }
 
-  const provider = resolveLoginProvider(linkToken.providerId);
-  if (!provider) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Unsupported login provider" }));
-    return;
-  }
-
-  vaultManager.upsertEnv(linkToken.vaultId, { [provider.envKey]: data.credential.trim() });
+  vaultManager.upsertEnv(linkToken.vaultId, { [envKey]: credential });
   linkTokenStore.consume(data.token);
 
   log.logInfo(
-    `Stored ${provider.envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
+    `Stored ${envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
   );
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(
-    JSON.stringify({
-      ok: true,
-      message: `${provider.label} stored successfully in your vault.`,
-    }),
+  res.end(JSON.stringify({ ok: true, message: `${envKey} stored successfully in your vault.` }));
+
+  notify(
+    linkToken.platform,
+    linkToken.channelId,
+    `${envKey} stored successfully in vault \`${linkToken.vaultId}\`.`,
+  ).catch((err: Error) => {
+    log.logWarning("Failed to notify user after credential login", err.message);
+  });
+}
+
+// ── OAuth flow ────────────────────────────────────────────────────────────────
+
+async function handleOAuthStart(
+  body: string,
+  req: IncomingMessage,
+  linkTokenStore: InMemoryLinkTokenStore,
+  oauthStates: Map<string, PendingOAuthState>,
+  res: ServerResponse,
+): Promise<void> {
+  let data: Partial<OAuthStartBody>;
+  try {
+    data = JSON.parse(body) as Partial<OAuthStartBody>;
+  } catch {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid JSON" }));
+    return;
+  }
+
+  if (!data.token || !data.serviceId) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Missing required fields: token/serviceId" }));
+    return;
+  }
+
+  const linkToken = linkTokenStore.peek(data.token);
+  if (!linkToken) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Invalid or expired token" }));
+    return;
+  }
+
+  const service = resolveOAuthService(data.serviceId);
+  if (!service) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: `Unsupported OAuth service: ${data.serviceId}` }));
+    return;
+  }
+
+  const clientId = process.env[service.clientIdEnvKey];
+  const clientSecret = process.env[service.clientSecretEnvKey];
+  if (!clientId || !clientSecret) {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error:
+          `OAuth service ${service.label} is not configured. ` +
+          `Missing ${service.clientIdEnvKey}/${service.clientSecretEnvKey}.`,
+      }),
+    );
+    return;
+  }
+
+  const state = randomBytes(16).toString("hex");
+  const codeVerifier = randomBytes(32).toString("base64url");
+  oauthStates.set(state, {
+    linkToken: data.token,
+    serviceId: service.id,
+    codeVerifier,
+    expiresAt: Date.now() + OAUTH_STATE_TTL_MS,
+  });
+
+  for (const [k, v] of oauthStates) {
+    if (Date.now() > v.expiresAt) oauthStates.delete(k);
+  }
+
+  const redirectUri = `${requestBaseUrl(req)}/oauth/callback`;
+  const authorizeUrl = new URL(service.authorizationUrl);
+  authorizeUrl.searchParams.set("response_type", "code");
+  authorizeUrl.searchParams.set("client_id", clientId);
+  authorizeUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizeUrl.searchParams.set("state", state);
+  if (service.scopes.length > 0) {
+    authorizeUrl.searchParams.set("scope", service.scopes.join(" "));
+  }
+
+  const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
+  authorizeUrl.searchParams.set("code_challenge", codeChallenge);
+  authorizeUrl.searchParams.set("code_challenge_method", "S256");
+
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ ok: true, redirectUrl: authorizeUrl.toString() }));
+}
+
+async function handleOAuthCallback(
+  url: URL,
+  req: IncomingMessage,
+  linkTokenStore: InMemoryLinkTokenStore,
+  vaultManager: VaultManager,
+  notify: NotifyFn,
+  oauthStates: Map<string, PendingOAuthState>,
+  res: ServerResponse,
+): Promise<void> {
+  const state = url.searchParams.get("state") ?? "";
+  const code = url.searchParams.get("code") ?? "";
+  const error = url.searchParams.get("error");
+
+  if (error) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage(`OAuth authorization failed: ${error}`));
+    return;
+  }
+
+  const pending = oauthStates.get(state);
+  if (!pending || Date.now() > pending.expiresAt) {
+    oauthStates.delete(state);
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("OAuth state is invalid or expired. Please run /login again."));
+    return;
+  }
+
+  if (!code) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("Missing OAuth authorization code."));
+    return;
+  }
+
+  const service = resolveOAuthService(pending.serviceId);
+  if (!service) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("Unsupported OAuth service."));
+    return;
+  }
+
+  const clientId = process.env[service.clientIdEnvKey];
+  const clientSecret = process.env[service.clientSecretEnvKey];
+  if (!clientId || !clientSecret) {
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("OAuth service is not configured on server."));
+    return;
+  }
+
+  const linkToken = linkTokenStore.peek(pending.linkToken);
+  if (!linkToken) {
+    oauthStates.delete(state);
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("Login link is invalid or expired. Please run /login again."));
+    return;
+  }
+
+  const redirectUri = `${requestBaseUrl(req)}/oauth/callback`;
+  const tokenResp = await exchangeOAuthCode(
+    service,
+    code,
+    clientId,
+    clientSecret,
+    redirectUri,
+    pending.codeVerifier,
+  );
+
+  const accessToken = tokenResp.access_token?.trim();
+  const refreshToken = tokenResp.refresh_token?.trim();
+
+  if (!accessToken) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderErrorPage("OAuth token exchange did not return an access_token."));
+    return;
+  }
+
+  const updates: Record<string, string> = {
+    [service.accessTokenEnvKey]: accessToken,
+  };
+  for (const key of service.additionalAccessTokenEnvKeys ?? []) {
+    updates[key] = accessToken;
+  }
+  if (refreshToken && service.refreshTokenEnvKey) {
+    updates[service.refreshTokenEnvKey] = refreshToken;
+  }
+
+  vaultManager.upsertEnv(linkToken.vaultId, updates);
+  linkTokenStore.consume(pending.linkToken);
+  oauthStates.delete(state);
+
+  const storedKeys = Object.keys(updates).sort();
+  log.logInfo(
+    `Stored [${storedKeys.join(", ")}] for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
   );
 
   notify(
     linkToken.platform,
     linkToken.channelId,
-    `${provider.label} stored successfully in vault \`${linkToken.vaultId}\`.`,
+    `${service.label} OAuth stored (${storedKeys.join(", ")}) in vault \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
-    log.logWarning("Failed to notify user after credential login", err.message);
+    log.logWarning("Failed to notify user after OAuth login", err.message);
   });
+
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(renderSuccessPage(`${service.label} OAuth connected successfully.`));
+}
+
+async function exchangeOAuthCode(
+  service: OAuthService,
+  code: string,
+  clientId: string,
+  clientSecret: string,
+  redirectUri: string,
+  codeVerifier: string,
+): Promise<Record<string, string>> {
+  const params = new URLSearchParams();
+  params.set("grant_type", "authorization_code");
+  params.set("code", code);
+  params.set("client_id", clientId);
+  params.set("client_secret", clientSecret);
+  params.set("redirect_uri", redirectUri);
+  params.set("code_verifier", codeVerifier);
+
+  const response = await fetch(service.tokenUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      Accept: "application/json",
+    },
+    body: params.toString(),
+  });
+
+  const text = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  let parsed: Record<string, string> = {};
+
+  if (contentType.includes("application/json")) {
+    parsed = JSON.parse(text) as Record<string, string>;
+  } else {
+    const form = new URLSearchParams(text);
+    parsed = Object.fromEntries(form.entries());
+  }
+
+  if (!response.ok) {
+    const message = parsed.error_description ?? parsed.error ?? `${response.status}`;
+    throw new Error(`OAuth token exchange failed for ${service.id}: ${message}`);
+  }
+
+  return parsed;
 }
