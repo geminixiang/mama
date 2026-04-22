@@ -22,16 +22,25 @@ const SETTINGS_TEMPLATE: AgentConfig = {
 
 export function loadAgentConfig(stateDir: string): AgentConfig {
   const settingsPath = join(stateDir, "settings.json");
+  let fromFile: AgentConfig = {};
   try {
     const raw = readFileSync(settingsPath, "utf-8");
     const parsed = JSON.parse(raw);
     if (parsed && typeof parsed === "object") {
-      return parsed as AgentConfig;
+      fromFile = parsed as AgentConfig;
     }
   } catch {
     // File missing or malformed
   }
-  return {};
+  return applyEnvOverrides(fromFile);
+}
+
+function applyEnvOverrides(config: AgentConfig): AgentConfig {
+  return {
+    ...config,
+    provider: process.env.MOM_AI_PROVIDER ?? config.provider,
+    model: process.env.MOM_AI_MODEL ?? config.model,
+  };
 }
 
 /**
@@ -44,7 +53,7 @@ export function ensureSettingsFile(stateDir: string): { created: boolean; config
   if (!existsSync(settingsPath)) {
     mkdirSync(stateDir, { recursive: true });
     writeFileSync(settingsPath, JSON.stringify(SETTINGS_TEMPLATE, null, 2) + "\n", "utf-8");
-    return { created: true, config: SETTINGS_TEMPLATE };
+    return { created: true, config: applyEnvOverrides(SETTINGS_TEMPLATE) };
   }
   return { created: false, config: loadAgentConfig(stateDir) };
 }

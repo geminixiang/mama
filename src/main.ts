@@ -29,6 +29,11 @@ import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
+import {
+  createManagedVaultEntry,
+  ensureImageSandboxVault,
+  resolveActorVaultKey,
+} from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -268,26 +273,23 @@ function normalizeLoginBaseUrl(): string | undefined {
 }
 
 function ensureLoginVault(platform: string, platformUserId: string): string {
-  const vaultId =
-    sandbox.type === "image"
-      ? DockerContainerManager.vaultId(platform, platformUserId)
-      : (bindingStore.resolve(platform, platformUserId)?.vaultId ?? platformUserId);
-  const platformTag =
-    platform === "slack" || platform === "discord" || platform === "telegram"
-      ? platform
-      : undefined;
-  vaultManager.addEntry(vaultId, {
-    displayName: `${platform}:${platformUserId}`,
-    platform: platformTag,
-    ...(sandbox.type === "image"
-      ? {
-          sandbox: {
-            type: "image" as const,
-            container: DockerContainerManager.containerName(vaultId),
-          },
-        }
-      : {}),
-  });
+  const vaultId = resolveActorVaultKey(
+    sandbox,
+    vaultManager,
+    bindingStore,
+    platform,
+    platformUserId,
+  );
+
+  if (sandbox.type === "image") {
+    ensureImageSandboxVault(sandbox, vaultManager, platform, platformUserId, vaultId);
+  } else {
+    vaultManager.addEntry(
+      vaultId,
+      createManagedVaultEntry(platform, platformUserId, vaultId, false),
+    );
+  }
+
   return vaultId;
 }
 

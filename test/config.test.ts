@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  ensureSettingsFile,
   loadAgentConfig,
   resolveSentryDsn,
   resolveWorkspaceDirFromArgv,
@@ -18,6 +19,8 @@ describe("loadAgentConfig", () => {
   });
 
   afterEach(() => {
+    delete process.env.MOM_AI_PROVIDER;
+    delete process.env.MOM_AI_MODEL;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
@@ -49,11 +52,32 @@ describe("loadAgentConfig", () => {
   });
 
   test("silently ignores malformed settings.json and returns empty config", () => {
-    const { writeFileSync } = require("node:fs");
     writeFileSync(join(tmpDir, "settings.json"), "{ invalid json }", "utf-8");
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBeUndefined();
     expect(config.model).toBeUndefined();
+  });
+
+  test("lets provider and model environment variables override settings.json", () => {
+    saveAgentConfig(tmpDir, { provider: "anthropic", model: "claude-sonnet-4-6" });
+    process.env.MOM_AI_PROVIDER = "openai";
+    process.env.MOM_AI_MODEL = "gpt-5.4";
+
+    const config = loadAgentConfig(tmpDir);
+
+    expect(config.provider).toBe("openai");
+    expect(config.model).toBe("gpt-5.4");
+  });
+
+  test("applies provider and model environment variables to first-run template config", () => {
+    process.env.MOM_AI_PROVIDER = "openai";
+    process.env.MOM_AI_MODEL = "gpt-5.4";
+
+    const result = ensureSettingsFile(tmpDir);
+
+    expect(result.created).toBe(true);
+    expect(result.config.provider).toBe("openai");
+    expect(result.config.model).toBe("gpt-5.4");
   });
 });
 

@@ -10,6 +10,17 @@ type ContainerStatus = "running" | "stopped" | "missing";
 interface ContainerState {
   status: ContainerStatus;
   lastUsed: number;
+  containerName: string;
+}
+
+export interface ContainerMount {
+  source: string;
+  target: string;
+}
+
+export interface ProvisionOptions {
+  containerName?: string;
+  mounts?: ContainerMount[];
 }
 
 // ── DockerContainerManager ─────────────────────────────────────────────────────
@@ -64,38 +75,27 @@ export class DockerContainerManager {
    *
    * Returns the container name.
    */
-  async provision(vaultId: string): Promise<string> {
-    const containerName = DockerContainerManager.containerName(vaultId);
+  async provision(vaultId: string, options: ProvisionOptions = {}): Promise<string> {
+    const containerName = options.containerName ?? DockerContainerManager.containerName(vaultId);
+    const mounts = options.mounts ?? [];
     const status = await this.inspectStatus(containerName);
 
-    if (status === "running") {
+    if (status !== "missing" && (await this.hasBindMountDrift(containerName, mounts))) {
+      log.logInfo(`Container ${containerName} mounts changed; recreating container`);
+      await this.execFileImpl("docker", ["rm", "-f", containerName]);
+      await this.runContainer(vaultId, containerName, mounts);
+      log.logInfo(`Container ${containerName} recreated`);
+    } else if (status === "running") {
       log.logInfo(`Container ${containerName} already running`);
     } else if (status === "stopped") {
       await this.execFileImpl("docker", ["start", containerName]);
       log.logInfo(`Container ${containerName} started`);
     } else {
-      log.logInfo(`Creating container ${containerName} from image ${this.image}`);
-      await this.execFileImpl("docker", [
-        "run",
-        "-d",
-        "--name",
-        containerName,
-        "--label",
-        DockerContainerManager.MANAGED_LABEL,
-        "--label",
-        DockerContainerManager.IMAGE_MODE_LABEL,
-        "--label",
-        `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
-        "-v",
-        `${this.workspaceDir}:/workspace`,
-        this.image,
-        "sleep",
-        "infinity",
-      ]);
+      await this.runContainer(vaultId, containerName, mounts);
       log.logInfo(`Container ${containerName} created`);
     }
 
-    this.setState(vaultId, "running");
+    this.setState(vaultId, "running", containerName);
     return containerName;
   }
 
@@ -104,10 +104,10 @@ export class DockerContainerManager {
    * restarted via provision(). Intended for idle lifecycle management.
    */
   async stop(vaultId: string): Promise<void> {
-    const containerName = DockerContainerManager.containerName(vaultId);
+    const containerName = this.getContainerName(vaultId);
     try {
       await this.execFileImpl("docker", ["stop", containerName]);
-      this.setState(vaultId, "stopped");
+      this.setState(vaultId, "stopped", containerName);
       log.logInfo(`Container ${containerName} stopped (idle)`);
     } catch (err) {
       log.logWarning(
@@ -119,7 +119,7 @@ export class DockerContainerManager {
 
   /** Stop and remove a container permanently (e.g. on vault revocation). */
   async remove(vaultId: string): Promise<void> {
-    const containerName = DockerContainerManager.containerName(vaultId);
+    const containerName = this.getContainerName(vaultId);
     try {
       await this.execFileImpl("docker", ["rm", "-f", containerName]);
       this.state.delete(vaultId);
@@ -172,7 +172,7 @@ export class DockerContainerManager {
 
       const status: ContainerStatus = details.running ? "running" : "stopped";
       const lastUsed = details.startedAtMs ?? Date.now();
-      this.state.set(vaultId, { status, lastUsed });
+      this.state.set(vaultId, { status, lastUsed, containerName });
     }
 
     const running = Array.from(this.state.values()).filter((s) => s.status === "running").length;
@@ -182,8 +182,90 @@ export class DockerContainerManager {
     );
   }
 
-  private setState(vaultId: string, status: ContainerStatus): void {
-    this.state.set(vaultId, { status, lastUsed: Date.now() });
+  private setState(vaultId: string, status: ContainerStatus, containerName: string): void {
+    this.state.set(vaultId, { status, lastUsed: Date.now(), containerName });
+  }
+
+  private getContainerName(vaultId: string): string {
+    return this.state.get(vaultId)?.containerName ?? DockerContainerManager.containerName(vaultId);
+  }
+
+  private mountArgs(mounts: ContainerMount[]): string[] {
+    return mounts.flatMap((mount) => ["-v", this.toBindSpec(mount)]);
+  }
+
+  private toBindSpec(mount: ContainerMount): string {
+    return `${mount.source}:${mount.target}`;
+  }
+
+  private async runContainer(
+    vaultId: string,
+    containerName: string,
+    mounts: ContainerMount[],
+  ): Promise<void> {
+    log.logInfo(`Creating container ${containerName} from image ${this.image}`);
+    await this.execFileImpl("docker", [
+      "run",
+      "-d",
+      "--name",
+      containerName,
+      "--label",
+      DockerContainerManager.MANAGED_LABEL,
+      "--label",
+      DockerContainerManager.IMAGE_MODE_LABEL,
+      "--label",
+      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+      "-v",
+      `${this.workspaceDir}:/workspace`,
+      ...this.mountArgs(mounts),
+      this.image,
+      "sleep",
+      "infinity",
+    ]);
+  }
+
+  private async hasBindMountDrift(
+    containerName: string,
+    mounts: ContainerMount[],
+  ): Promise<boolean> {
+    const expected = this.expectedBinds(mounts);
+    const actual = await this.inspectBindMounts(containerName);
+    return !this.sameBinds(expected, actual);
+  }
+
+  private expectedBinds(mounts: ContainerMount[]): string[] {
+    return [`${this.workspaceDir}:/workspace`, ...mounts.map((mount) => this.toBindSpec(mount))]
+      .slice()
+      .sort();
+  }
+
+  private sameBinds(expected: string[], actual: string[]): boolean {
+    if (expected.length !== actual.length) {
+      return false;
+    }
+
+    return expected.every((bind, index) => bind === actual[index]);
+  }
+
+  private async inspectBindMounts(containerName: string): Promise<string[]> {
+    const { stdout } = await this.execFileImpl("docker", [
+      "inspect",
+      "-f",
+      "{{json .HostConfig.Binds}}",
+      containerName,
+    ]);
+    const payload = stdout.trim();
+    const parsed = JSON.parse(payload.length > 0 ? payload : "null") as unknown;
+
+    if (parsed === null) {
+      return [];
+    }
+
+    if (!Array.isArray(parsed) || parsed.some((bind) => typeof bind !== "string")) {
+      throw new Error(`Unexpected docker bind mount payload for container "${containerName}"`);
+    }
+
+    return [...parsed].sort();
   }
 
   private async inspectStatus(containerName: string): Promise<ContainerStatus> {

@@ -51,6 +51,8 @@ export interface ResolvedVault {
 }
 
 export interface VaultManager {
+  /** Return true when vault.json contains this exact key (does not consider fallback). */
+  hasEntry(key: string): boolean;
   /** Resolve vault for a user; returns undefined if no vault and no fallback */
   resolve(userId: string): ResolvedVault | undefined;
   /** Get sandbox config with credential injection for a user */
@@ -66,10 +68,15 @@ export interface VaultManager {
   /** Resolve the system actor vault (for events/scheduled tasks with no userId) */
   resolveSystemActor(): ResolvedVault | undefined;
   /**
-   * Add or update a vault entry and persist to disk.
+   * Add a vault entry and persist to disk.
    * No-op if the key already exists (idempotent).
    */
   addEntry(key: string, entry: VaultEntry): void;
+  /**
+   * Ensure a vault entry has image sandbox metadata.
+   * Creates the entry when missing and upgrades existing entries that lack sandbox.type.
+   */
+  ensureImageSandboxEntry(key: string, entry: VaultEntry): void;
   /** Merge environment variables into vaults/<key>/env and persist them to disk. */
   upsertEnv(key: string, env: Record<string, string>): void;
 }
@@ -183,6 +190,10 @@ export class FileVaultManager implements VaultManager {
     return this.config?.strict === true;
   }
 
+  hasEntry(key: string): boolean {
+    return !!this.config?.vaults[key];
+  }
+
   resolveSystemActor(): ResolvedVault | undefined {
     if (!this.config?.systemActor) return undefined;
     const key = this.config.systemActor;
@@ -274,17 +285,55 @@ export class FileVaultManager implements VaultManager {
     // Idempotent: skip if already exists
     if (this.config.vaults[key]) return;
     this.config.vaults[key] = entry;
-    try {
-      mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-      chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
-      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", {
-        encoding: "utf-8",
-        mode: PRIVATE_FILE_MODE,
-      });
-      chmodSync(this.configPath, PRIVATE_FILE_MODE);
-    } catch (err) {
-      console.error(`vault: failed to write ${this.configPath}:`, err);
+    this.persistConfig();
+  }
+
+  ensureImageSandboxEntry(key: string, entry: VaultEntry): void {
+    if (entry.sandbox?.type !== "image") {
+      throw new Error(`vault: ensureImageSandboxEntry requires sandbox.type=image for "${key}"`);
     }
+
+    if (!this.config) {
+      this.config = { vaults: {} };
+    }
+
+    const existing = this.config.vaults[key];
+    if (!existing) {
+      this.config.vaults[key] = entry;
+      this.persistConfig();
+      return;
+    }
+
+    let nextEntry = existing;
+    let changed = false;
+
+    if (!existing.platform && entry.platform) {
+      nextEntry = { ...nextEntry, platform: entry.platform };
+      changed = true;
+    }
+
+    const existingSandbox = existing.sandbox;
+    if (!existingSandbox?.type) {
+      nextEntry = { ...nextEntry, sandbox: entry.sandbox };
+      changed = true;
+    } else if (
+      existingSandbox.type === "image" &&
+      !existingSandbox.container &&
+      entry.sandbox.container
+    ) {
+      nextEntry = {
+        ...nextEntry,
+        sandbox: { ...existingSandbox, container: entry.sandbox.container },
+      };
+      changed = true;
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    this.config.vaults[key] = nextEntry;
+    this.persistConfig();
   }
 
   upsertEnv(key: string, env: Record<string, string>): void {
@@ -312,6 +361,16 @@ export class FileVaultManager implements VaultManager {
   }
 
   // ── private ────────────────────────────────────────────────────────────────
+
+  private persistConfig(): void {
+    mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+    chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
+    writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", {
+      encoding: "utf-8",
+      mode: PRIVATE_FILE_MODE,
+    });
+    chmodSync(this.configPath, PRIVATE_FILE_MODE);
+  }
 
   private buildResolved(userId: string, vaultKey: string, entry: VaultEntry): ResolvedVault {
     const dir = join(this.vaultsDir, vaultKey);

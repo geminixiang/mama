@@ -1,9 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { FileUserBindingStore } from "../src/bindings.js";
 import { ActorExecutionResolver } from "../src/execution-resolver.js";
 import { DockerProvisioner } from "../src/provisioner.js";
+import { HostExecutor } from "../src/sandbox.js";
+import { ensureImageSandboxVault, resolveActorVaultKey } from "../src/vault-routing.js";
 import { FileVaultManager, parseEnvFile, type VaultConfig } from "../src/vault.js";
 
 // ── parseEnvFile ──────────────────────────────────────────────────────────────
@@ -68,6 +71,7 @@ describe("FileVaultManager", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
@@ -501,5 +505,231 @@ describe("ActorExecutionResolver", () => {
     expect(mgr.resolve(DockerProvisioner.vaultId("discord", "U123"))?.displayName).toBe(
       "discord:U123",
     );
+  });
+
+  test("image mode respects direct vault keys before creating generated ids", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          sandbox: { type: "image" },
+        },
+      },
+    });
+    const mgr = new FileVaultManager(tmpDir);
+    const resolver = new ActorExecutionResolver({ type: "image", image: "ubuntu:24.04" }, mgr);
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "container",
+      container: "mama-sandbox-U123",
+    });
+    expect(mgr.hasEntry("U123")).toBe(true);
+    expect(mgr.hasEntry(DockerProvisioner.vaultId("slack", "U123"))).toBe(false);
+  });
+
+  test("image mode upgrades existing direct vault entries without sandbox metadata", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          mounts: [".ssh"],
+        },
+      },
+    });
+    const mgr = new FileVaultManager(tmpDir);
+    const resolver = new ActorExecutionResolver({ type: "image", image: "ubuntu:24.04" }, mgr);
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "container",
+      container: "mama-sandbox-U123",
+    });
+    expect(mgr.resolve("U123")?.sandboxOverride).toEqual({
+      type: "image",
+      container: "mama-sandbox-U123",
+    });
+  });
+
+  test("login and execution use the same direct vault key in image mode", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+        },
+      },
+    });
+    const mgr = new FileVaultManager(tmpDir);
+    const baseConfig = { type: "image", image: "ubuntu:24.04" } as const;
+    const loginVaultId = resolveActorVaultKey(baseConfig, mgr, undefined, "slack", "U123");
+    ensureImageSandboxVault(baseConfig, mgr, "slack", "U123", loginVaultId);
+
+    const resolver = new ActorExecutionResolver(baseConfig, mgr);
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(loginVaultId).toBe("U123");
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "container",
+      container: "mama-sandbox-U123",
+    });
+  });
+
+  test("image mode respects explicit bindings before creating generated ids", async () => {
+    writeVaultJson({
+      vaults: {
+        alice: {
+          displayName: "Alice",
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+    writeFileSync(
+      join(vaultsDir, "bindings.json"),
+      JSON.stringify({
+        bindings: [
+          {
+            platform: "slack",
+            platformUserId: "U123",
+            internalUserId: "alice",
+            vaultId: "alice",
+            status: "active",
+            createdAt: "2026-04-22T00:00:00.000Z",
+            updatedAt: "2026-04-22T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const mgr = new FileVaultManager(tmpDir);
+    const bindings = new FileUserBindingStore(tmpDir);
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      bindings,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getSandboxConfig()).toEqual({ type: "container", container: "alice-box" });
+    expect(mgr.hasEntry("alice")).toBe(true);
+    expect(mgr.hasEntry(DockerProvisioner.vaultId("slack", "U123"))).toBe(false);
+  });
+
+  test("image mode upgrades bound vault entries without sandbox metadata", async () => {
+    writeVaultJson({
+      vaults: {
+        alice: {
+          displayName: "Alice",
+          mounts: [".ssh"],
+        },
+      },
+    });
+    writeFileSync(
+      join(vaultsDir, "bindings.json"),
+      JSON.stringify({
+        bindings: [
+          {
+            platform: "slack",
+            platformUserId: "U123",
+            internalUserId: "alice",
+            vaultId: "alice",
+            status: "active",
+            createdAt: "2026-04-22T00:00:00.000Z",
+            updatedAt: "2026-04-22T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const mgr = new FileVaultManager(tmpDir);
+    const bindings = new FileUserBindingStore(tmpDir);
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      bindings,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "container",
+      container: "mama-sandbox-alice",
+    });
+    expect(mgr.resolve("alice")?.sandboxOverride).toEqual({
+      type: "image",
+      container: "mama-sandbox-alice",
+    });
+  });
+
+  test("login and execution use the same bound vault key in image mode", async () => {
+    writeVaultJson({
+      vaults: {
+        alice: {
+          displayName: "Alice",
+        },
+      },
+    });
+    writeFileSync(
+      join(vaultsDir, "bindings.json"),
+      JSON.stringify({
+        bindings: [
+          {
+            platform: "slack",
+            platformUserId: "U123",
+            internalUserId: "alice",
+            vaultId: "alice",
+            status: "active",
+            createdAt: "2026-04-22T00:00:00.000Z",
+            updatedAt: "2026-04-22T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+    const mgr = new FileVaultManager(tmpDir);
+    const bindings = new FileUserBindingStore(tmpDir);
+    const baseConfig = { type: "image", image: "ubuntu:24.04" } as const;
+    const loginVaultId = resolveActorVaultKey(baseConfig, mgr, bindings, "slack", "U123");
+    ensureImageSandboxVault(baseConfig, mgr, "slack", "U123", loginVaultId);
+
+    const resolver = new ActorExecutionResolver(baseConfig, mgr, bindings);
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(loginVaultId).toBe("alice");
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "container",
+      container: "mama-sandbox-alice",
+    });
+  });
+
+  test("image mode provisions custom containers with vault mounts", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          mounts: [".ssh"],
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+    const mgr = new FileVaultManager(tmpDir);
+    const provision = vi.fn().mockResolvedValue("alice-box");
+    const exec = vi
+      .spyOn(HostExecutor.prototype, "exec")
+      .mockResolvedValue({ stdout: "", stderr: "", code: 0 });
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      undefined,
+      { provision } as any,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+    await executor.exec("pwd");
+
+    expect(provision).toHaveBeenCalledWith("U123", {
+      containerName: "alice-box",
+      mounts: [{ source: join(vaultsDir, "U123", ".ssh"), target: "/root/.ssh" }],
+    });
+    expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
   });
 });

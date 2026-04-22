@@ -1,7 +1,9 @@
+import { relative, sep } from "path";
 import type { UserBindingStore } from "./bindings.js";
-import { DockerContainerManager } from "./provisioner.js";
+import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
-import type { ResolvedVault, VaultEntry, VaultManager } from "./vault.js";
+import type { ResolvedVault, VaultManager } from "./vault.js";
+import { ensureImageSandboxVault, resolveActorVaultKey } from "./vault-routing.js";
 
 export interface ActorContext {
   platform: string;
@@ -26,8 +28,20 @@ export class ActorExecutionResolver {
       return this.resolveSystemExecutor();
     }
 
-    const vaultKey = this.resolveVaultKey(context.platform, context.userId);
-    this.ensureAutoManagedVault(context.platform, context.userId, vaultKey);
+    const vaultKey = resolveActorVaultKey(
+      this.baseConfig,
+      this.vaultManager,
+      this.bindingStore,
+      context.platform,
+      context.userId,
+    );
+    ensureImageSandboxVault(
+      this.baseConfig,
+      this.vaultManager,
+      context.platform,
+      context.userId,
+      vaultKey,
+    );
     const vault = this.vaultManager.resolve(vaultKey);
 
     if (!vault && this.vaultManager.isStrict()) {
@@ -39,39 +53,7 @@ export class ActorExecutionResolver {
 
     const config = this.vaultManager.getSandboxConfig(vaultKey, this.baseConfig);
     const env = vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
-    return createExecutor(config, env, this.getEnsureReady(vaultKey, config));
-  }
-
-  private resolveVaultKey(platform: string, userId: string): string {
-    if (this.baseConfig.type === "image") {
-      return DockerContainerManager.vaultId(platform, userId);
-    }
-
-    if (!this.bindingStore) {
-      return userId;
-    }
-    const binding = this.bindingStore.resolve(platform, userId);
-    return binding?.vaultId ?? userId;
-  }
-
-  private ensureAutoManagedVault(platform: string, userId: string, vaultKey: string): void {
-    if (this.baseConfig.type !== "image") {
-      return;
-    }
-
-    const entry: VaultEntry = {
-      displayName: `${platform}:${userId}`,
-      platform: this.asVaultPlatform(platform),
-      sandbox: { type: "image", container: DockerContainerManager.containerName(vaultKey) },
-    };
-    this.vaultManager.addEntry(vaultKey, entry);
-  }
-
-  private asVaultPlatform(platform: string): VaultEntry["platform"] | undefined {
-    if (platform === "slack" || platform === "discord" || platform === "telegram") {
-      return platform;
-    }
-    return undefined;
+    return createExecutor(config, env, this.getEnsureReady(vaultKey, config, vault));
   }
 
   private resolveSystemExecutor(): Executor {
@@ -90,13 +72,14 @@ export class ActorExecutionResolver {
     // For image mode, we need getEnsureReady to auto-provision the container
     // System vault uses userId from the vault config for container naming
     const vaultKey = systemVault.userId;
-    const ensureReady = this.getEnsureReady(vaultKey, config);
+    const ensureReady = this.getEnsureReady(vaultKey, config, systemVault);
     return createExecutor(config, env, ensureReady);
   }
 
   private getEnsureReady(
     vaultKey: string,
     config: SandboxConfig,
+    vault?: ResolvedVault,
   ): (() => Promise<void>) | undefined {
     if (this.baseConfig.type !== "image" || config.type !== "container") {
       return undefined;
@@ -104,13 +87,31 @@ export class ActorExecutionResolver {
 
     return async () => {
       const expected = config.container || DockerContainerManager.containerName(vaultKey);
-      const actual = await this.provisioner?.provision(vaultKey);
+      const actual = await this.provisioner?.provision(vaultKey, {
+        containerName: expected,
+        mounts: vault ? this.resolveMounts(vault) : [],
+      });
       if (actual && actual !== expected) {
         throw new Error(
           `Provisioner returned container "${actual}" for vault "${vaultKey}", expected "${expected}"`,
         );
       }
     };
+  }
+
+  private resolveMounts(vault: ResolvedVault): ContainerMount[] {
+    return vault.mounts
+      .map((source) => {
+        const relativePath = relative(vault.dir, source);
+        if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith(sep)) {
+          return undefined;
+        }
+        return {
+          source,
+          target: `/root/${relativePath.split(sep).join("/")}`,
+        };
+      })
+      .filter((mount): mount is ContainerMount => mount !== undefined);
   }
 
   private applySandboxOverride(vault: ResolvedVault, baseConfig: SandboxConfig): SandboxConfig {
