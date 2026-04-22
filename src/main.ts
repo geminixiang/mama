@@ -129,7 +129,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--sandbox=host|container:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
@@ -435,8 +435,8 @@ const handler: BotHandler = {
 const sandboxDesc =
   sandbox.type === "host"
     ? "host"
-    : sandbox.type === "docker"
-      ? `docker:${sandbox.container}`
+    : sandbox.type === "container"
+      ? `container:${sandbox.container}`
       : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
 
