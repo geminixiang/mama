@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   ContainerExecutor,
@@ -111,14 +112,36 @@ describe("ContainerExecutor", () => {
     );
   });
 
-  test("injects environment variables into docker exec", () => {
-    expect(
-      buildContainerExecCommand("mama-sandbox-test", "echo $TOKEN", {
-        TOKEN: "abc'123",
-      }),
-    ).toBe(
-      "docker exec -e 'TOKEN=abc'\\''123' -w /workspace mama-sandbox-test sh -c 'echo $TOKEN'",
+  test("injects environment variables into docker exec via env file", () => {
+    expect(buildContainerExecCommand("mama-sandbox-test", "echo $TOKEN", "/tmp/env.list")).toBe(
+      "docker exec --env-file '/tmp/env.list' -w /workspace mama-sandbox-test sh -c 'echo $TOKEN'",
     );
+  });
+
+  test("does not expose secret values in the docker command line", async () => {
+    const secret = "sk-top-secret";
+    let capturedCmd = "";
+    const exec = vi.spyOn(HostExecutor.prototype, "exec").mockImplementation(async (cmd) => {
+      capturedCmd = cmd as string;
+      return { stdout: "", stderr: "", code: 0 };
+    });
+
+    const executor = new ContainerExecutor(
+      "mama-sandbox-test",
+      { OPENAI_API_KEY: secret },
+      async () => {},
+    );
+    await executor.exec("echo ok");
+
+    expect(exec).toHaveBeenCalled();
+    expect(capturedCmd).toContain("--env-file");
+    expect(capturedCmd).not.toContain(secret);
+
+    const match = capturedCmd.match(/--env-file '([^']+)'/);
+    expect(match).toBeTruthy();
+    if (match) {
+      expect(existsSync(match[1])).toBe(false);
+    }
   });
 });
 

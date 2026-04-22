@@ -1,3 +1,6 @@
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   ContainerSandboxConfig,
   ExecOptions,
@@ -8,6 +11,9 @@ import type {
 import { SandboxError } from "./errors.js";
 import { execSimple, shellEscape } from "./utils.js";
 import { HostExecutor } from "./host.js";
+
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 export function parseContainerSandboxArg(value: string): ContainerSandboxConfig | undefined {
   if (!value.startsWith("container:")) {
@@ -57,14 +63,9 @@ export async function validateContainerSandbox(config: ContainerSandboxConfig): 
 export function buildContainerExecCommand(
   container: string,
   command: string,
-  env?: Record<string, string>,
+  envFilePath?: string,
 ): string {
-  const envFlags = env
-    ? Object.entries(env)
-        .map(([k, v]) => `-e ${shellEscape(`${k}=${v}`)}`)
-        .join(" ")
-    : "";
-  const envPart = envFlags ? `${envFlags} ` : "";
+  const envPart = envFilePath ? `--env-file ${shellEscape(envFilePath)} ` : "";
   return `docker exec ${envPart}-w /workspace ${container} sh -c ${shellEscape(command)}`;
 }
 
@@ -82,9 +83,14 @@ export class ContainerExecutor implements Executor {
       await ensureContainerRunning(this.container);
     }
 
-    const dockerCmd = buildContainerExecCommand(this.container, command, this.env);
     const hostExecutor = new HostExecutor();
-    return hostExecutor.exec(dockerCmd, options);
+    const temp = this.env ? createSecureEnvFile(this.env) : undefined;
+    try {
+      const dockerCmd = buildContainerExecCommand(this.container, command, temp?.envFilePath);
+      return await hostExecutor.exec(dockerCmd, options);
+    } finally {
+      temp?.cleanup();
+    }
   }
 
   getWorkspacePath(_hostPath: string): string {
@@ -118,4 +124,30 @@ async function ensureContainerRunning(container: string): Promise<void> {
         `Expected a pre-existing container or image provisioning to keep it running.\n${details}`.trim(),
     );
   }
+}
+
+function createSecureEnvFile(env: Record<string, string>): {
+  envFilePath: string;
+  cleanup: () => void;
+} {
+  const tempDir = mkdtempSync(join(tmpdir(), "mama-docker-env-"));
+  chmodSync(tempDir, PRIVATE_DIR_MODE);
+  const envFilePath = join(tempDir, "env.list");
+  const content =
+    Object.entries(env)
+      .map(([key, value]) => `${key}=${sanitizeEnvValue(value)}`)
+      .join("\n") + "\n";
+  writeFileSync(envFilePath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+  chmodSync(envFilePath, PRIVATE_FILE_MODE);
+
+  return {
+    envFilePath,
+    cleanup: () => {
+      rmSync(tempDir, { recursive: true, force: true });
+    },
+  };
+}
+
+function sanitizeEnvValue(value: string): string {
+  return value.replace(/\r?\n/g, "");
 }
