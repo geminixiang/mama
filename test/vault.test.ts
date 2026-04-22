@@ -184,34 +184,34 @@ describe("FileVaultManager", () => {
     expect(mgr.getSandboxConfig("UNKNOWN", base)).toEqual(base);
   });
 
-  test("getSandboxConfig applies docker override", () => {
+  test("getSandboxConfig applies container override", () => {
     writeVaultJson({
       vaults: {
         U123: {
           displayName: "Alice",
-          sandbox: { type: "docker", container: "alice-box" },
+          sandbox: { type: "container", container: "alice-box" },
         },
       },
     });
 
     const mgr = new FileVaultManager(tmpDir);
     const result = mgr.getSandboxConfig("U123", { type: "host" });
-    expect(result).toEqual({ type: "docker", container: "alice-box" });
+    expect(result).toEqual({ type: "container", container: "alice-box" });
   });
 
-  test("getSandboxConfig defaults docker container name from userId", () => {
+  test("getSandboxConfig defaults container name from userId", () => {
     writeVaultJson({
       vaults: {
         U123: {
           displayName: "Alice",
-          sandbox: { type: "docker" },
+          sandbox: { type: "container" },
         },
       },
     });
 
     const mgr = new FileVaultManager(tmpDir);
     const result = mgr.getSandboxConfig("U123", { type: "host" });
-    expect(result).toEqual({ type: "docker", container: "mama-sandbox-U123" });
+    expect(result).toEqual({ type: "container", container: "mama-sandbox-U123" });
   });
 
   // ── isStrict ──────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ describe("FileVaultManager", () => {
     // Bug regression: getSandboxConfig("__system__") would re-resolve and miss the actual key
     writeVaultJson({
       vaults: {
-        _ops: { displayName: "Ops", sandbox: { type: "docker", container: "ops-box" } },
+        _ops: { displayName: "Ops", sandbox: { type: "container", container: "ops-box" } },
       },
       systemActor: "_ops",
     });
@@ -261,7 +261,7 @@ describe("FileVaultManager", () => {
     const mgr = new FileVaultManager(tmpDir);
     const vault = mgr.resolveSystemActor();
     expect(vault).toBeDefined();
-    expect(vault!.sandboxOverride).toEqual({ type: "docker", container: "ops-box" });
+    expect(vault!.sandboxOverride).toEqual({ type: "container", container: "ops-box" });
 
     // resolve("__system__") should NOT find _ops (it's only reachable via resolveSystemActor)
     expect(mgr.resolve("__system__")).toBeUndefined();
@@ -370,7 +370,7 @@ describe("ActorExecutionResolver", () => {
       vaults: {
         U1: {
           displayName: "Alice",
-          sandbox: { type: "docker", container: "alice-box" },
+          sandbox: { type: "container", container: "alice-box" },
         },
       },
     });
@@ -388,7 +388,7 @@ describe("ActorExecutionResolver", () => {
       vaults: {
         _sys: {
           displayName: "System",
-          sandbox: { type: "docker", container: "sys-box" },
+          sandbox: { type: "container", container: "sys-box" },
         },
       },
       systemActor: "_sys",
@@ -398,26 +398,20 @@ describe("ActorExecutionResolver", () => {
     expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
   });
 
-  test("docker-auto mode never falls back to host for unlinked users", async () => {
+  test("image mode never falls back to host for unlinked users", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver(
-      { type: "docker-auto", image: "ubuntu:24.04" },
-      mgr,
-    );
+    const resolver = new ActorExecutionResolver({ type: "image", image: "ubuntu:24.04" }, mgr);
     const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
 
     expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
     expect(mgr.resolve(DockerProvisioner.vaultId("slack", "U123"))).toBeDefined();
   });
 
-  test("docker-auto mode uses platform-namespaced vault ids", async () => {
+  test("image mode uses platform-namespaced vault ids", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver(
-      { type: "docker-auto", image: "ubuntu:24.04" },
-      mgr,
-    );
+    const resolver = new ActorExecutionResolver({ type: "image", image: "ubuntu:24.04" }, mgr);
 
     await resolver.resolve({ platform: "slack", userId: "U123" });
     await resolver.resolve({ platform: "discord", userId: "U123" });

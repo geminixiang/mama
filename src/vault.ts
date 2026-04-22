@@ -25,7 +25,7 @@ export interface VaultEntry {
   envFile?: boolean;
   /** Per-user sandbox config override */
   sandbox?: {
-    type?: "host" | "docker" | "firecracker";
+    type?: "host" | "container" | "docker" | "firecracker";
     container?: string;
     image?: string;
     vmId?: string;
@@ -161,7 +161,10 @@ export class FileVaultManager implements VaultManager {
   private warnUnusedMounts(): void {
     if (!this.config) return;
     for (const [key, entry] of Object.entries(this.config.vaults)) {
-      if (entry.mounts?.length && entry.sandbox?.type === "docker") {
+      if (
+        entry.mounts?.length &&
+        (entry.sandbox?.type === "container" || entry.sandbox?.type === "docker")
+      ) {
         console.error(
           `vault: "${key}" declares mounts ${JSON.stringify(entry.mounts)} with Docker sandbox. ` +
             `Docker volume mounts must be set at container creation time (docker run -v ...), ` +
@@ -211,9 +214,9 @@ export class FileVaultManager implements VaultManager {
 
     const override = vault.sandboxOverride;
 
-    if (override.type === "docker") {
+    if (override.type === "container" || override.type === "docker") {
       const container = override.container || `mama-sandbox-${userId}`;
-      return { type: "docker", container };
+      return { type: "container", container };
     }
 
     if (override.type === "firecracker") {

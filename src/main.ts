@@ -26,7 +26,7 @@ import { startLinkServer } from "./link-server.js";
 import { formatSupportedLoginProviders, parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
@@ -120,7 +120,22 @@ function parseArgs(): ParsedArgs {
   };
 }
 
-const parsedArgs = parseArgs();
+function handleStartupError(error: unknown): never {
+  if (error instanceof SandboxError) {
+    for (const line of error.formatForCli()) {
+      console.error(line);
+    }
+    process.exit(1);
+  }
+  throw error;
+}
+
+let parsedArgs: ParsedArgs;
+try {
+  parsedArgs = parseArgs();
+} catch (error) {
+  handleStartupError(error);
+}
 
 // Handle --version
 if (parsedArgs.showVersion) {
@@ -141,7 +156,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] [--state-dir=<path>] <working-directory>",
+    "Usage: mama [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>] [--state-dir=<path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
@@ -181,7 +196,11 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
   process.exit(1);
 }
 
-await validateSandbox(sandbox);
+try {
+  await validateSandbox(sandbox);
+} catch (error) {
+  handleStartupError(error);
+}
 
 const vaultManager = new FileVaultManager(stateDir);
 if (vaultManager.isEnabled()) {
@@ -194,9 +213,7 @@ if (bindingStore.isEnabled()) {
 }
 
 const provisioner =
-  sandbox.type === "docker-auto"
-    ? new DockerContainerManager(sandbox.image, workingDir)
-    : undefined;
+  sandbox.type === "image" ? new DockerContainerManager(sandbox.image, workingDir) : undefined;
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 
@@ -247,7 +264,7 @@ function normalizeLoginBaseUrl(): string | undefined {
 
 function ensureLoginVault(platform: string, platformUserId: string): string {
   const vaultId =
-    sandbox.type === "docker-auto"
+    sandbox.type === "image"
       ? DockerContainerManager.vaultId(platform, platformUserId)
       : (bindingStore.resolve(platform, platformUserId)?.vaultId ?? platformUserId);
   const platformTag =
@@ -257,8 +274,13 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
   vaultManager.addEntry(vaultId, {
     displayName: `${platform}:${platformUserId}`,
     platform: platformTag,
-    ...(sandbox.type === "docker-auto"
-      ? { sandbox: { type: "docker", container: DockerContainerManager.containerName(vaultId) } }
+    ...(sandbox.type === "image"
+      ? {
+          sandbox: {
+            type: "container" as const,
+            container: DockerContainerManager.containerName(vaultId),
+          },
+        }
       : {}),
   });
   return vaultId;
@@ -585,10 +607,10 @@ const handler: BotHandler = {
 const sandboxDesc =
   sandbox.type === "host"
     ? "host"
-    : sandbox.type === "docker"
-      ? `docker:${sandbox.container}`
-      : sandbox.type === "docker-auto"
-        ? `docker-auto:${sandbox.image}`
+    : sandbox.type === "container"
+      ? `container:${sandbox.container}`
+      : sandbox.type === "image"
+        ? `image:${sandbox.image}`
         : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
 

@@ -151,7 +151,7 @@ function buildSystemPrompt(
   skills: Skill[],
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
-  const isDocker = sandboxConfig.type === "docker" || sandboxConfig.type === "docker-auto";
+  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
@@ -166,8 +166,8 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isDocker
-    ? `You are running inside a Docker container (Alpine Linux).
+  const envDescription = isContainer
+    ? `You are running inside a container (Docker runtime, Alpine Linux).
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apk add <package>
 - Your changes persist across sessions`
@@ -319,7 +319,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
-${isDocker ? "Install jq: apk add jq" : ""}
+${isContainer ? "Install jq: apk add jq" : ""}
 ${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
@@ -435,8 +435,7 @@ export async function createRunner(
   });
 
   const executionResolver =
-    vaultManager &&
-    (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "docker-auto")
+    vaultManager && (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "image")
       ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
       : undefined;
   let activeExecutor: Executor =

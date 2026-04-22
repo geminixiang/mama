@@ -43,7 +43,7 @@ export class ActorExecutionResolver {
   }
 
   private resolveVaultKey(platform: string, userId: string): string {
-    if (this.baseConfig.type === "docker-auto") {
+    if (this.baseConfig.type === "image") {
       return DockerContainerManager.vaultId(platform, userId);
     }
 
@@ -55,14 +55,14 @@ export class ActorExecutionResolver {
   }
 
   private ensureAutoManagedVault(platform: string, userId: string, vaultKey: string): void {
-    if (this.baseConfig.type !== "docker-auto") {
+    if (this.baseConfig.type !== "image") {
       return;
     }
 
     const entry: VaultEntry = {
       displayName: `${platform}:${userId}`,
       platform: this.asVaultPlatform(platform),
-      sandbox: { type: "docker", container: DockerContainerManager.containerName(vaultKey) },
+      sandbox: { type: "container", container: DockerContainerManager.containerName(vaultKey) },
     };
     this.vaultManager.addEntry(vaultKey, entry);
   }
@@ -77,9 +77,9 @@ export class ActorExecutionResolver {
   private resolveSystemExecutor(): Executor {
     const systemVault = this.vaultManager.resolveSystemActor();
     if (!systemVault) {
-      if (this.baseConfig.type === "docker-auto") {
+      if (this.baseConfig.type === "image") {
         throw new Error(
-          "docker-auto requires a configured systemActor vault for event/system-triggered runs.",
+          "image sandbox requires a configured systemActor vault for event/system-triggered runs.",
         );
       }
       return createExecutor(this.baseConfig);
@@ -87,7 +87,7 @@ export class ActorExecutionResolver {
 
     const config = this.applySandboxOverride(systemVault, this.baseConfig);
     const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
-    // For docker-auto mode, we need getEnsureReady to auto-provision the container
+    // For image mode, we need getEnsureReady to auto-provision the container
     // System vault uses userId from the vault config for container naming
     const vaultKey = systemVault.userId;
     const ensureReady = this.getEnsureReady(vaultKey, config);
@@ -98,7 +98,7 @@ export class ActorExecutionResolver {
     vaultKey: string,
     config: SandboxConfig,
   ): (() => Promise<void>) | undefined {
-    if (this.baseConfig.type !== "docker-auto" || config.type !== "docker") {
+    if (this.baseConfig.type !== "image" || config.type !== "container") {
       return undefined;
     }
 
@@ -116,11 +116,17 @@ export class ActorExecutionResolver {
   private applySandboxOverride(vault: ResolvedVault, baseConfig: SandboxConfig): SandboxConfig {
     const override = vault.sandboxOverride;
     if (!override?.type) {
+      if (baseConfig.type === "image") {
+        return {
+          type: "container",
+          container: DockerContainerManager.containerName(vault.userId),
+        };
+      }
       return baseConfig;
     }
 
-    if (override.type === "docker") {
-      return { type: "docker", container: override.container || "mama-sandbox-system" };
+    if (override.type === "container" || override.type === "docker") {
+      return { type: "container", container: override.container || "mama-sandbox-system" };
     }
 
     if (override.type === "firecracker" && override.vmId) {

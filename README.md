@@ -47,7 +47,7 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host or inside a Docker container
+- **Sandbox execution** — run agent commands on host or inside a container
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
@@ -169,7 +169,7 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--sandbox=host|container:<container>] <working-directory>
 ```
 
 The bot responds when `@mentioned` in any channel or via DM.
@@ -188,7 +188,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--sandbox=host|container:<container>] <working-directory>
 ```
 
 - **Private chats** — every message is forwarded to the bot automatically.
@@ -208,7 +208,7 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 ```bash
 export MOM_DISCORD_BOT_TOKEN=MTI...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--sandbox=host|container:<container>] <working-directory>
 ```
 
 - **Server channels** — the bot responds when `@mentioned`.
@@ -221,12 +221,20 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 
 ## Options
 
-| Option                                 | Default | Description                                              |
-| -------------------------------------- | ------- | -------------------------------------------------------- |
-| `--sandbox=host`                       | ✓       | Run commands directly on host                            |
-| `--sandbox=docker:<name>`              |         | Run commands inside a Docker container                   |
-| `--sandbox=firecracker:<vm-id>:<path>` |         | Run commands inside a Firecracker microVM                |
-| `--download <channel-id>`              |         | Download channel history to stdout and exit (Slack only) |
+| Option                                 | Default   | Description                                                             |
+| -------------------------------------- | --------- | ----------------------------------------------------------------------- |
+| `--sandbox=host`                       | ✓         | Run commands directly on host                                           |
+| `--sandbox=container:<name>`           |           | Run commands in a shared container (mama does not manage lifecycle)     |
+| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user from an image     |
+| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                               |
+| `--state-dir <path>`                   | `~/.mama` | Store operator-managed settings, vaults, and bindings outside workspace |
+| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)                |
+
+### Container Mode Semantics
+
+- `container:*` uses one shared container for all sessions/users. mama does not create/start/stop/delete this container.
+- `image:*` creates and restarts per-user containers named from the platform/user id. mama manages this container lifecycle.
+- `docker:*` is not supported; use `container:*` for a shared existing container or `image:*` for mama-managed per-user containers.
 
 ### Download channel history (Slack)
 
@@ -236,7 +244,7 @@ mama --download C0123456789
 
 ## Configuration
 
-Create `settings.json` in your working directory to override defaults:
+mama stores operator-managed configuration in `~/.mama` by default. Use `--state-dir <path>` to choose another location. Create or edit `settings.json` there:
 
 ```json
 {
@@ -290,7 +298,6 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
 
 ```
 <working-directory>/
-├── settings.json          # AI provider/model/Sentry config
 ├── MEMORY.md              # Global memory (all channels)
 ├── SYSTEM.md              # Installed packages / env changes log
 ├── skills/                # Global skills (CLI tools)
@@ -307,7 +314,17 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
         └── <thread-ts>.jsonl            # Fixed-path thread session
 ```
 
-## Docker Sandbox
+Operator-managed state lives outside the workspace:
+
+```
+<state-dir>/
+├── settings.json          # AI provider/model/Sentry config
+└── vaults/
+    ├── vault.json         # Per-user vault routing
+    └── bindings.json      # Optional platform-user to vault mapping
+```
+
+## Container Sandbox
 
 ```bash
 # Create a container (mount your working directory to /workspace)
@@ -315,9 +332,17 @@ docker run -d --name mama-sandbox \
   -v /path/to/workspace:/workspace \
   alpine:latest sleep infinity
 
-# Start mama with Docker sandbox
-mama --sandbox=docker:mama-sandbox /path/to/workspace
+# Start mama with container sandbox
+mama --sandbox=container:mama-sandbox /path/to/workspace
 ```
+
+## Managed Per-User Container Sandbox
+
+```bash
+mama --sandbox=image:ubuntu:24.04 /path/to/workspace
+```
+
+In this mode mama creates one container per platform user, mounts the workspace at `/workspace`, injects that user's vault environment variables into tool execution, and stops idle containers after the configured idle window.
 
 ## Firecracker Sandbox
 
