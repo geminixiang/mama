@@ -1,11 +1,11 @@
-export type SandboxConfig = HostSandboxConfig | DockerSandboxConfig | FirecrackerSandboxConfig;
+export type SandboxConfig = HostSandboxConfig | ContainerSandboxConfig | FirecrackerSandboxConfig;
 
 export interface HostSandboxConfig {
   type: "host";
 }
 
-export interface DockerSandboxConfig {
-  type: "docker";
+export interface ContainerSandboxConfig {
+  type: "container";
   container: string;
 }
 
@@ -26,7 +26,7 @@ export interface Executor {
   /**
    * Get the workspace path prefix for this executor.
    * Host: returns the actual path.
-   * Docker/Firecracker: returns /workspace.
+   * Container/Firecracker: returns /workspace.
    */
   getWorkspacePath(hostPath: string): string;
 }

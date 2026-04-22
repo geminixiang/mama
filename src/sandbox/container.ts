@@ -1,5 +1,5 @@
 import type {
-  DockerSandboxConfig,
+  ContainerSandboxConfig,
   ExecOptions,
   ExecResult,
   Executor,
@@ -9,21 +9,21 @@ import { SandboxError } from "./errors.js";
 import { execSimple, shellEscape } from "./utils.js";
 import { HostExecutor } from "./host.js";
 
-export function parseDockerSandboxArg(value: string): DockerSandboxConfig | undefined {
-  if (!value.startsWith("docker:")) {
+export function parseContainerSandboxArg(value: string): ContainerSandboxConfig | undefined {
+  if (!value.startsWith("container:")) {
     return undefined;
   }
 
-  const container = value.slice("docker:".length);
+  const container = value.slice("container:".length);
   if (!container) {
     throw new SandboxError(
-      "Error: docker sandbox requires container name (e.g., docker:mama-sandbox)",
+      "Error: container sandbox requires container name (e.g., container:mama-sandbox)",
     );
   }
-  return { type: "docker", container };
+  return { type: "container", container };
 }
 
-export async function validateDockerSandbox(config: DockerSandboxConfig): Promise<void> {
+export async function validateContainerSandbox(config: ContainerSandboxConfig): Promise<void> {
   try {
     await execSimple("docker", ["--version"]);
   } catch {
@@ -47,14 +47,14 @@ export async function validateDockerSandbox(config: DockerSandboxConfig): Promis
       throw error;
     }
     throw new SandboxError(`Error: Container '${config.container}' does not exist.`, [
-      "Create it with: ./docker.sh create <data-dir>",
+      `Create it with: docker run -d --name ${config.container} -v <workspace>:/workspace alpine:latest sleep infinity`,
     ]);
   }
 
-  console.log(`  Docker container '${config.container}' is running.`);
+  console.log(`  Container '${config.container}' is running.`);
 }
 
-export class DockerExecutor implements Executor {
+export class ContainerExecutor implements Executor {
   constructor(private container: string) {}
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
@@ -68,9 +68,9 @@ export class DockerExecutor implements Executor {
   }
 }
 
-export const dockerSandboxAdapter: SandboxAdapter<DockerSandboxConfig> = {
-  type: "docker",
-  parse: parseDockerSandboxArg,
-  validate: validateDockerSandbox,
-  createExecutor: (config) => new DockerExecutor(config.container),
+export const containerSandboxAdapter: SandboxAdapter<ContainerSandboxConfig> = {
+  type: "container",
+  parse: parseContainerSandboxArg,
+  validate: validateContainerSandbox,
+  createExecutor: (config) => new ContainerExecutor(config.container),
 };

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
-  DockerExecutor,
+  ContainerExecutor,
   FirecrackerExecutor,
   HostExecutor,
   SandboxError,
@@ -17,9 +17,9 @@ describe("parseSandboxArg", () => {
     expect(parseSandboxArg("host")).toEqual({ type: "host" });
   });
 
-  test("parses docker sandbox", () => {
-    expect(parseSandboxArg("docker:mama-sandbox")).toEqual({
-      type: "docker",
+  test("parses container sandbox", () => {
+    expect(parseSandboxArg("container:mama-sandbox")).toEqual({
+      type: "container",
       container: "mama-sandbox",
     });
   });
@@ -59,6 +59,20 @@ describe("parseSandboxArg", () => {
       "Error: Invalid sandbox type 'podman:mama'",
     );
   });
+
+  test("rejects docker mode with migration hint", () => {
+    expect(() => parseSandboxArg("docker:mama-sandbox")).toThrowError(SandboxError);
+    expect(() => parseSandboxArg("docker:mama-sandbox")).toThrow(
+      "Use 'container:<container-name>' for the shared-container mode",
+    );
+  });
+
+  test("rejects image mode with migration hint", () => {
+    expect(() => parseSandboxArg("image:alpine:latest")).toThrowError(SandboxError);
+    expect(() => parseSandboxArg("image:alpine:latest")).toThrow(
+      "Future 'docker:'/'image:' modes are reserved for per-session containers managed by mama.",
+    );
+  });
 });
 
 describe("createExecutor", () => {
@@ -66,9 +80,9 @@ describe("createExecutor", () => {
     expect(createExecutor({ type: "host" })).toBeInstanceOf(HostExecutor);
   });
 
-  test("creates docker executor", () => {
-    expect(createExecutor({ type: "docker", container: "mama-sandbox" })).toBeInstanceOf(
-      DockerExecutor,
+  test("creates container executor", () => {
+    expect(createExecutor({ type: "container", container: "mama-sandbox" })).toBeInstanceOf(
+      ContainerExecutor,
     );
   });
 

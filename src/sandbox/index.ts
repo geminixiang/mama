@@ -1,9 +1,9 @@
 import {
-  DockerExecutor,
-  dockerSandboxAdapter,
-  parseDockerSandboxArg,
-  validateDockerSandbox,
-} from "./docker.js";
+  ContainerExecutor,
+  containerSandboxAdapter,
+  parseContainerSandboxArg,
+  validateContainerSandbox,
+} from "./container.js";
 import {
   FirecrackerExecutor,
   firecrackerSandboxAdapter,
@@ -20,7 +20,7 @@ import { SandboxError } from "./errors.js";
 import type { Executor, SandboxAdapter, SandboxConfig } from "./types.js";
 
 export type {
-  DockerSandboxConfig,
+  ContainerSandboxConfig,
   ExecOptions,
   ExecResult,
   Executor,
@@ -29,9 +29,13 @@ export type {
   SandboxAdapter,
   SandboxConfig,
 } from "./types.js";
-export { DockerExecutor, FirecrackerExecutor, HostExecutor };
+export { ContainerExecutor, FirecrackerExecutor, HostExecutor };
 export { SandboxError } from "./errors.js";
-export { dockerSandboxAdapter, parseDockerSandboxArg, validateDockerSandbox } from "./docker.js";
+export {
+  containerSandboxAdapter,
+  parseContainerSandboxArg,
+  validateContainerSandbox,
+} from "./container.js";
 export {
   firecrackerSandboxAdapter,
   parseFirecrackerSandboxArg,
@@ -41,7 +45,7 @@ export { hostSandboxAdapter, parseHostSandboxArg, validateHostSandbox } from "./
 
 const sandboxAdapters = [
   hostSandboxAdapter,
-  dockerSandboxAdapter,
+  containerSandboxAdapter,
   firecrackerSandboxAdapter,
 ] as const;
 const sandboxAdapterByType = new Map(
@@ -60,8 +64,14 @@ export function parseSandboxArg(value: string): SandboxConfig {
     }
   }
 
+  if (value.startsWith("docker:") || value.startsWith("image:")) {
+    throw new SandboxError(
+      `Error: '${value}' is not supported yet. Use 'container:<container-name>' for the shared-container mode. Future 'docker:'/'image:' modes are reserved for per-session containers managed by mama.`,
+    );
+  }
+
   throw new SandboxError(
-    `Error: Invalid sandbox type '${value}'. Use 'host', 'docker:<container-name>', or 'firecracker:<vm-id>:<host-path>'`,
+    `Error: Invalid sandbox type '${value}'. Use 'host', 'container:<container-name>', or 'firecracker:<vm-id>:<host-path>'`,
   );
 }
 
