@@ -23,6 +23,9 @@ interface ContainerState {
  */
 export class DockerContainerManager {
   private state = new Map<string, ContainerState>();
+  private static readonly MANAGED_LABEL = "mama.managed=true";
+  private static readonly IMAGE_MODE_LABEL = "mama.sandbox=image";
+  private static readonly VAULT_ID_LABEL_KEY = "mama.vault-id";
 
   constructor(
     private readonly image: string,
@@ -77,6 +80,12 @@ export class DockerContainerManager {
         "-d",
         "--name",
         containerName,
+        "--label",
+        DockerContainerManager.MANAGED_LABEL,
+        "--label",
+        DockerContainerManager.IMAGE_MODE_LABEL,
+        "--label",
+        `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
         "-v",
         `${this.workspaceDir}:/workspace`,
         this.image,
@@ -138,6 +147,41 @@ export class DockerContainerManager {
     await Promise.all(toStop.map((vaultId) => this.stop(vaultId)));
   }
 
+  /**
+   * Rebuild in-memory state from existing Docker containers managed by mama image mode.
+   * Supports both new labeled containers and legacy name-prefixed containers.
+   */
+  async reconcile(): Promise<void> {
+    const discovered = new Set<string>();
+    const labeledNames = await this.listContainerNamesByLabel();
+    for (const name of labeledNames) discovered.add(name);
+    const legacyNames = await this.listContainerNamesByPrefix();
+    for (const name of legacyNames) discovered.add(name);
+
+    this.state.clear();
+
+    for (const containerName of discovered) {
+      const details = await this.inspectContainerDetails(containerName);
+      if (!details) continue;
+
+      const vaultId = details.vaultId || this.vaultIdFromContainerName(containerName);
+      if (!vaultId) {
+        log.logWarning(`Skipping unmanaged-style container without vault id`, containerName);
+        continue;
+      }
+
+      const status: ContainerStatus = details.running ? "running" : "stopped";
+      const lastUsed = details.startedAtMs ?? Date.now();
+      this.state.set(vaultId, { status, lastUsed });
+    }
+
+    const running = Array.from(this.state.values()).filter((s) => s.status === "running").length;
+    const stopped = this.state.size - running;
+    log.logInfo(
+      `Reconciled ${this.state.size} managed containers (running=${running}, stopped=${stopped})`,
+    );
+  }
+
   private setState(vaultId: string, status: ContainerStatus): void {
     this.state.set(vaultId, { status, lastUsed: Date.now() });
   }
@@ -154,6 +198,99 @@ export class DockerContainerManager {
     } catch {
       return "missing";
     }
+  }
+
+  private async listContainerNamesByLabel(): Promise<string[]> {
+    try {
+      const { stdout } = await this.execFileImpl("docker", [
+        "ps",
+        "-a",
+        "--filter",
+        `label=${DockerContainerManager.MANAGED_LABEL}`,
+        "--filter",
+        `label=${DockerContainerManager.IMAGE_MODE_LABEL}`,
+        "--format",
+        "{{.Names}}",
+      ]);
+      return this.parseNameLines(stdout);
+    } catch (err) {
+      log.logWarning(
+        "Failed to list labeled managed containers",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+  }
+
+  private async listContainerNamesByPrefix(): Promise<string[]> {
+    try {
+      const { stdout } = await this.execFileImpl("docker", [
+        "ps",
+        "-a",
+        "--filter",
+        `name=${DockerContainerManager.containerName("")}`,
+        "--format",
+        "{{.Names}}",
+      ]);
+      return this.parseNameLines(stdout);
+    } catch (err) {
+      log.logWarning(
+        "Failed to list legacy managed containers",
+        err instanceof Error ? err.message : String(err),
+      );
+      return [];
+    }
+  }
+
+  private parseNameLines(stdout: string): string[] {
+    return stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  private async inspectContainerDetails(
+    containerName: string,
+  ): Promise<{ running: boolean; startedAtMs?: number; vaultId?: string } | undefined> {
+    try {
+      const { stdout } = await this.execFileImpl("docker", [
+        "inspect",
+        "-f",
+        `{{.State.Running}}\t{{.State.StartedAt}}\t{{index .Config.Labels "${DockerContainerManager.VAULT_ID_LABEL_KEY}"}}`,
+        containerName,
+      ]);
+      const [runningRaw, startedAtRaw, vaultIdRaw] = stdout.trim().split("\t");
+      const running = runningRaw === "true";
+      const startedAtMs = this.parseDockerTimestamp(startedAtRaw);
+      const vaultId = this.normalizeDockerValue(vaultIdRaw);
+      return { running, startedAtMs, vaultId };
+    } catch (err) {
+      log.logWarning(
+        `Failed to inspect container ${containerName} during reconcile`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return undefined;
+    }
+  }
+
+  private normalizeDockerValue(value?: string): string | undefined {
+    if (!value || value === "<no value>") return undefined;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  private parseDockerTimestamp(value?: string): number | undefined {
+    const normalized = this.normalizeDockerValue(value);
+    if (!normalized || normalized.startsWith("0001-")) return undefined;
+    const parsed = Date.parse(normalized);
+    return Number.isNaN(parsed) ? undefined : parsed;
+  }
+
+  private vaultIdFromContainerName(containerName: string): string | undefined {
+    const prefix = DockerContainerManager.containerName("");
+    if (!containerName.startsWith(prefix)) return undefined;
+    const vaultId = containerName.slice(prefix.length);
+    return vaultId.length > 0 ? vaultId : undefined;
   }
 }
 

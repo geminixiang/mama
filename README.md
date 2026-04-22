@@ -342,7 +342,7 @@ mama --sandbox=container:mama-sandbox /path/to/workspace
 mama --sandbox=image:ubuntu:24.04 /path/to/workspace
 ```
 
-In this mode mama creates one container per platform user, mounts the workspace at `/workspace`, injects that user's vault environment variables into tool execution, and stops idle containers after the configured idle window.
+In this mode mama creates one container per platform user, mounts the workspace at `/workspace`, injects that user's vault environment variables into tool execution, and stops idle containers after the configured idle window. Containers are labeled for management (`mama.managed=true`, `mama.sandbox=image`, `mama.vault-id=<id>`), and mama reconciles managed containers on startup/restart (including legacy `mama-sandbox-*` containers).
 
 ## Firecracker Sandbox
 

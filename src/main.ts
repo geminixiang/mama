@@ -247,6 +247,11 @@ const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
 const IDLE_TIMEOUT_MS = 3600000;
 
+if (provisioner) {
+  await provisioner.reconcile();
+  await provisioner.stopIdle(IDLE_TIMEOUT_MS);
+}
+
 // Stop idle containers every hour (same cadence as session eviction)
 if (provisioner) {
   setInterval(() => provisioner.stopIdle(IDLE_TIMEOUT_MS), IDLE_TIMEOUT_MS).unref();

@@ -56,6 +56,12 @@ describe("DockerContainerManager", () => {
       "-d",
       "--name",
       "mama-sandbox-slack-u123",
+      "--label",
+      "mama.managed=true",
+      "--label",
+      "mama.sandbox=image",
+      "--label",
+      "mama.vault-id=slack-u123",
       "-v",
       "/tmp/workspace:/workspace",
       "ubuntu:24.04",
@@ -96,5 +102,39 @@ describe("DockerContainerManager", () => {
     const stopCalls = execMock.mock.calls.filter((c) => c[0] === "docker" && c[1][0] === "stop");
     expect(stopCalls).toHaveLength(1);
     expect(stopCalls[0][1]).toEqual(["stop", "mama-sandbox-slack-u111"]);
+  });
+
+  test("reconcile discovers labeled containers and restores state", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-slack-u123\n" }) // labeled list
+      .mockResolvedValueOnce({ stdout: "" }) // legacy list
+      .mockResolvedValueOnce({
+        stdout: "true\t2026-04-22T00:00:00.000000000Z\tslack-u123\n",
+      }); // inspect details
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+
+    await manager.reconcile();
+
+    const stateField = (manager as any).state as Map<string, { status: string; lastUsed: number }>;
+    expect(stateField.get("slack-u123")?.status).toBe("running");
+    expect(stateField.get("slack-u123")?.lastUsed).toBe(Date.parse("2026-04-22T00:00:00.000Z"));
+  });
+
+  test("reconcile falls back to legacy name prefix when label is missing", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "" }) // labeled list
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-discord-u999\n" }) // legacy list
+      .mockResolvedValueOnce({
+        stdout: "false\t0001-01-01T00:00:00Z\t<no value>\n",
+      }); // inspect details
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+
+    await manager.reconcile();
+
+    const stateField = (manager as any).state as Map<string, { status: string; lastUsed: number }>;
+    expect(stateField.get("discord-u999")?.status).toBe("stopped");
+    expect(stateField.get("discord-u999")).toBeDefined();
   });
 });
