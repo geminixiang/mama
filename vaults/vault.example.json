@@ -7,7 +7,7 @@
       "mounts": [".gcloud", ".ssh", ".kube", ".gitconfig"],
       "envFile": true,
       "sandbox": {
-        "type": "container",
+        "type": "image",
         "container": "mama-sandbox-alice"
       }
     },
@@ -17,7 +17,7 @@
       "mounts": [".gcloud", ".ssh"],
       "envFile": true,
       "sandbox": {
-        "type": "container",
+        "type": "image",
         "container": "mama-sandbox-bob"
       }
     },

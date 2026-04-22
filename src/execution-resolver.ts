@@ -62,7 +62,7 @@ export class ActorExecutionResolver {
     const entry: VaultEntry = {
       displayName: `${platform}:${userId}`,
       platform: this.asVaultPlatform(platform),
-      sandbox: { type: "container", container: DockerContainerManager.containerName(vaultKey) },
+      sandbox: { type: "image", container: DockerContainerManager.containerName(vaultKey) },
     };
     this.vaultManager.addEntry(vaultKey, entry);
   }
@@ -125,8 +125,17 @@ export class ActorExecutionResolver {
       return baseConfig;
     }
 
-    if (override.type === "container" || override.type === "docker") {
-      return { type: "container", container: override.container || "mama-sandbox-system" };
+    if (override.type === "image") {
+      if (baseConfig.type !== "image") {
+        throw new Error(
+          `systemActor vault uses sandbox.type=image, but base sandbox is "${baseConfig.type}". ` +
+            "Use --sandbox=image:<image> to enable per-user managed containers.",
+        );
+      }
+      return {
+        type: "container",
+        container: override.container || DockerContainerManager.containerName(vault.userId),
+      };
     }
 
     if (override.type === "firecracker" && override.vmId) {
@@ -141,7 +150,17 @@ export class ActorExecutionResolver {
     }
 
     if (override.type === "host") {
-      return { type: "host" };
+      throw new Error(
+        "systemActor vault uses sandbox.type=host, which is blocked for credential isolation. " +
+          "Use sandbox.type=image or sandbox.type=firecracker.",
+      );
+    }
+
+    if (override.type === "container" || override.type === "docker") {
+      throw new Error(
+        `systemActor vault uses sandbox.type=${override.type}, which is blocked for credential isolation. ` +
+          "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
+      );
     }
 
     return baseConfig;

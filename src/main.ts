@@ -277,7 +277,7 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
     ...(sandbox.type === "image"
       ? {
           sandbox: {
-            type: "container" as const,
+            type: "image" as const,
             container: DockerContainerManager.containerName(vaultId),
           },
         }

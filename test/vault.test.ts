@@ -184,34 +184,80 @@ describe("FileVaultManager", () => {
     expect(mgr.getSandboxConfig("UNKNOWN", base)).toEqual(base);
   });
 
-  test("getSandboxConfig applies container override", () => {
+  test("getSandboxConfig applies image override in image mode", () => {
     writeVaultJson({
       vaults: {
         U123: {
           displayName: "Alice",
-          sandbox: { type: "container", container: "alice-box" },
+          sandbox: { type: "image", container: "alice-box" },
         },
       },
     });
 
     const mgr = new FileVaultManager(tmpDir);
-    const result = mgr.getSandboxConfig("U123", { type: "host" });
+    const result = mgr.getSandboxConfig("U123", { type: "image", image: "ubuntu:24.04" });
     expect(result).toEqual({ type: "container", container: "alice-box" });
   });
 
-  test("getSandboxConfig defaults container name from userId", () => {
+  test("getSandboxConfig defaults image container name from userId", () => {
     writeVaultJson({
       vaults: {
         U123: {
           displayName: "Alice",
-          sandbox: { type: "container" },
+          sandbox: { type: "image" },
         },
       },
     });
 
     const mgr = new FileVaultManager(tmpDir);
-    const result = mgr.getSandboxConfig("U123", { type: "host" });
+    const result = mgr.getSandboxConfig("U123", { type: "image", image: "ubuntu:24.04" });
     expect(result).toEqual({ type: "container", container: "mama-sandbox-U123" });
+  });
+
+  test("getSandboxConfig blocks host override for vault isolation", () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          sandbox: { type: "host" },
+        },
+      },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    expect(() => mgr.getSandboxConfig("U123", { type: "image", image: "ubuntu:24.04" })).toThrow(
+      /blocked for credential isolation/,
+    );
+  });
+
+  test("getSandboxConfig blocks container override for vault isolation", () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          sandbox: { type: "container", container: "shared-box" },
+        },
+      },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    expect(() => mgr.getSandboxConfig("U123", { type: "image", image: "ubuntu:24.04" })).toThrow(
+      /blocked for credential isolation/,
+    );
+  });
+
+  test("getSandboxConfig blocks image override when base sandbox is not image", () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    expect(() => mgr.getSandboxConfig("U123", { type: "host" })).toThrow(/base sandbox is "host"/);
   });
 
   // ── isStrict ──────────────────────────────────────────────────────────────
@@ -253,7 +299,7 @@ describe("FileVaultManager", () => {
     // Bug regression: getSandboxConfig("__system__") would re-resolve and miss the actual key
     writeVaultJson({
       vaults: {
-        _ops: { displayName: "Ops", sandbox: { type: "container", container: "ops-box" } },
+        _ops: { displayName: "Ops", sandbox: { type: "image", container: "ops-box" } },
       },
       systemActor: "_ops",
     });
@@ -261,7 +307,7 @@ describe("FileVaultManager", () => {
     const mgr = new FileVaultManager(tmpDir);
     const vault = mgr.resolveSystemActor();
     expect(vault).toBeDefined();
-    expect(vault!.sandboxOverride).toEqual({ type: "container", container: "ops-box" });
+    expect(vault!.sandboxOverride).toEqual({ type: "image", container: "ops-box" });
 
     // resolve("__system__") should NOT find _ops (it's only reachable via resolveSystemActor)
     expect(mgr.resolve("__system__")).toBeUndefined();
@@ -362,7 +408,10 @@ describe("ActorExecutionResolver", () => {
   test("refresh picks up vault changes for later resolves", async () => {
     writeVaultJson({ vaults: { U1: { displayName: "Alice" } } });
     const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver(
+      { type: "firecracker", vmId: "vm-base", hostPath: "/host/workspace" },
+      mgr,
+    );
     let executor = await resolver.resolve({ platform: "slack", userId: "U1" });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
 
@@ -370,7 +419,7 @@ describe("ActorExecutionResolver", () => {
       vaults: {
         U1: {
           displayName: "Alice",
-          sandbox: { type: "container", container: "alice-box" },
+          sandbox: { type: "firecracker", vmId: "vm-alice" },
         },
       },
     });
@@ -382,13 +431,16 @@ describe("ActorExecutionResolver", () => {
   test("system actor refresh picks up new system sandbox", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
+    const resolver = new ActorExecutionResolver(
+      { type: "firecracker", vmId: "vm-base", hostPath: "/host/workspace" },
+      mgr,
+    );
 
     writeVaultJson({
       vaults: {
         _sys: {
           displayName: "System",
-          sandbox: { type: "container", container: "sys-box" },
+          sandbox: { type: "firecracker", vmId: "vm-sys" },
         },
       },
       systemActor: "_sys",

@@ -25,7 +25,7 @@ export interface VaultEntry {
   envFile?: boolean;
   /** Per-user sandbox config override */
   sandbox?: {
-    type?: "host" | "container" | "docker" | "firecracker";
+    type?: "image" | "firecracker" | "host" | "container" | "docker";
     container?: string;
     image?: string;
     vmId?: string;
@@ -146,30 +146,27 @@ export class FileVaultManager implements VaultManager {
       }
 
       this.config = parsed as VaultConfig;
-      this.warnUnusedMounts();
+      this.warnUnsupportedSandboxTypes();
     } catch (err) {
       console.error(`vault: failed to read ${this.configPath}:`, err);
       this.config = null;
     }
   }
 
-  /**
-   * Warn about mounts that cannot be injected at runtime.
-   * Docker volume mounts (-v) are only possible at `docker run` time, not `docker exec`.
-   * Containers must be pre-provisioned with the correct volume mounts.
-   */
-  private warnUnusedMounts(): void {
+  /** Warn for legacy or insecure vault sandbox overrides that are no longer allowed. */
+  private warnUnsupportedSandboxTypes(): void {
     if (!this.config) return;
     for (const [key, entry] of Object.entries(this.config.vaults)) {
-      if (
-        entry.mounts?.length &&
-        (entry.sandbox?.type === "container" || entry.sandbox?.type === "docker")
-      ) {
+      if (entry.sandbox?.type === "host") {
         console.error(
-          `vault: "${key}" declares mounts ${JSON.stringify(entry.mounts)} with Docker sandbox. ` +
-            `Docker volume mounts must be set at container creation time (docker run -v ...), ` +
-            `not at exec time. Ensure container "${entry.sandbox.container || `mama-sandbox-${key}`}" ` +
-            `is pre-provisioned with these mounts.`,
+          `vault: "${key}" uses sandbox.type=host, which is blocked for credential isolation. ` +
+            "Use sandbox.type=image or sandbox.type=firecracker.",
+        );
+      }
+      if (entry.sandbox?.type === "container" || entry.sandbox?.type === "docker") {
+        console.error(
+          `vault: "${key}" uses sandbox.type=${entry.sandbox.type}, which is blocked for credential isolation. ` +
+            "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
         );
       }
     }
@@ -214,7 +211,13 @@ export class FileVaultManager implements VaultManager {
 
     const override = vault.sandboxOverride;
 
-    if (override.type === "container" || override.type === "docker") {
+    if (override.type === "image") {
+      if (baseConfig.type !== "image") {
+        throw new Error(
+          `vault "${userId}" sets sandbox.type=image, but base sandbox is "${baseConfig.type}". ` +
+            "Use --sandbox=image:<image> to enable per-user managed containers.",
+        );
+      }
       const container = override.container || `mama-sandbox-${userId}`;
       return { type: "container", container };
     }
@@ -234,7 +237,17 @@ export class FileVaultManager implements VaultManager {
     }
 
     if (override.type === "host") {
-      return { type: "host" };
+      throw new Error(
+        `vault "${userId}" uses sandbox.type=host, which is blocked for credential isolation. ` +
+          "Use sandbox.type=image or sandbox.type=firecracker.",
+      );
+    }
+
+    if (override.type === "container" || override.type === "docker") {
+      throw new Error(
+        `vault "${userId}" uses sandbox.type=${override.type}, which is blocked for credential isolation. ` +
+          "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
+      );
     }
 
     // No type override — return base config unchanged
