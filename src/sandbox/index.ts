@@ -1,10 +1,7 @@
 import {
   ContainerExecutor,
   containerSandboxAdapter,
-  imageSandboxAdapter,
-  parseImageSandboxArg,
   parseContainerSandboxArg,
-  validateImageSandbox,
   validateContainerSandbox,
 } from "./container.js";
 import {
@@ -19,6 +16,7 @@ import {
   parseHostSandboxArg,
   validateHostSandbox,
 } from "./host.js";
+import { imageSandboxAdapter, parseImageSandboxArg, validateImageSandbox } from "./image.js";
 import { SandboxError } from "./errors.js";
 import type { Executor, SandboxAdapter, SandboxConfig } from "./types.js";
 
@@ -38,11 +36,8 @@ export { SandboxError } from "./errors.js";
 export {
   buildContainerExecCommand,
   containerSandboxAdapter,
-  imageSandboxAdapter,
   parseContainerSandboxArg,
-  parseImageSandboxArg,
   validateContainerSandbox,
-  validateImageSandbox,
 } from "./container.js";
 export {
   firecrackerSandboxAdapter,
@@ -50,6 +45,7 @@ export {
   validateFirecrackerSandbox,
 } from "./firecracker.js";
 export { hostSandboxAdapter, parseHostSandboxArg, validateHostSandbox } from "./host.js";
+export { imageSandboxAdapter, parseImageSandboxArg, validateImageSandbox } from "./image.js";
 
 const sandboxAdapters = [
   hostSandboxAdapter,

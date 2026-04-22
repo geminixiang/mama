@@ -3,7 +3,6 @@ import type {
   ExecOptions,
   ExecResult,
   Executor,
-  ImageSandboxConfig,
   SandboxAdapter,
 } from "./types.js";
 import { SandboxError } from "./errors.js";
@@ -55,27 +54,6 @@ export async function validateContainerSandbox(config: ContainerSandboxConfig): 
   console.log(`  Container '${config.container}' is running.`);
 }
 
-export function parseImageSandboxArg(value: string): ImageSandboxConfig | undefined {
-  if (!value.startsWith("image:")) {
-    return undefined;
-  }
-
-  const image = value.slice("image:".length);
-  if (!image) {
-    throw new SandboxError("Error: image sandbox requires image name (e.g., image:ubuntu:24.04)");
-  }
-  return { type: "image", image };
-}
-
-export async function validateImageSandbox(config: ImageSandboxConfig): Promise<void> {
-  try {
-    await execSimple("docker", ["--version"]);
-  } catch {
-    throw new SandboxError("Error: Docker is not installed or not in PATH");
-  }
-  console.log(`  Image auto-provisioning enabled. Image: ${config.image}`);
-}
-
 export function buildContainerExecCommand(
   container: string,
   command: string,
@@ -124,15 +102,6 @@ export const containerSandboxAdapter: SandboxAdapter<ContainerSandboxConfig> = {
   validate: validateContainerSandbox,
   createExecutor: (config, env, ensureReady) =>
     new ContainerExecutor(config.container, env, ensureReady),
-};
-
-export const imageSandboxAdapter: SandboxAdapter<ImageSandboxConfig> = {
-  type: "image",
-  parse: parseImageSandboxArg,
-  validate: validateImageSandbox,
-  createExecutor: () => {
-    throw new SandboxError("Error: image sandbox must resolve to a concrete container executor");
-  },
 };
 
 async function ensureContainerRunning(container: string): Promise<void> {
