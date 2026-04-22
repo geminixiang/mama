@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -173,6 +173,35 @@ describe("FileVaultManager", () => {
     expect(readFileSync(join(vaultsDir, "U123", "env"), "utf-8")).toBe(
       "GITHUB_TOKEN=ghp_123\nOPENAI_API_KEY=sk-new\n",
     );
+  });
+
+  test("upsertEnv writes private directory and env file permissions", () => {
+    writeVaultJson({
+      vaults: { U123: { displayName: "Alice" } },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.upsertEnv("U123", { OPENAI_API_KEY: "sk-test" });
+
+    const vaultRootMode = statSync(vaultsDir).mode & 0o777;
+    const userVaultDirMode = statSync(join(vaultsDir, "U123")).mode & 0o777;
+    const envMode = statSync(join(vaultsDir, "U123", "env")).mode & 0o777;
+
+    // On POSIX, ensure no group/other permissions are granted.
+    expect(vaultRootMode & 0o077).toBe(0);
+    expect(userVaultDirMode & 0o077).toBe(0);
+    expect(envMode & 0o077).toBe(0);
+  });
+
+  test("addEntry writes vault.json with private permissions", () => {
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.addEntry("U123", { displayName: "Alice" });
+
+    const vaultRootMode = statSync(vaultsDir).mode & 0o777;
+    const configMode = statSync(join(vaultsDir, "vault.json")).mode & 0o777;
+
+    expect(vaultRootMode & 0o077).toBe(0);
+    expect(configMode & 0o077).toBe(0);
   });
 
   // ── getSandboxConfig ──────────────────────────────────────────────────────

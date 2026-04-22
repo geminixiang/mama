@@ -1,6 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { SandboxConfig } from "./sandbox.js";
+
+const PRIVATE_DIR_MODE = 0o700;
+const PRIVATE_FILE_MODE = 0o600;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -272,8 +275,13 @@ export class FileVaultManager implements VaultManager {
     if (this.config.vaults[key]) return;
     this.config.vaults[key] = entry;
     try {
-      mkdirSync(this.vaultsDir, { recursive: true });
-      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", "utf-8");
+      mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+      chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
+      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", {
+        encoding: "utf-8",
+        mode: PRIVATE_FILE_MODE,
+      });
+      chmodSync(this.configPath, PRIVATE_FILE_MODE);
     } catch (err) {
       console.error(`vault: failed to write ${this.configPath}:`, err);
     }
@@ -283,7 +291,10 @@ export class FileVaultManager implements VaultManager {
     const dir = join(this.vaultsDir, key);
     const envPath = join(dir, "env");
     try {
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
+      chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
+      mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
+      chmodSync(dir, PRIVATE_DIR_MODE);
       const existing = existsSync(envPath)
         ? parseEnvFile(readFileSync(envPath, "utf-8"))
         : ({} as Record<string, string>);
@@ -293,7 +304,8 @@ export class FileVaultManager implements VaultManager {
           .sort(([left], [right]) => left.localeCompare(right))
           .map(([envKey, value]) => `${envKey}=${value}`)
           .join("\n") + "\n";
-      writeFileSync(envPath, content, "utf-8");
+      writeFileSync(envPath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+      chmodSync(envPath, PRIVATE_FILE_MODE);
     } catch (err) {
       console.error(`vault: failed to write env file for "${key}":`, err);
     }
