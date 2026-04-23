@@ -29,7 +29,7 @@ function makeTelegramBot(overrides: Partial<TelegramBot> = {}): TelegramBot {
 function makeEvent(overrides: Partial<TelegramEvent> = {}): TelegramEvent {
   return {
     type: "message",
-    channel: "123456",
+    conversationId: "123456",
     ts: "1001",
     user: "U001",
     text: "hello",

@@ -15,7 +15,7 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
 } from "./session-store.js";
 import { downloadChannel } from "./download.js";
@@ -27,11 +27,12 @@ import { parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { formatNothingRunning, formatStopping } from "./ui-copy.js";
 import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
 import {
   createManagedVaultEntry,
-  ensureImageSandboxVault,
+  ensureSandboxVaultEntry,
   resolveActorVaultKey,
 } from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
@@ -209,12 +210,20 @@ try {
 
 const vaultManager = new FileVaultManager(stateDir);
 if (vaultManager.isEnabled()) {
-  console.log("  Vault system enabled. Per-user credential routing active.");
+  console.log(
+    sandbox.type === "container"
+      ? "  Vault system enabled. Shared container vault active."
+      : "  Vault system enabled. Per-user credential routing active.",
+  );
 }
 
 const bindingStore = new FileUserBindingStore(stateDir);
 if (bindingStore.isEnabled()) {
-  console.log("  Binding store enabled. Platform user → vault routing active.");
+  console.log(
+    sandbox.type === "container"
+      ? "  Binding store enabled. Shared container mode ignores per-user vault bindings."
+      : "  Binding store enabled. Platform user → vault routing active.",
+  );
 }
 
 const provisioner =
@@ -226,10 +235,10 @@ const linkTokenStore = new InMemoryLinkTokenStore();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
 
 // ============================================================================
-// State (per channel)
+// State (per conversation)
 // ============================================================================
 
-interface ChannelState {
+interface ConversationState {
   running: boolean;
   runner: AgentRunner;
   stopRequested: boolean;
@@ -239,7 +248,7 @@ interface ChannelState {
   lastActivityAt?: number;
 }
 
-const channelStates = new Map<string, ChannelState>();
+const conversationStates = new Map<string, ConversationState>();
 
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
@@ -281,9 +290,8 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
     platformUserId,
   );
 
-  if (sandbox.type === "image") {
-    ensureImageSandboxVault(sandbox, vaultManager, platform, platformUserId, vaultId);
-  } else {
+  ensureSandboxVaultEntry(sandbox, vaultManager, platform, platformUserId, vaultId);
+  if (sandbox.type !== "image" && sandbox.type !== "container") {
     vaultManager.addEntry(
       vaultId,
       createManagedVaultEntry(platform, platformUserId, vaultId, false),
@@ -293,18 +301,18 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
   return vaultId;
 }
 
-async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
-  const key = sessionKey ?? channelId;
-  let state = channelStates.get(key);
+async function getState(conversationId: string, sessionKey?: string): Promise<ConversationState> {
+  const key = sessionKey ?? conversationId;
+  let state = conversationStates.get(key);
   if (!state) {
-    const channelDir = join(workingDir, channelId);
+    const conversationDir = join(workingDir, conversationId);
     state = {
       running: false,
       runner: await createRunner(
         sandbox,
         key,
-        channelId,
-        channelDir,
+        conversationId,
+        conversationDir,
         workingDir,
         vaultManager,
         bindingStore,
@@ -314,7 +322,7 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
-    channelStates.set(key, state);
+    conversationStates.set(key, state);
   } else {
     state.lastAccessedAt = Date.now();
   }
@@ -322,21 +330,21 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
 }
 
 /**
- * Evict idle sessions from channelStates to bound memory usage.
+ * Evict idle sessions from conversationStates to bound memory usage.
  * Called after each handleEvent completes.
  */
 function evictIdleSessions(): void {
   const now = Date.now();
 
-  for (const [key, state] of channelStates) {
+  for (const [key, state] of conversationStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
-      channelStates.delete(key);
+      conversationStates.delete(key);
     }
   }
 
-  if (channelStates.size > MAX_SESSIONS) {
+  if (conversationStates.size > MAX_SESSIONS) {
     const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
-    for (const [key, state] of channelStates) {
+    for (const [key, state] of conversationStates) {
       if (!state.running) {
         idleSessions.push({ key, lastAccessedAt: state.lastAccessedAt });
       }
@@ -344,9 +352,9 @@ function evictIdleSessions(): void {
 
     idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
 
-    const toEvict = channelStates.size - MAX_SESSIONS;
+    const toEvict = conversationStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
-      channelStates.delete(idleSessions[i].key);
+      conversationStates.delete(idleSessions[i].key);
     }
   }
 }
@@ -357,13 +365,13 @@ function evictIdleSessions(): void {
 
 const handler: BotHandler = {
   isRunning(sessionKey: string): boolean {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     return !!state?.running;
   },
 
   getRunningSessions() {
     const sessions: import("./adapter.js").RunningSession[] = [];
-    for (const [sessionKey, state] of channelStates) {
+    for (const [sessionKey, state] of conversationStates) {
       if (state.running && state.startedAt) {
         // Get current step from runner
         const currentStep = state.runner.getCurrentStep();
@@ -378,20 +386,20 @@ const handler: BotHandler = {
     return sessions;
   },
 
-  async handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+  async handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
-      const ts = await bot.postMessage(channelId, "_Stopping..._");
+      const ts = await bot.postMessage(conversationId, formatStopping(bot));
       state.stopMessageTs = ts;
     } else {
-      await bot.postMessage(channelId, "_Nothing running_");
+      await bot.postMessage(conversationId, formatNothingRunning(bot));
     }
   },
 
   forceStop(sessionKey: string): void {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
       state.stopRequested = true;
@@ -400,59 +408,86 @@ const handler: BotHandler = {
     }
   },
 
-  async handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+  async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
     }
 
     // Channel sessions rotate via current pointer. Thread sessions reset in place.
-    const channelDir = join(workingDir, channelId);
+    const conversationDir = join(workingDir, conversationId);
     if (sessionKey.includes(":")) {
-      createManagedSessionFileAtPath(getThreadSessionFile(channelDir, sessionKey), channelDir);
+      createManagedSessionFileAtPath(
+        getThreadSessionFile(conversationDir, sessionKey),
+        conversationDir,
+      );
     } else {
-      createManagedSessionFile(getSessionDir(channelDir, sessionKey), channelDir);
+      createManagedSessionFile(getChannelSessionDir(conversationDir), conversationDir);
     }
 
     // Remove from in-memory cache
-    channelStates.delete(sessionKey);
+    conversationStates.delete(sessionKey);
 
-    log.logInfo(`[${channelId}] Session reset: ${sessionKey}`);
-    await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
+    log.logInfo(`[${conversationId}] Session reset: ${sessionKey}`);
+    await bot.postMessage(conversationId, "Conversation reset. Send a new message to start fresh.");
   },
 
   async handleLogin(
     platform: string,
     platformUserId: string,
-    channelId: string,
+    conversationId: string,
     bot: Bot,
     commandText: string,
+    isPrivateConversation: boolean,
   ): Promise<void> {
     const parsed = parseLoginCommand(commandText);
     if (!parsed) {
       return;
     }
 
+    if (!isPrivateConversation) {
+      await bot.postMessage(
+        conversationId,
+        "为了保护你的凭证，`/login` 只能在与机器人的私聊中使用。请先私信机器人，再重新执行 `/login`。",
+      );
+      return;
+    }
+
     const baseUrl = normalizeLoginBaseUrl();
     if (!baseUrl) {
       await bot.postMessage(
-        channelId,
+        conversationId,
         "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
       );
       return;
     }
 
-    const vaultId = ensureLoginVault(platform, platformUserId);
+    let vaultId: string;
+    try {
+      vaultId = ensureLoginVault(platform, platformUserId);
+    } catch (error) {
+      log.logWarning(
+        `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+        error instanceof Error ? error.message : String(error),
+      );
+      await bot.postMessage(
+        conversationId,
+        "Login setup failed on the server. 请稍后重试，或联系管理员检查 vault 存储权限。",
+      );
+      return;
+    }
+
     const loginLabel = "credential";
+    const vaultLabel = sandbox.type === "container" ? "the shared container vault" : "your vault";
     await bot.postMessage(
-      channelId,
-      `Open this link to store ${loginLabel} in your personal vault ` +
+      conversationId,
+      `Open this link to store ${loginLabel} in ${vaultLabel} ` +
         `(expires in 15 minutes):\n${baseUrl}/link?token=${
           linkTokenStore.create(
             platform as "slack" | "discord" | "telegram",
             platformUserId,
-            channelId,
+            conversationId,
             vaultId,
             "",
           ).token
@@ -469,13 +504,13 @@ const handler: BotHandler = {
     // Don't accept new events during shutdown
     if (isShuttingDown) {
       log.logInfo(
-        `[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
+        `[${event.conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
       );
       return;
     }
 
-    const sessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
-    const state = await getState(event.channel, sessionKey);
+    const sessionKey = event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`;
+    const state = await getState(event.conversationId, sessionKey);
 
     // Start run
     state.running = true;
@@ -483,21 +518,25 @@ const handler: BotHandler = {
     state.startedAt = Date.now();
     state.lastActivityAt = Date.now();
 
-    log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
+    log.logInfo(`[${event.conversationId}] Starting run: ${event.text.substring(0, 50)}`);
 
     // Wrap in-flight run tracking
     Sentry.metrics.count("agent.run.started", 1, {
-      attributes: { channel: event.channel },
+      attributes: { channel: event.conversationId },
     });
     Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size + 1);
 
     const runPromise = Sentry.startSpan(
-      { name: "agent.run", op: "agent", attributes: { channelId: event.channel, sessionKey } },
+      {
+        name: "agent.run",
+        op: "agent",
+        attributes: { channelId: event.conversationId, sessionKey },
+      },
       async () => {
         return Sentry.withScope(async (scope) => {
           const { message, responseCtx, platform } = adapters;
           applyRunScope(scope, {
-            conversationId: event.channel,
+            conversationId: event.conversationId,
             sessionKey,
             messageId: message.id,
             platform: platform.name,
@@ -507,7 +546,7 @@ const handler: BotHandler = {
             isEvent: _isEvent,
           });
           addLifecycleBreadcrumb("agent.run.started", {
-            channel_id: event.channel,
+            channel_id: event.conversationId,
             platform: platform.name,
             has_attachments: (message.attachments?.length ?? 0) > 0,
           });
@@ -522,20 +561,20 @@ const handler: BotHandler = {
             Sentry.metrics.distribution("agent.run.duration", durationMs, {
               unit: "millisecond",
               attributes: {
-                channel: event.channel,
+                channel: event.conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             Sentry.metrics.count("agent.run.completed", 1, {
               attributes: {
-                channel: event.channel,
+                channel: event.conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             addLifecycleBreadcrumb("agent.run.completed", {
-              channel_id: event.channel,
+              channel_id: event.conversationId,
               platform: platform.name,
               stop_reason: result.stopReason,
               duration_ms: durationMs,
@@ -543,15 +582,15 @@ const handler: BotHandler = {
 
             if (result.stopReason === "aborted" && state.stopRequested) {
               if (state.stopMessageTs) {
-                await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+                await bot.updateMessage(event.conversationId, state.stopMessageTs, "_Stopped_");
                 state.stopMessageTs = undefined;
               } else {
-                await bot.postMessage(event.channel, "_Stopped_");
+                await bot.postMessage(event.conversationId, "_Stopped_");
               }
             }
           } catch (err) {
             scope.setContext("agent_run_error", {
-              channelId: event.channel,
+              conversationId: event.conversationId,
               sessionKey,
               platform: adapters.platform.name,
               messageId: adapters.message.id,
@@ -559,10 +598,10 @@ const handler: BotHandler = {
             });
             Sentry.captureException(err);
             Sentry.metrics.count("agent.run.errors", 1, {
-              attributes: { channel: event.channel, platform: adapters.platform.name },
+              attributes: { channel: event.conversationId, platform: adapters.platform.name },
             });
             log.logWarning(
-              `[${event.channel}] Run error`,
+              `[${event.conversationId}] Run error`,
               err instanceof Error ? err.message : String(err),
             );
           } finally {
@@ -600,10 +639,15 @@ log.logStartup(workingDir, sandboxDesc);
 
 // Start link callback server if port is configured
 if (MOM_LINK_PORT) {
-  startLinkServer(MOM_LINK_PORT, linkTokenStore, vaultManager, async (platform, channelId, msg) => {
-    const bot = botsByPlatform[platform];
-    if (bot) await bot.postMessage(channelId, msg);
-  });
+  startLinkServer(
+    MOM_LINK_PORT,
+    linkTokenStore,
+    vaultManager,
+    async (platform, conversationId, msg) => {
+      const bot = botsByPlatform[platform];
+      if (bot) await bot.postMessage(conversationId, msg);
+    },
+  );
 }
 
 // Create platform bots

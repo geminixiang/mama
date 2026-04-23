@@ -4,6 +4,7 @@ import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
 
 // ============================================================================
@@ -26,6 +27,14 @@ interface MessageContext {
   threadTs: string | undefined;
   sessionKey: string;
 }
+
+const TELEGRAM_COMMANDS = [
+  { command: "start", description: "Show the welcome message" },
+  { command: "help", description: "Show help" },
+  { command: "stop", description: "Stop the current task" },
+  { command: "new", description: "Start a new conversation" },
+  { command: "login", description: "Open your secure login page" },
+] as const;
 
 // ============================================================================
 // Per-channel queue for sequential processing
@@ -94,13 +103,7 @@ export class TelegramBot implements Bot {
     this.botUsername = me.username ?? null;
     this.startupTime = Date.now();
 
-    await this.client.api.setMyCommands([
-      { command: "start", description: "Welcome message" },
-      { command: "help", description: "Show available commands" },
-      { command: "stop", description: "Stop ongoing conversation" },
-      { command: "new", description: "Reset conversation history and start fresh" },
-      { command: "login", description: "Open secure login page for your vault" },
-    ]);
+    await this.client.api.setMyCommands([...TELEGRAM_COMMANDS]);
 
     this.setupEventHandlers();
 
@@ -113,14 +116,14 @@ export class TelegramBot implements Bot {
     log.logInfo(`Telegram bot started as @${this.botUsername ?? this.botUserId}`);
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
-    const result = await this.postMessageRaw(parseInt(channel), text);
+  async postMessage(conversationId: string, text: string): Promise<string> {
+    const result = await this.postMessageRaw(parseInt(conversationId), text);
     return String(result);
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
     try {
-      await this.client.api.editMessageText(parseInt(channel), parseInt(ts), text, {
+      await this.client.api.editMessageText(parseInt(conversationId), parseInt(ts), text, {
         parse_mode: "HTML",
       });
     } catch (err) {
@@ -132,16 +135,21 @@ export class TelegramBot implements Bot {
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createTelegramAdapters(event as TelegramEvent, this, true);
+      const telegramEvent: TelegramEvent = {
+        ...event,
+        type: "message",
+        conversationId: event.conversationId,
+      };
+      const adapters = createTelegramAdapters(telegramEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -193,9 +201,9 @@ export class TelegramBot implements Bot {
   }
 
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channel);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   logBotResponse(channel: string, text: string, ts: string): void {
@@ -265,9 +273,9 @@ export class TelegramBot implements Bot {
       const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
       const filename = `${ts}_${sanitizedName}`;
       const localPath = `${chatId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, chatId, "attachments");
+      const attachmentsDir = join(this.workingDir, chatId, "attachments");
 
-      if (!existsSync(fullDir)) mkdirSync(fullDir, { recursive: true });
+      if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
 
       // Construct download URL
       const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
@@ -279,7 +287,7 @@ export class TelegramBot implements Bot {
       }
 
       const buffer = await response.arrayBuffer();
-      writeFileSync(join(fullDir, filename), Buffer.from(buffer));
+      writeFileSync(join(attachmentsDir, filename), Buffer.from(buffer));
 
       return {
         name: originalName,
@@ -351,9 +359,10 @@ export class TelegramBot implements Bot {
           "",
           "I'm an AI coding agent. Send me a message or use these commands:",
           "",
-          "/new — Reset conversation history and start fresh",
-          "/stop — Stop the current conversation",
-          "/help — Show available commands",
+          "/new — Start a new conversation",
+          "/stop — Stop the current task",
+          "/help — Show help",
+          "/login — Open your secure login page",
         ].join("\n"),
       );
     });
@@ -366,11 +375,11 @@ export class TelegramBot implements Bot {
         [
           "<b>Available commands:</b>",
           "",
-          "/start — Welcome message",
-          "/help — Show this help",
-          "/stop — Stop ongoing conversation",
-          "/new — Reset conversation history and start fresh",
-          "/login — Open secure login page for your vault",
+          "/start — Show the welcome message",
+          "/help — Show help",
+          "/stop — Stop the current task",
+          "/new — Start a new conversation",
+          "/login — Open your secure login page",
           "",
           "You can also send a regular message to chat with the agent.",
         ].join("\n"),
@@ -383,7 +392,7 @@ export class TelegramBot implements Bot {
       if (this.handler.isRunning(mc.sessionKey)) {
         await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
       } else {
-        await this.postMessage(mc.chatId, "Nothing running.");
+        await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
       }
     });
 
@@ -396,7 +405,14 @@ export class TelegramBot implements Bot {
     this.client.command("login", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, mc.text);
+      await this.handler.handleLogin(
+        "telegram",
+        mc.userId,
+        mc.chatId,
+        this,
+        mc.text,
+        mc.chatType === "private",
+      );
     });
 
     // --- Catch-all for regular (non-command) messages ---
@@ -411,7 +427,14 @@ export class TelegramBot implements Bot {
       const cleanedText = this.cleanText(mc.text);
 
       if (parseLoginCommand(cleanedText)) {
-        await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, cleanedText);
+        await this.handler.handleLogin(
+          "telegram",
+          mc.userId,
+          mc.chatId,
+          this,
+          cleanedText,
+          mc.chatType === "private",
+        );
         return;
       }
 
@@ -420,7 +443,7 @@ export class TelegramBot implements Bot {
 
       const event: TelegramEvent = {
         type: "message",
-        channel: mc.chatId,
+        conversationId: mc.chatId,
         ts: mc.msgId,
         thread_ts: mc.threadTs,
         sessionKey: mc.sessionKey,
@@ -446,13 +469,13 @@ export class TelegramBot implements Bot {
         if (this.handler.isRunning(mc.sessionKey)) {
           await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
         } else {
-          await this.postMessage(mc.chatId, "Nothing running.");
+          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
         }
         return;
       }
 
       if (this.handler.isRunning(mc.sessionKey)) {
-        await this.postMessage(mc.chatId, "Already working. Say <code>/stop</code> to cancel.");
+        await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));
       } else {
         this.getQueue(mc.sessionKey).enqueue(() => {
           const adapters = createTelegramAdapters(event, this, false);

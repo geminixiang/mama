@@ -8,7 +8,7 @@ import { SessionManager } from "@mariozechner/pi-coding-agent";
  * Channel sessions use a current pointer within this directory.
  * Thread sessions are stored as fixed files within the same directory.
  */
-export function getSessionDir(channelDir: string, _sessionKey: string): string {
+export function getChannelSessionDir(channelDir: string): string {
   return join(channelDir, "sessions");
 }
 
@@ -122,13 +122,6 @@ function writeSessionHeader(sessionFile: string, cwd: string, sessionId = random
 }
 
 /**
- * Returns the channel-level session directory: {channelDir}/sessions/
- */
-export function getChannelSessionDir(channelDir: string): string {
-  return join(channelDir, "sessions");
-}
-
-/**
  * Returns the fixed session file path for a Slack thread.
  */
 export function getThreadSessionFile(channelDir: string, sessionKey: string): string {
@@ -167,8 +160,14 @@ function getCurrentSessionPath(sessionDir: string): string | null {
  * Returns null if no current pointer exists or the pointed file has no valid session header.
  */
 export function tryResolveCurrentSession(sessionDir: string): string | null {
-  const fullPath = getCurrentSessionPath(sessionDir);
-  if (fullPath && existsSync(fullPath) && hasSessionHeader(fullPath)) return fullPath;
+  const currentSessionPath = getCurrentSessionPath(sessionDir);
+  if (
+    currentSessionPath &&
+    existsSync(currentSessionPath) &&
+    hasSessionHeader(currentSessionPath)
+  ) {
+    return currentSessionPath;
+  }
   return null;
 }
 
