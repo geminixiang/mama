@@ -6,6 +6,7 @@ import {
   convertToLlm,
   DefaultResourceLoader,
   formatSkillsForPrompt,
+  getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
   SessionManager,
@@ -499,7 +500,7 @@ export async function createRunner(
   // Create AuthStorage and ModelRegistry
   // Auth stored outside workspace so agent can't access it
   const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
-  const modelRegistry = new ModelRegistry(authStorage);
+  const modelRegistry = ModelRegistry.create(authStorage);
 
   // Create agent
   const agent = new Agent({
@@ -524,7 +525,7 @@ export async function createRunner(
   // Load existing messages
   const loadedSession = sessionManager.buildSessionContext();
   if (loadedSession.messages.length > 0) {
-    agent.replaceMessages(loadedSession.messages);
+    agent.state.messages = loadedSession.messages;
     log.logInfo(
       `[${channelId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
     );
@@ -535,6 +536,7 @@ export async function createRunner(
   // and discovers resources from standard locations + npm/git packages.
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspaceDir,
+    agentDir: getAgentDir(),
     systemPrompt,
   });
   try {
@@ -865,7 +867,7 @@ export async function createRunner(
       // This picks up any messages synced above
       const reloadedSession = sessionManager.buildSessionContext();
       if (reloadedSession.messages.length > 0) {
-        agent.replaceMessages(reloadedSession.messages);
+        agent.state.messages = reloadedSession.messages;
         log.logInfo(
           `[${channelId}] Reloaded ${reloadedSession.messages.length} messages from context`,
         );
@@ -882,7 +884,7 @@ export async function createRunner(
         platform,
         skills,
       );
-      session.agent.setSystemPrompt(systemPrompt);
+      session.agent.state.systemPrompt = systemPrompt;
 
       // Set up file upload function
       setUploadFunction(async (filePath: string, title?: string) => {
