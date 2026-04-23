@@ -123,7 +123,9 @@ describe("FileVaultManager", () => {
     expect(vault).toBeDefined();
     expect(vault!.userId).toBe("U123");
     expect(vault!.displayName).toBe("Alice");
-    expect(vault!.mounts).toEqual([join(vaultsDir, "U123", ".ssh")]);
+    expect(vault!.mounts).toEqual([
+      { source: join(vaultsDir, "U123", ".ssh"), target: "/root/.ssh" },
+    ]);
     expect(vault!.env).toEqual({ GITHUB_TOKEN: "ghp_abc" });
   });
 
@@ -195,6 +197,69 @@ describe("FileVaultManager", () => {
     expect(vaultRootMode & 0o077).toBe(0);
     expect(userVaultDirMode & 0o077).toBe(0);
     expect(envMode & 0o077).toBe(0);
+  });
+
+  test("upsertFile writes private credential files and adds mounts", () => {
+    writeVaultJson({
+      vaults: { U123: { displayName: "Alice" } },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.upsertFile(
+      "U123",
+      "gws.json",
+      '{\n  "type": "authorized_user"\n}\n',
+      "/root/.config/gws/credentials.json",
+    );
+
+    const credentialPath = join(vaultsDir, "U123", "gws.json");
+    const credentialMode = statSync(credentialPath).mode & 0o777;
+
+    expect(readFileSync(credentialPath, "utf-8")).toBe('{\n  "type": "authorized_user"\n}\n');
+    expect(credentialMode & 0o077).toBe(0);
+    expect(mgr.resolve("U123")?.mounts).toEqual([
+      { source: credentialPath, target: "/root/.config/gws/credentials.json" },
+    ]);
+    expect(JSON.parse(readFileSync(join(vaultsDir, "vault.json"), "utf-8"))).toEqual({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          mounts: [
+            {
+              source: "gws.json",
+              target: "/root/.config/gws/credentials.json",
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  test("upsertFile preserves env values written separately for file-based credentials", () => {
+    writeVaultJson({
+      vaults: { U123: { displayName: "Alice" } },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.upsertFile(
+      "U123",
+      ".vault-secrets/gws/credentials.json",
+      "{}\n",
+      "/root/.config/gws/credentials.json",
+    );
+    mgr.upsertEnv("U123", {
+      GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: "/root/.config/gws/credentials.json",
+    });
+
+    expect(mgr.resolve("U123")?.env).toEqual({
+      GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE: "/root/.config/gws/credentials.json",
+    });
+    expect(mgr.resolve("U123")?.mounts).toEqual([
+      {
+        source: join(vaultsDir, "U123", ".vault-secrets", "gws", "credentials.json"),
+        target: "/root/.config/gws/credentials.json",
+      },
+    ]);
   });
 
   test("addEntry writes vault.json with private permissions", () => {
@@ -711,6 +776,7 @@ describe("ActorExecutionResolver", () => {
         },
       },
     });
+    mkdirSync(join(vaultsDir, "U123", ".ssh"), { recursive: true });
     const mgr = new FileVaultManager(tmpDir);
     const provision = vi.fn().mockResolvedValue("alice-box");
     const exec = vi
@@ -729,6 +795,104 @@ describe("ActorExecutionResolver", () => {
     expect(provision).toHaveBeenCalledWith("U123", {
       containerName: "alice-box",
       mounts: [{ source: join(vaultsDir, "U123", ".ssh"), target: "/root/.ssh" }],
+    });
+    expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
+  });
+
+  test("image mode mounts vault files to their matching root paths", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          mounts: [
+            {
+              source: ".vault-secrets/gws/credentials.json",
+              target: "/root/.config/gws/credentials.json",
+            },
+          ],
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+    mkdirSync(join(vaultsDir, "U123", ".vault-secrets", "gws"), { recursive: true });
+    writeFileSync(
+      join(vaultsDir, "U123", ".vault-secrets", "gws", "credentials.json"),
+      '{ "type": "authorized_user" }\n',
+    );
+
+    const mgr = new FileVaultManager(tmpDir);
+    const provision = vi.fn().mockResolvedValue("alice-box");
+    const exec = vi
+      .spyOn(HostExecutor.prototype, "exec")
+      .mockResolvedValue({ stdout: "", stderr: "", code: 0 });
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      undefined,
+      { provision } as any,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+    await executor.exec("pwd");
+
+    expect(provision).toHaveBeenCalledWith("U123", {
+      containerName: "alice-box",
+      mounts: [
+        {
+          source: join(vaultsDir, "U123", ".vault-secrets", "gws", "credentials.json"),
+          target: "/root/.config/gws/credentials.json",
+        },
+      ],
+    });
+    expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
+  });
+
+  test("image mode deduplicates mount targets and ignores missing legacy files", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: {
+          displayName: "Alice",
+          mounts: [
+            ".config/gws/credentials.json",
+            {
+              source: ".vault-secrets/gws/credentials.json",
+              target: "/root/.config/gws/credentials.json",
+            },
+            {
+              source: "gws.json",
+              target: "/root/.config/gws/credentials.json",
+            },
+          ],
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+    mkdirSync(join(vaultsDir, "U123"), { recursive: true });
+    writeFileSync(join(vaultsDir, "U123", "gws.json"), '{ "type": "authorized_user" }\n');
+
+    const mgr = new FileVaultManager(tmpDir);
+    const provision = vi.fn().mockResolvedValue("alice-box");
+    const exec = vi
+      .spyOn(HostExecutor.prototype, "exec")
+      .mockResolvedValue({ stdout: "", stderr: "", code: 0 });
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      undefined,
+      { provision } as any,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+    await executor.exec("pwd");
+
+    expect(provision).toHaveBeenCalledWith("U123", {
+      containerName: "alice-box",
+      mounts: [
+        {
+          source: join(vaultsDir, "U123", "gws.json"),
+          target: "/root/.config/gws/credentials.json",
+        },
+      ],
     });
     expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
   });

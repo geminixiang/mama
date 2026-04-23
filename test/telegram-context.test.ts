@@ -117,6 +117,41 @@ describe("respond() — non-threaded", () => {
     await responseCtx.respond("hello");
     expect(bot.logBotResponse).toHaveBeenCalledWith("123456", "hello", "2001");
   });
+
+  test("escapes unsupported html-like tags before sending", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond("error: unsupported start tag <command> in output");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      "error: unsupported start tag &lt;command&gt; in output",
+    );
+  });
+
+  test("escapes angle-bracket email senders while preserving supported tags", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond("<b>寄件者</b> Cloudflare &lt;noreply@notify.cloudflare.com&gt;");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      "<b>寄件者</b> Cloudflare &lt;noreply@notify.cloudflare.com&gt;",
+    );
+  });
+
+  test("preserves supported Telegram HTML tags", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond(
+      '<b>bold</b> <code>x</code> <a href="https://example.com?a=1&b=2">link</a>',
+    );
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      '<b>bold</b> <code>x</code> <a href="https://example.com?a=1&amp;b=2">link</a>',
+    );
+  });
 });
 
 describe("respond() — threaded (reply to parent message)", () => {

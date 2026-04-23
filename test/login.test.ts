@@ -12,7 +12,14 @@ describe("login command parsing", () => {
   test("resolveOAuthService returns known services and aliases", () => {
     expect(resolveOAuthService("github")?.id).toBe("github");
     expect(resolveOAuthService("github_oauth")?.id).toBe("github");
+    expect(resolveOAuthService("gws")?.id).toBe("google_workspace_cli");
     expect(getOAuthServices().some((s) => s.id === "github")).toBe(true);
+    expect(getOAuthServices().some((s) => s.id === "google_workspace_cli")).toBe(true);
     expect(resolveOAuthService("github")?.additionalAccessTokenEnvKeys).toContain("GH_TOKEN");
+    expect(resolveOAuthService("google_workspace_cli")?.fileOutput).toEqual({
+      type: "authorized_user",
+      relativePath: "gws.json",
+      targetPath: "/root/.config/gws/credentials.json",
+    });
   });
 });

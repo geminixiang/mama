@@ -184,7 +184,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 
 1. Message [@BotFather](https://t.me/BotFather) → `/newbot` to create a bot and get the **Bot Token**.
 2. Optionally disable privacy mode (`/setprivacy → Disable`) so the bot can read group messages without being `@mentioned`.
-3. For GitHub OAuth login setup, see [docs/github-oauth-setup.md](docs/github-oauth-setup.md).
+3. For OAuth login setup, see [docs/oauth/github.md](docs/oauth/github.md) and [docs/oauth/google-workspace.md](docs/oauth/google-workspace.md).
 
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
@@ -340,10 +340,24 @@ mama --sandbox=container:mama-sandbox /path/to/workspace
 ## Managed Per-User Container Sandbox
 
 ```bash
-mama --sandbox=image:ubuntu:24.04 /path/to/workspace
+# Build the bundled sandbox image once
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+
+# Then use it for per-user managed containers
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 ```
 
 In this mode mama creates one container per platform user, mounts the workspace at `/workspace`, injects that user's vault environment variables into tool execution, and stops idle containers after the configured idle window. Containers are labeled for management (`mama.managed=true`, `mama.sandbox=image`, `mama.vault-id=<id>`), and mama reconciles managed containers on startup/restart (including legacy `mama-sandbox-*` containers).
+
+The bundled image at `docker/mama-sandbox.Dockerfile` starts from `ubuntu:24.04` and installs:
+
+- `gh`
+- `nvm` with Node.js and npm
+- `uv`
+- `gcloud`, `gsutil`, `bq`
+- `gws` via `npm install -g @googleworkspace/cli`
+
+The image symlinks those tools into `/usr/local/bin` so they remain available when mama executes commands with `sh -c` inside the sandbox container.
 
 ## Firecracker Sandbox
 

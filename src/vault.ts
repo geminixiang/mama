@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { dirname, isAbsolute, join, normalize, sep } from "path";
 import type { SandboxConfig } from "./sandbox.js";
 
 const PRIVATE_DIR_MODE = 0o700;
@@ -18,12 +18,18 @@ export interface VaultConfig {
   systemActor?: string;
 }
 
+/** Per-user vault mount entry in vault.json */
+export interface VaultMountEntry {
+  source: string;
+  target?: string;
+}
+
 /** Per-user vault entry in vault.json */
 export interface VaultEntry {
   displayName: string;
   platform?: "slack" | "discord" | "telegram";
   /** Subdirs/files in vault dir to mount into sandbox (e.g. [".gcloud", ".ssh", ".kube"]) */
-  mounts?: string[];
+  mounts?: Array<string | VaultMountEntry>;
   /** Whether to load env file as environment variables (default: true if env file exists) */
   envFile?: boolean;
   /** Per-user sandbox config override */
@@ -37,14 +43,19 @@ export interface VaultEntry {
   };
 }
 
+export interface ResolvedVaultMount {
+  source: string;
+  target: string;
+}
+
 /** Resolved vault ready for use at runtime */
 export interface ResolvedVault {
   userId: string;
   displayName: string;
   /** Absolute path to vault directory */
   dir: string;
-  /** Absolute paths to mount sources */
-  mounts: string[];
+  /** Absolute mount specs */
+  mounts: ResolvedVaultMount[];
   /** Parsed from env file */
   env: Record<string, string>;
   sandboxOverride?: VaultEntry["sandbox"];
@@ -79,6 +90,8 @@ export interface VaultManager {
   ensureImageSandboxEntry(key: string, entry: VaultEntry): void;
   /** Merge environment variables into vaults/<key>/env and persist them to disk. */
   upsertEnv(key: string, env: Record<string, string>): void;
+  /** Write a private file into vaults/<key>/ and ensure it is mounted into the sandbox. */
+  upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void;
 }
 
 // ── parseEnvFile ───────────────────────────────────────────────────────────────
@@ -340,10 +353,8 @@ export class FileVaultManager implements VaultManager {
     const dir = join(this.vaultsDir, key);
     const envPath = join(dir, "env");
     try {
-      mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-      chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
-      mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-      chmodSync(dir, PRIVATE_DIR_MODE);
+      ensurePrivateDir(this.vaultsDir);
+      ensurePrivateDir(dir);
       const existing = existsSync(envPath)
         ? parseEnvFile(readFileSync(envPath, "utf-8"))
         : ({} as Record<string, string>);
@@ -360,11 +371,34 @@ export class FileVaultManager implements VaultManager {
     }
   }
 
+  upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void {
+    const normalizedPath = normalizeVaultRelativePath(relativePath);
+    const normalizedTarget = normalizeVaultTargetPath(targetPath);
+    if (!normalizedPath || (targetPath !== undefined && !normalizedTarget)) {
+      console.error(`vault: invalid relative secret file path for "${key}": ${relativePath}`);
+      return;
+    }
+
+    const dir = join(this.vaultsDir, key);
+    const filePath = join(dir, normalizedPath);
+
+    try {
+      ensurePrivateDir(this.vaultsDir);
+      ensurePrivateDir(dir);
+      const parentDir = dirname(filePath);
+      if (parentDir !== dir) ensurePrivateDir(parentDir);
+      writeFileSync(filePath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+      chmodSync(filePath, PRIVATE_FILE_MODE);
+      this.ensureMountEntry(key, normalizedPath, normalizedTarget);
+    } catch (err) {
+      console.error(`vault: failed to write secret file "${normalizedPath}" for "${key}":`, err);
+    }
+  }
+
   // ── private ────────────────────────────────────────────────────────────────
 
   private persistConfig(): void {
-    mkdirSync(this.vaultsDir, { recursive: true, mode: PRIVATE_DIR_MODE });
-    chmodSync(this.vaultsDir, PRIVATE_DIR_MODE);
+    ensurePrivateDir(this.vaultsDir);
     writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", {
       encoding: "utf-8",
       mode: PRIVATE_FILE_MODE,
@@ -372,10 +406,37 @@ export class FileVaultManager implements VaultManager {
     chmodSync(this.configPath, PRIVATE_FILE_MODE);
   }
 
+  private ensureMountEntry(key: string, relativePath: string, targetPath?: string): void {
+    if (!this.config?.vaults[key]) {
+      console.error(`vault: cannot add mount "${relativePath}" for missing entry "${key}"`);
+      return;
+    }
+
+    const existing = this.config.vaults[key];
+    const mounts = existing.mounts ?? [];
+    if (
+      mounts.some((mount) =>
+        typeof mount === "string"
+          ? mount === relativePath && !targetPath
+          : mount.source === relativePath && mount.target === targetPath,
+      )
+    ) {
+      return;
+    }
+
+    this.config.vaults[key] = {
+      ...existing,
+      mounts: [...mounts, targetPath ? { source: relativePath, target: targetPath } : relativePath],
+    };
+    this.persistConfig();
+  }
+
   private buildResolved(userId: string, vaultKey: string, entry: VaultEntry): ResolvedVault {
     const dir = join(this.vaultsDir, vaultKey);
 
-    const mounts = (entry.mounts ?? []).map((m) => join(dir, m));
+    const mounts = (entry.mounts ?? [])
+      .map((mount) => this.resolveMountEntry(dir, mount))
+      .filter((mount): mount is ResolvedVaultMount => mount !== undefined);
 
     let env: Record<string, string> = {};
     const envPath = join(dir, "env");
@@ -396,4 +457,62 @@ export class FileVaultManager implements VaultManager {
       sandboxOverride: entry.sandbox,
     };
   }
+
+  private resolveMountEntry(
+    dir: string,
+    mount: string | VaultMountEntry,
+  ): ResolvedVaultMount | undefined {
+    if (typeof mount === "string") {
+      const normalizedSource = normalizeVaultRelativePath(mount);
+      if (!normalizedSource) return undefined;
+      return {
+        source: join(dir, normalizedSource),
+        target: defaultVaultTargetPath(normalizedSource),
+      };
+    }
+
+    if (!mount || typeof mount !== "object") return undefined;
+    const normalizedSource = normalizeVaultRelativePath(mount.source);
+    if (!normalizedSource) return undefined;
+    const normalizedTarget = normalizeVaultTargetPath(mount.target);
+    return {
+      source: join(dir, normalizedSource),
+      target: normalizedTarget ?? defaultVaultTargetPath(normalizedSource),
+    };
+  }
+}
+
+function ensurePrivateDir(path: string): void {
+  mkdirSync(path, { recursive: true, mode: PRIVATE_DIR_MODE });
+  chmodSync(path, PRIVATE_DIR_MODE);
+}
+
+function normalizeVaultRelativePath(relativePath: string): string | undefined {
+  const trimmed = relativePath.trim();
+  if (!trimmed || isAbsolute(trimmed)) return undefined;
+
+  const normalized = normalize(trimmed).split(sep).join("/");
+  if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../")) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeVaultTargetPath(targetPath?: string): string | undefined {
+  if (targetPath === undefined) {
+    return undefined;
+  }
+
+  const trimmed = targetPath.trim();
+  if (!trimmed || !trimmed.startsWith("/")) {
+    return undefined;
+  }
+
+  const normalized = normalize(trimmed).split(sep).join("/");
+  return normalized.startsWith("/") ? normalized : undefined;
+}
+
+export function defaultVaultTargetPath(relativePath: string): string {
+  const normalized = normalizeVaultRelativePath(relativePath) ?? relativePath.replace(/^\/+/, "");
+  return `/root/${normalized}`;
 }

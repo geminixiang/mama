@@ -9,7 +9,7 @@ import {
   type OAuthService,
 } from "./login.js";
 import * as log from "./log.js";
-import type { VaultManager } from "./vault.js";
+import { defaultVaultTargetPath, type VaultManager } from "./vault.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -535,6 +535,9 @@ async function handleOAuthStart(
   if (service.scopes.length > 0) {
     authorizeUrl.searchParams.set("scope", service.scopes.join(" "));
   }
+  for (const [key, value] of Object.entries(service.authorizationParams ?? {})) {
+    authorizeUrl.searchParams.set(key, value);
+  }
 
   const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url");
   authorizeUrl.searchParams.set("code_challenge", codeChallenge);
@@ -625,9 +628,10 @@ async function handleOAuthCallback(
     return;
   }
 
-  const updates: Record<string, string> = {
-    [service.accessTokenEnvKey]: accessToken,
-  };
+  const updates: Record<string, string> = {};
+  if (service.accessTokenEnvKey) {
+    updates[service.accessTokenEnvKey] = accessToken;
+  }
   for (const key of service.additionalAccessTokenEnvKeys ?? []) {
     updates[key] = accessToken;
   }
@@ -635,17 +639,49 @@ async function handleOAuthCallback(
     updates[service.refreshTokenEnvKey] = refreshToken;
   }
 
-  vaultManager.upsertEnv(linkToken.vaultId, updates);
+  const fileOutput = service.fileOutput;
+  let mountedPath: string | undefined;
+  if (fileOutput?.type === "authorized_user") {
+    if (!refreshToken) {
+      res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(
+        renderErrorPage(
+          "OAuth token exchange did not return a refresh_token. " +
+            "Retry after revoking prior consent or ensure prompt=consent is applied.",
+        ),
+      );
+      return;
+    }
 
-  const storedKeys = Object.keys(updates).sort();
+    mountedPath = fileOutput.targetPath ?? defaultVaultTargetPath(fileOutput.relativePath);
+    if (fileOutput.envKey) {
+      updates[fileOutput.envKey] = mountedPath;
+    }
+  }
+
+  const storedTargets: string[] = [];
+  if (Object.keys(updates).length > 0) {
+    vaultManager.upsertEnv(linkToken.vaultId, updates);
+    storedTargets.push(...Object.keys(updates).sort());
+  }
+  if (fileOutput?.type === "authorized_user" && refreshToken) {
+    vaultManager.upsertFile(
+      linkToken.vaultId,
+      fileOutput.relativePath,
+      renderAuthorizedUserCredential(clientId, clientSecret, refreshToken),
+      fileOutput.targetPath,
+    );
+    if (mountedPath) storedTargets.push(mountedPath);
+  }
+
   log.logInfo(
-    `Stored [${storedKeys.join(", ")}] for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
+    `Stored [${storedTargets.join(", ")}] for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
   );
 
   notify(
     linkToken.platform,
     linkToken.channelId,
-    `${service.label} OAuth stored (${storedKeys.join(", ")}) in vault \`${linkToken.vaultId}\`.`,
+    `${service.label} OAuth stored (${storedTargets.join(", ")}) in vault \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
     log.logWarning("Failed to notify user after OAuth login", err.message);
   });
@@ -696,4 +732,23 @@ async function exchangeOAuthCode(
   }
 
   return parsed;
+}
+
+function renderAuthorizedUserCredential(
+  clientId: string,
+  clientSecret: string,
+  refreshToken: string,
+): string {
+  return (
+    JSON.stringify(
+      {
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        type: "authorized_user",
+      },
+      null,
+      2,
+    ) + "\n"
+  );
 }

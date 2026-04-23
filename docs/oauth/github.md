@@ -51,7 +51,8 @@ export MOM_TELEGRAM_BOT_TOKEN="<your-telegram-bot-token>"
 Start or restart mama:
 
 ```bash
-mama --sandbox=image:ubuntu:24.04 /path/to/workspace
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 ```
 
 Then in Telegram run:

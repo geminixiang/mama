@@ -1,4 +1,4 @@
-import { relative, sep } from "path";
+import { existsSync } from "fs";
 import type { UserBindingStore } from "./bindings.js";
 import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
@@ -100,18 +100,14 @@ export class ActorExecutionResolver {
   }
 
   private resolveMounts(vault: ResolvedVault): ContainerMount[] {
-    return vault.mounts
-      .map((source) => {
-        const relativePath = relative(vault.dir, source);
-        if (!relativePath || relativePath.startsWith("..") || relativePath.startsWith(sep)) {
-          return undefined;
-        }
-        return {
-          source,
-          target: `/root/${relativePath.split(sep).join("/")}`,
-        };
-      })
-      .filter((mount): mount is ContainerMount => mount !== undefined);
+    // Last-write-wins by target so stale legacy entries don't fail container
+    // startup with duplicate bind mounts pointing at the same path.
+    const mountsByTarget = new Map<string, ContainerMount>();
+    for (const mount of vault.mounts) {
+      if (!existsSync(mount.source)) continue;
+      mountsByTarget.set(mount.target, { source: mount.source, target: mount.target });
+    }
+    return [...mountsByTarget.values()];
   }
 
   private applySandboxOverride(vault: ResolvedVault, baseConfig: SandboxConfig): SandboxConfig {
