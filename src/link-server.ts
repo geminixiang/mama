@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { resolveLinkBaseUrl } from "./config.js";
 import type { InMemoryLinkTokenStore } from "./link-token.js";
 import {
   getOAuthServices,
@@ -147,6 +148,13 @@ export function startLinkServer(
 
   server.listen(port, () => {
     log.logInfo(`Link callback server listening on port ${port}`);
+    if (!resolveLinkBaseUrl()) {
+      log.logWarning(
+        "MOM_LINK_URL is not set. OAuth redirect_uri will be derived from " +
+          "request headers (Host / X-Forwarded-*), which is insecure in production. " +
+          "Set MOM_LINK_URL=https://your-host.example.com",
+      );
+    }
   });
 
   server.on("error", (err) => {
@@ -154,7 +162,18 @@ export function startLinkServer(
   });
 }
 
+/**
+ * Resolve the externally-visible base URL of this server.
+ *
+ * Prefers MOM_LINK_URL (see config.ts) so the OAuth `redirect_uri` is
+ * deterministic and not influenced by attacker-controlled request headers.
+ * Falls back to Host / X-Forwarded-* only when no base URL is configured
+ * — intended for local development.
+ */
 function requestBaseUrl(req: IncomingMessage): string {
+  const configured = resolveLinkBaseUrl();
+  if (configured) return configured;
+
   const protoRaw = (req.headers["x-forwarded-proto"] as string | undefined)?.split(",")[0]?.trim();
   const proto = protoRaw || "http";
   const host =
@@ -415,7 +434,9 @@ async function handleLinkComplete(
     return;
   }
 
-  const linkToken = linkTokenStore.peek(data.token);
+  // Atomic consume prevents two concurrent requests from both passing the
+  // validity check before either deletes the token.
+  const linkToken = linkTokenStore.consume(data.token);
   if (!linkToken) {
     res.writeHead(400, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Invalid or expired token" }));
@@ -423,7 +444,6 @@ async function handleLinkComplete(
   }
 
   vaultManager.upsertEnv(linkToken.vaultId, { [envKey]: credential });
-  linkTokenStore.consume(data.token);
 
   log.logInfo(
     `Stored ${envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
@@ -537,15 +557,19 @@ async function handleOAuthCallback(
   const code = url.searchParams.get("code") ?? "";
   const error = url.searchParams.get("error");
 
+  // Atomic pop: whatever path we take from here, this state is spent.
+  // Done before any `await` to close the TOCTOU window between the state
+  // lookup and the final delete.
+  const pending = oauthStates.get(state);
+  if (pending) oauthStates.delete(state);
+
   if (error) {
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderErrorPage(`OAuth authorization failed: ${error}`));
     return;
   }
 
-  const pending = oauthStates.get(state);
   if (!pending || Date.now() > pending.expiresAt) {
-    oauthStates.delete(state);
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderErrorPage("OAuth state is invalid or expired. Please run /login again."));
     return;
@@ -572,9 +596,11 @@ async function handleOAuthCallback(
     return;
   }
 
-  const linkToken = linkTokenStore.peek(pending.linkToken);
+  // Atomic consume: pairs with the callback being one-shot. Two concurrent
+  // callbacks for the same state would previously both pass `peek` and both
+  // run `exchangeOAuthCode` across the await; only one reaches `consume`.
+  const linkToken = linkTokenStore.consume(pending.linkToken);
   if (!linkToken) {
-    oauthStates.delete(state);
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderErrorPage("Login link is invalid or expired. Please run /login again."));
     return;
@@ -610,8 +636,6 @@ async function handleOAuthCallback(
   }
 
   vaultManager.upsertEnv(linkToken.vaultId, updates);
-  linkTokenStore.consume(pending.linkToken);
-  oauthStates.delete(state);
 
   const storedKeys = Object.keys(updates).sort();
   log.logInfo(

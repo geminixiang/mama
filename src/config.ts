@@ -88,6 +88,23 @@ export function resolveSentryDsn(stateDir: string): string | undefined {
 }
 
 /**
+ * Externally-visible base URL of the link/OAuth server, e.g.
+ * `https://mama.example.com` (no trailing slash). Read from `MOM_LINK_URL`,
+ * the same env var the bot uses to build `/link?token=...` invitations.
+ *
+ * Used by the link server to build OAuth `redirect_uri` values that must
+ * match the registered callback URL at the identity provider. When unset,
+ * the link server falls back to deriving the base from request headers
+ * (Host / X-Forwarded-*), which is insecure in production because those
+ * headers are client-controlled.
+ */
+export function resolveLinkBaseUrl(): string | undefined {
+  const raw = process.env.MOM_LINK_URL?.trim();
+  if (!raw) return undefined;
+  return raw.replace(/\/+$/, "");
+}
+
+/**
  * Resolve Sentry DSN from settings.json, checking both the new stateDir location
  * (default: ~/.mama/settings.json) and the legacy workspace location for backwards compatibility.
  * Returns undefined if not found in either location.
