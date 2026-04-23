@@ -218,13 +218,16 @@ export class FileVaultManager implements VaultManager {
 
     if (override.type === "firecracker") {
       if (!override.vmId) return baseConfig;
-      // Firecracker requires a hostPath — inherit from base if it's also firecracker,
-      // otherwise fall back to the vault directory itself
-      const hostPath = baseConfig.type === "firecracker" ? baseConfig.hostPath : vault.dir;
+      if (baseConfig.type !== "firecracker") {
+        throw new Error(
+          `vault "${userId}" sets sandbox.type=firecracker, but base sandbox is "${baseConfig.type}". ` +
+            "Use --sandbox=firecracker:<vm-id>:<host-path> so /workspace stays mapped to the real workspace.",
+        );
+      }
       return {
         type: "firecracker",
         vmId: override.vmId,
-        hostPath,
+        hostPath: baseConfig.hostPath,
         sshUser: override.sshUser,
         sshPort: override.sshPort,
       };
@@ -319,47 +322,38 @@ export class FileVaultManager implements VaultManager {
   upsertEnv(key: string, env: Record<string, string>): void {
     const dir = join(this.vaultsDir, key);
     const envPath = join(dir, "env");
-    try {
-      ensurePrivateDir(this.vaultsDir);
-      ensurePrivateDir(dir);
-      const existing = existsSync(envPath)
-        ? parseEnvFile(readFileSync(envPath, "utf-8"))
-        : ({} as Record<string, string>);
-      const merged = { ...existing, ...env };
-      const content =
-        Object.entries(merged)
-          .sort(([left], [right]) => left.localeCompare(right))
-          .map(([envKey, value]) => `${envKey}=${value}`)
-          .join("\n") + "\n";
-      writeFileSync(envPath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-      chmodSync(envPath, PRIVATE_FILE_MODE);
-    } catch (err) {
-      console.error(`vault: failed to write env file for "${key}":`, err);
-    }
+    ensurePrivateDir(this.vaultsDir);
+    ensurePrivateDir(dir);
+    const existing = existsSync(envPath)
+      ? parseEnvFile(readFileSync(envPath, "utf-8"))
+      : ({} as Record<string, string>);
+    const merged = { ...existing, ...env };
+    const content =
+      Object.entries(merged)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([envKey, value]) => `${envKey}=${value}`)
+        .join("\n") + "\n";
+    writeFileSync(envPath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+    chmodSync(envPath, PRIVATE_FILE_MODE);
   }
 
   upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void {
     const normalizedPath = normalizeVaultRelativePath(relativePath);
     const normalizedTarget = normalizeVaultTargetPath(targetPath);
     if (!normalizedPath || (targetPath !== undefined && !normalizedTarget)) {
-      console.error(`vault: invalid relative secret file path for "${key}": ${relativePath}`);
-      return;
+      throw new Error(`vault: invalid relative secret file path for "${key}": ${relativePath}`);
     }
 
     const dir = join(this.vaultsDir, key);
     const filePath = join(dir, normalizedPath);
 
-    try {
-      ensurePrivateDir(this.vaultsDir);
-      ensurePrivateDir(dir);
-      const parentDir = dirname(filePath);
-      if (parentDir !== dir) ensurePrivateDir(parentDir);
-      writeFileSync(filePath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-      chmodSync(filePath, PRIVATE_FILE_MODE);
-      this.ensureMountEntry(key, normalizedPath, normalizedTarget);
-    } catch (err) {
-      console.error(`vault: failed to write secret file "${normalizedPath}" for "${key}":`, err);
-    }
+    ensurePrivateDir(this.vaultsDir);
+    ensurePrivateDir(dir);
+    const parentDir = dirname(filePath);
+    if (parentDir !== dir) ensurePrivateDir(parentDir);
+    writeFileSync(filePath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
+    chmodSync(filePath, PRIVATE_FILE_MODE);
+    this.ensureMountEntry(key, normalizedPath, normalizedTarget);
   }
 
   // ── private ────────────────────────────────────────────────────────────────
@@ -375,8 +369,7 @@ export class FileVaultManager implements VaultManager {
 
   private ensureMountEntry(key: string, relativePath: string, targetPath?: string): void {
     if (!this.config?.vaults[key]) {
-      console.error(`vault: cannot add mount "${relativePath}" for missing entry "${key}"`);
-      return;
+      throw new Error(`vault: cannot add mount "${relativePath}" for missing entry "${key}"`);
     }
 
     const existing = this.config.vaults[key];

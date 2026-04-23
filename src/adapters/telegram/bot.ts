@@ -405,7 +405,14 @@ export class TelegramBot implements Bot {
     this.client.command("login", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, mc.text);
+      await this.handler.handleLogin(
+        "telegram",
+        mc.userId,
+        mc.chatId,
+        this,
+        mc.text,
+        mc.chatType === "private",
+      );
     });
 
     // --- Catch-all for regular (non-command) messages ---
@@ -420,7 +427,14 @@ export class TelegramBot implements Bot {
       const cleanedText = this.cleanText(mc.text);
 
       if (parseLoginCommand(cleanedText)) {
-        await this.handler.handleLogin("telegram", mc.userId, mc.chatId, this, cleanedText);
+        await this.handler.handleLogin(
+          "telegram",
+          mc.userId,
+          mc.chatId,
+          this,
+          cleanedText,
+          mc.chatType === "private",
+        );
         return;
       }
 

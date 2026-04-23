@@ -405,7 +405,7 @@ export class DiscordBot implements Bot {
 
       // Handle login command
       if (parseLoginCommand(cleanedText)) {
-        await this.handler.handleLogin("discord", userId, channelId, this, cleanedText);
+        await this.handler.handleLogin("discord", userId, channelId, this, cleanedText, isDM);
         return;
       }
 

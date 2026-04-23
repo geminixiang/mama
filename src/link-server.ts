@@ -668,7 +668,22 @@ async function handleLinkComplete(
     return;
   }
 
-  vaultManager.upsertEnv(linkToken.vaultId, { [envKey]: credential });
+  try {
+    vaultManager.upsertEnv(linkToken.vaultId, { [envKey]: credential });
+  } catch (error) {
+    log.logWarning(
+      `Failed to persist ${envKey} for ${linkToken.platform}/${linkToken.platformUserId}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        error:
+          "Failed to store credential on server. Please fix the server issue and run /login again.",
+      }),
+    );
+    return;
+  }
 
   log.logInfo(
     `Stored ${envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
@@ -885,18 +900,32 @@ async function handleOAuthCallback(
   }
 
   const storedTargets: string[] = [];
-  if (Object.keys(updates).length > 0) {
-    vaultManager.upsertEnv(linkToken.vaultId, updates);
-    storedTargets.push(...Object.keys(updates).sort());
-  }
-  if (fileOutput?.type === "authorized_user" && refreshToken) {
-    vaultManager.upsertFile(
-      linkToken.vaultId,
-      fileOutput.relativePath,
-      renderAuthorizedUserCredential(clientId, clientSecret, refreshToken),
-      fileOutput.targetPath,
+  try {
+    if (Object.keys(updates).length > 0) {
+      vaultManager.upsertEnv(linkToken.vaultId, updates);
+      storedTargets.push(...Object.keys(updates).sort());
+    }
+    if (fileOutput?.type === "authorized_user" && refreshToken) {
+      vaultManager.upsertFile(
+        linkToken.vaultId,
+        fileOutput.relativePath,
+        renderAuthorizedUserCredential(clientId, clientSecret, refreshToken),
+        fileOutput.targetPath,
+      );
+      if (mountedPath) storedTargets.push(mountedPath);
+    }
+  } catch (error) {
+    log.logWarning(
+      `Failed to persist OAuth credentials for ${linkToken.platform}/${linkToken.platformUserId}`,
+      error instanceof Error ? error.message : String(error),
     );
-    if (mountedPath) storedTargets.push(mountedPath);
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(
+      renderErrorPage(
+        "OAuth tokens were received but could not be stored on the server. Fix the server issue and run /login again.",
+      ),
+    );
+    return;
   }
 
   log.logInfo(

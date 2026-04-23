@@ -104,6 +104,7 @@ export interface BotHandler {
     conversationId: string,
     bot: Bot,
     commandText: string,
+    isPrivateConversation: boolean,
   ): Promise<void>;
 }
 

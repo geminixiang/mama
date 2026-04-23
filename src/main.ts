@@ -432,9 +432,18 @@ const handler: BotHandler = {
     conversationId: string,
     bot: Bot,
     commandText: string,
+    isPrivateConversation: boolean,
   ): Promise<void> {
     const parsed = parseLoginCommand(commandText);
     if (!parsed) {
+      return;
+    }
+
+    if (!isPrivateConversation) {
+      await bot.postMessage(
+        conversationId,
+        "为了保护你的凭证，`/login` 只能在与机器人的私聊中使用。请先私信机器人，再重新执行 `/login`。",
+      );
       return;
     }
 
@@ -447,7 +456,21 @@ const handler: BotHandler = {
       return;
     }
 
-    const vaultId = ensureLoginVault(platform, platformUserId);
+    let vaultId: string;
+    try {
+      vaultId = ensureLoginVault(platform, platformUserId);
+    } catch (error) {
+      log.logWarning(
+        `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+        error instanceof Error ? error.message : String(error),
+      );
+      await bot.postMessage(
+        conversationId,
+        "Login setup failed on the server. 请稍后重试，或联系管理员检查 vault 存储权限。",
+      );
+      return;
+    }
+
     const loginLabel = "credential";
     await bot.postMessage(
       conversationId,

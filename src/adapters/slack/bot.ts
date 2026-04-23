@@ -665,7 +665,7 @@ export class SlackBot implements Bot {
 
       // Check for login command
       if (parseLoginCommand(slackEvent.text)) {
-        this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
+        void this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text, false);
         ack();
         return;
       }
@@ -776,7 +776,7 @@ export class SlackBot implements Bot {
 
         // Check for login command
         if (parseLoginCommand(slackEvent.text)) {
-          this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
+          void this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text, true);
           ack();
           return;
         }

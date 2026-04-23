@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import type {
   ExecOptions,
   ExecResult,
@@ -6,8 +7,8 @@ import type {
   SandboxAdapter,
 } from "./types.js";
 import { SandboxError } from "./errors.js";
-import { execSimple, shellEscape } from "./utils.js";
 import { HostExecutor } from "./host.js";
+import { execSimple, killProcessTree, shellEscape } from "./utils.js";
 
 export function parseFirecrackerSandboxArg(value: string): FirecrackerSandboxConfig | undefined {
   if (!value.startsWith("firecracker:")) {
@@ -98,21 +99,106 @@ export class FirecrackerExecutor implements Executor {
   ) {}
 
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
-    const envPrefix = this.env
-      ? Object.entries(this.env)
-          .map(([k, v]) => `${k}=${shellEscape(v)}`)
-          .join(" ") + " "
-      : "";
-    const wrappedCommand = `${envPrefix}${command}`;
+    if (!this.env || Object.keys(this.env).length === 0) {
+      const sshCmd =
+        this.sshPort === 22
+          ? `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${this.sshUser}@${this.vmId} sh -c ${shellEscape(command)}`
+          : `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${this.sshPort} ${this.sshUser}@${this.vmId} sh -c ${shellEscape(command)}`;
+      const hostExecutor = new HostExecutor();
+      return hostExecutor.exec(sshCmd, options);
+    }
 
-    // Use direct SSH to execute command in the Firecracker VM.
-    // The workspace inside the VM is expected to be mounted at /workspace.
-    const sshCmd =
-      this.sshPort === 22
-        ? `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 ${this.sshUser}@${this.vmId} sh -c ${shellEscape(wrappedCommand)}`
-        : `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p ${this.sshPort} ${this.sshUser}@${this.vmId} sh -c ${shellEscape(wrappedCommand)}`;
-    const hostExecutor = new HostExecutor();
-    return hostExecutor.exec(sshCmd, options);
+    return new Promise((resolve, reject) => {
+      const sshArgs = ["-o", "StrictHostKeyChecking=no", "-o", "ConnectTimeout=10"];
+      if (this.sshPort !== 22) {
+        sshArgs.push("-p", String(this.sshPort));
+      }
+      sshArgs.push(`${this.sshUser}@${this.vmId}`, "sh", "-se");
+
+      const child = spawn("ssh", sshArgs, {
+        detached: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+
+      let stdout = "";
+      let stderr = "";
+      let timedOut = false;
+      let settled = false;
+
+      const timeoutHandle =
+        options?.timeout && options.timeout > 0
+          ? setTimeout(() => {
+              timedOut = true;
+              if (child.pid) killProcessTree(child.pid);
+            }, options.timeout * 1000)
+          : undefined;
+
+      const onAbort = () => {
+        if (child.pid) killProcessTree(child.pid);
+      };
+
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          onAbort();
+        } else {
+          options.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
+      child.on("error", (error) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (options?.signal) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+        reject(error);
+      });
+
+      child.stdout?.on("data", (data) => {
+        stdout += data.toString();
+        if (stdout.length > 10 * 1024 * 1024) {
+          stdout = stdout.slice(0, 10 * 1024 * 1024);
+        }
+      });
+
+      child.stderr?.on("data", (data) => {
+        stderr += data.toString();
+        if (stderr.length > 10 * 1024 * 1024) {
+          stderr = stderr.slice(0, 10 * 1024 * 1024);
+        }
+      });
+
+      child.stdin?.on("error", (error) => {
+        stderr += `${error.message}\n`;
+      });
+      child.stdin?.end(buildRemoteScript(command, this.env));
+
+      child.on("close", (code) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (options?.signal) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+
+        if (options?.signal?.aborted) {
+          reject(new Error(`${stdout}\n${stderr}\nCommand aborted`.trim()));
+          return;
+        }
+
+        if (timedOut) {
+          reject(
+            new Error(
+              `${stdout}\n${stderr}\nCommand timed out after ${options?.timeout} seconds`.trim(),
+            ),
+          );
+          return;
+        }
+
+        resolve({ stdout, stderr, code: code ?? 0 });
+      });
+    });
   }
 
   getWorkspacePath(_hostPath: string): string {
@@ -128,6 +214,20 @@ export class FirecrackerExecutor implements Executor {
       sshPort: this.sshPort,
     };
   }
+}
+
+function buildRemoteScript(command: string, env?: Record<string, string>): string {
+  const exports = env
+    ? Object.entries(env)
+        .map(([key, value]) => {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+            throw new SandboxError(`Invalid environment variable name for firecracker: ${key}`);
+          }
+          return `export ${key}=${shellEscape(value)}`;
+        })
+        .join("\n") + "\n"
+    : "";
+  return `${exports}${command}\n`;
 }
 
 export const firecrackerSandboxAdapter: SandboxAdapter<FirecrackerSandboxConfig> = {

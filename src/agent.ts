@@ -6,6 +6,7 @@ import {
   convertToLlm,
   DefaultResourceLoader,
   formatSkillsForPrompt,
+  getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
   SessionManager,
@@ -577,6 +578,7 @@ export async function createRunner(
   // and discovers resources from standard locations + npm/git packages.
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspaceDir,
+    agentDir: getAgentDir(),
     systemPrompt,
   });
   try {
