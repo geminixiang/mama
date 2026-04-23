@@ -120,7 +120,7 @@ async function notifyError(
   const errMsg = err instanceof Error ? err.message : String(err);
   log.logWarning(`Telegram ${label} error`, errMsg);
   try {
-    await bot.postPlainMessage(chatId, `⚠️ 發送失敗：${errMsg}`);
+    await bot.postPlainMessage(chatId, `Delivery failed: ${errMsg}`);
   } catch {
     // ignore secondary failure
   }

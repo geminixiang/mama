@@ -8,6 +8,12 @@ import type { EventsWatcher } from "../../events.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
+import {
+  PRODUCT_NAME,
+  formatAlreadyWorking,
+  formatForceStopped,
+  formatNothingRunning,
+} from "../../ui-copy.js";
 import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
@@ -408,12 +414,12 @@ export class SlackBot implements Bot {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*Pi Agent*\nWelcome back! Start a new task or check on running work.",
+          text: `*${PRODUCT_NAME}*\nStart a new task or check on running work.`,
         },
         accessory: {
           type: "image",
           image_url: "https://media1.tenor.com/m/lfDATg4Bhc0AAAAC/happy-cat.gif",
-          alt_text: "Pi Agent",
+          alt_text: PRODUCT_NAME,
         },
       },
     ];
@@ -517,6 +523,12 @@ export class SlackBot implements Bot {
         elements: [{ type: "mrkdwn", text: "_No scheduled jobs._" }],
       });
     } else {
+      const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
       for (const ev of periodicEvents) {
         const channelLabel =
           ev.platform === "slack"
@@ -526,14 +538,7 @@ export class SlackBot implements Bot {
                 return `${ev.platform}:${channelName}`;
               })()
             : `${ev.platform}:${ev.channelId}`;
-        const nextStr = ev.nextRun
-          ? new Date(ev.nextRun).toLocaleString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "—";
+        const nextStr = ev.nextRun ? timestampFormatter.format(new Date(ev.nextRun)) : "—";
         blocks.push({
           type: "section",
           text: {
@@ -627,7 +632,7 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
         ack();
         return;
@@ -644,7 +649,7 @@ export class SlackBot implements Bot {
       if (this.handler.isRunning(sessionKey)) {
         this.postMessage(
           e.channel,
-          "_Already working in this thread. Say `@mama stop` to cancel._",
+          formatAlreadyWorking("slack", "@mama stop", { scope: "thread" }),
         );
       } else {
         this.getQueue(sessionKey).enqueue(() => {
@@ -729,7 +734,7 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
         ack();
         return;
@@ -743,7 +748,7 @@ export class SlackBot implements Bot {
           if (this.handler.isRunning(dmSessionKey)) {
             this.handler.handleStop(dmSessionKey, e.channel, this); // Don't await, don't queue
           } else {
-            this.postMessage(e.channel, "_Nothing running_");
+            this.postMessage(e.channel, formatNothingRunning("slack"));
           }
           ack();
           return;
@@ -757,7 +762,7 @@ export class SlackBot implements Bot {
         }
 
         if (this.handler.isRunning(dmSessionKey)) {
-          this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
+          this.postMessage(e.channel, formatAlreadyWorking("slack", "stop"));
         } else {
           this.getQueue(dmSessionKey).enqueue(() => {
             const adapters = createSlackAdapters(slackEvent, this, false);
@@ -809,7 +814,8 @@ export class SlackBot implements Bot {
       this.handler.forceStop(sessionKey);
 
       // Notify in channel
-      await this.postMessage(channelId, `_🔴 Force stopped by ${userId}_`);
+      const actorLabel = userId ? `<@${userId}>` : "someone";
+      await this.postMessage(channelId, formatForceStopped("slack", actorLabel));
 
       // Refresh home tab
       if (userId) {

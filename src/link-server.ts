@@ -9,6 +9,7 @@ import {
   type OAuthService,
 } from "./login.js";
 import * as log from "./log.js";
+import { PRODUCT_NAME } from "./ui-copy.js";
 import { defaultVaultTargetPath, type VaultManager } from "./vault.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -218,6 +219,258 @@ function esc(s: string): string {
   );
 }
 
+const sharedPageStyles = `
+  :root {
+    color-scheme: light;
+    --bg: #f5f1e8;
+    --panel: rgba(255, 255, 255, 0.9);
+    --panel-border: rgba(28, 30, 33, 0.08);
+    --text: #1c1e21;
+    --muted: #5d5f64;
+    --button: #1c1e21;
+    --button-hover: #2c3035;
+    --button-disabled: #8f949b;
+    --field-border: #c9cfd6;
+    --field-focus: #1c1e21;
+    --ok-bg: #dff4e4;
+    --ok-text: #1f5b34;
+    --err-bg: #fde2e2;
+    --err-text: #8a2f2f;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    padding: 32px 20px;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at top, rgba(255, 255, 255, 0.7), transparent 45%),
+      linear-gradient(180deg, #faf7f0 0%, var(--bg) 100%);
+    color: var(--text);
+    font-family:
+      "SF Pro Text",
+      "Segoe UI",
+      system-ui,
+      sans-serif;
+  }
+
+  .shell {
+    width: min(100%, 560px);
+  }
+
+  .card {
+    padding: 28px;
+    border: 1px solid var(--panel-border);
+    border-radius: 20px;
+    background: var(--panel);
+    box-shadow: 0 18px 48px rgba(28, 30, 33, 0.08);
+    backdrop-filter: blur(8px);
+  }
+
+  .eyebrow {
+    margin: 0 0 10px;
+    color: var(--muted);
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  h1 {
+    margin: 0 0 10px;
+    font-size: clamp(1.5rem, 2vw, 1.8rem);
+    line-height: 1.15;
+    text-wrap: balance;
+  }
+
+  p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 0.98rem;
+    line-height: 1.5;
+  }
+
+  .stack > * + * {
+    margin-top: 14px;
+  }
+
+  .form {
+    margin-top: 24px;
+  }
+
+  .form > * + * {
+    margin-top: 18px;
+  }
+
+  label {
+    display: block;
+    margin-bottom: 6px;
+    font-size: 0.92rem;
+    font-weight: 650;
+  }
+
+  input,
+  select,
+  button {
+    font: inherit;
+  }
+
+  input,
+  select {
+    width: 100%;
+    padding: 12px 14px;
+    border: 1px solid var(--field-border);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text);
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  button:focus-visible {
+    outline: 2px solid var(--field-focus);
+    outline-offset: 2px;
+  }
+
+  button {
+    width: 100%;
+    margin-top: 24px;
+    padding: 13px 18px;
+    border: none;
+    border-radius: 12px;
+    background: var(--button);
+    color: #fff;
+    cursor: pointer;
+    transition: background-color 160ms ease;
+  }
+
+  button:hover {
+    background: var(--button-hover);
+  }
+
+  button:disabled {
+    background: var(--button-disabled);
+    cursor: default;
+  }
+
+  .mode {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 22px;
+  }
+
+  .mode label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--field-border);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.85);
+    font-weight: 500;
+  }
+
+  .mode input {
+    width: auto;
+    margin: 0;
+  }
+
+  .panel {
+    display: none;
+  }
+
+  .panel.active {
+    display: block;
+  }
+
+  .panel-note {
+    margin-top: 10px;
+    font-size: 0.92rem;
+  }
+
+  .result,
+  .status {
+    margin-top: 20px;
+    padding: 14px 16px;
+    border-radius: 14px;
+    font-size: 0.95rem;
+  }
+
+  .result {
+    display: none;
+  }
+
+  .result.ok,
+  .status.ok {
+    background: var(--ok-bg);
+    color: var(--ok-text);
+  }
+
+  .result.err,
+  .status.err {
+    background: var(--err-bg);
+    color: var(--err-text);
+  }
+
+  .close-note {
+    margin-top: 14px;
+    font-size: 0.92rem;
+  }
+
+  @media (max-width: 640px) {
+    body {
+      padding: 20px 14px;
+    }
+
+    .card {
+      padding: 22px;
+      border-radius: 16px;
+    }
+  }
+`;
+
+function renderPageDocument(title: string, body: string): string {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${esc(title)} — ${PRODUCT_NAME}</title>
+  <style>${sharedPageStyles}</style>
+</head>
+<body>
+  <main class="shell">
+    <section class="card">
+      ${body}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderStatusPage(
+  title: string,
+  message: string,
+  tone: "ok" | "err",
+  options?: { closeNote?: boolean },
+): string {
+  const closeNote = options?.closeNote ? '<p class="close-note">You can close this tab.</p>' : "";
+  return renderPageDocument(
+    title,
+    `<div class="stack">
+      <p class="eyebrow">${PRODUCT_NAME}</p>
+      <h1>${esc(title)}</h1>
+      <div class="status ${tone}">${esc(message)}</div>
+      ${closeNote}
+    </div>`,
+  );
+}
+
 function renderCredentialPage(
   token: string,
   title: string,
@@ -236,32 +489,10 @@ function renderCredentialPage(
     })
     .join("\n");
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Login — mama</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 520px; margin: 80px auto; padding: 0 20px; color: #1a1a1a; text-align: center; }
-    h1 { font-size: 1.4rem; margin-bottom: 8px; }
-    p { color: #555; font-size: 0.95rem; }
-    label { display: block; margin-top: 20px; margin-bottom: 6px; text-align: left; font-weight: 600; font-size: 0.9rem; }
-    input, select { width: 100%; box-sizing: border-box; padding: 12px; font-size: 1rem; border: 1px solid #ccc; border-radius: 8px; }
-    button { margin-top: 24px; padding: 12px 32px; font-size: 1rem; background: #1a1a1a; color: #fff; border: none; border-radius: 8px; cursor: pointer; }
-    button:hover { background: #333; }
-    button:disabled { background: #999; cursor: default; }
-    #result { margin-top: 20px; padding: 12px; border-radius: 6px; display: none; }
-    #result.ok { background: #d3f9d8; color: #1a4d2e; }
-    #result.err { background: #ffc9c9; color: #5c1a1a; }
-    .mode { margin-top: 20px; text-align: left; }
-    .mode label { display: inline-flex; align-items: center; margin-right: 18px; font-weight: 500; }
-    .mode input { width: auto; margin-right: 6px; }
-    .panel { display: none; }
-    .panel.active { display: block; }
-  </style>
-</head>
-<body>
+  return renderPageDocument(
+    "Login",
+    `<div class="stack">
+  <p class="eyebrow">${PRODUCT_NAME}</p>
   <h1>${esc(title)}</h1>
   <p>Your personal sandbox is already provisioned automatically.</p>
   <p>${esc(helpText)}</p>
@@ -270,21 +501,23 @@ function renderCredentialPage(
     <label><input type="radio" name="mode" value="oauth" ${defaultMode === "oauth" ? "checked" : ""}> OAuth login</label>
   </div>
 
+  <div class="form">
   <div id="api-panel" class="panel">
     <label for="envKey">Environment key</label>
-    <input id="envKey" type="text" placeholder="OPENAI_API_KEY" value="${esc(initialEnvKey)}" autocomplete="off">
+    <input id="envKey" type="text" name="envKey" placeholder="OPENAI_API_KEY" value="${esc(initialEnvKey)}" autocomplete="off">
     <label for="credential">${esc(secretLabel)}</label>
-    <input id="credential" type="password" placeholder="${esc(placeholder)}" autocomplete="off">
+    <input id="credential" type="password" name="credential" placeholder="${esc(placeholder)}" autocomplete="off">
   </div>
 
   <div id="oauth-panel" class="panel">
     <label for="oauthService">OAuth service</label>
-    <select id="oauthService">${oauthOptions}</select>
-    <p style="text-align:left;margin-top:10px">You'll be redirected to the selected service's authorization page.</p>
+    <select id="oauthService" name="oauthService">${oauthOptions}</select>
+    <p class="panel-note">You'll be redirected to the selected service's authorization page.</p>
   </div>
 
   <button id="btn" onclick="connect()">Continue</button>
-  <div id="result"></div>
+  <div id="result" class="result" aria-live="polite"></div>
+  </div>
   <script>
     const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -295,7 +528,7 @@ function renderCredentialPage(
     function showResult(message, ok) {
       const result = document.getElementById('result');
       result.style.display = 'block';
-      result.className = ok ? 'ok' : 'err';
+      result.className = ok ? 'result ok' : 'result err';
       result.textContent = message;
     }
 
@@ -375,24 +608,16 @@ function renderCredentialPage(
       }
     }
   </script>
-</body>
-</html>`;
+</div>`,
+  );
 }
 
 function renderErrorPage(message: string): string {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<title>Link Error — mama</title>
-<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1a1a1a}
-.box{background:#ffc9c9;color:#5c1a1a;padding:16px;border-radius:8px}</style>
-</head><body><div class="box">${esc(message)}</div></body></html>`;
+  return renderStatusPage("Login Error", message, "err");
 }
 
 function renderSuccessPage(message: string): string {
-  return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
-<title>Linked — mama</title>
-<style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 20px;color:#1a1a1a}
-.box{background:#d3f9d8;color:#1a4d2e;padding:16px;border-radius:8px}</style>
-</head><body><div class="box">${esc(message)} You can close this tab.</div></body></html>`;
+  return renderStatusPage("Connected", message, "ok", { closeNote: true });
 }
 
 // ── API-key completion ────────────────────────────────────────────────────────

@@ -17,6 +17,7 @@ import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -388,7 +389,7 @@ export class DiscordBot implements Bot {
         if (this.handler.isRunning(sessionKey)) {
           this.handler.handleStop(sessionKey, channelId, this);
         } else {
-          await this.postMessage(channelId, "_Nothing running_");
+          await this.postMessage(channelId, formatNothingRunning("discord"));
         }
         return;
       }
@@ -400,7 +401,7 @@ export class DiscordBot implements Bot {
       }
 
       if (this.handler.isRunning(sessionKey)) {
-        await this.postMessage(channelId, "_Already working. Say `stop` to cancel._");
+        await this.postMessage(channelId, formatAlreadyWorking("discord", "stop"));
       } else {
         this.getQueue(sessionKey).enqueue(() => {
           const adapters = createDiscordAdapters(event, this, false);

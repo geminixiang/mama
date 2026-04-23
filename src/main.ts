@@ -27,6 +27,7 @@ import { parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { formatNothingRunning, formatStopping } from "./ui-copy.js";
 import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
 import {
@@ -383,10 +384,10 @@ const handler: BotHandler = {
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
-      const ts = await bot.postMessage(channelId, "_Stopping..._");
+      const ts = await bot.postMessage(channelId, formatStopping(bot));
       state.stopMessageTs = ts;
     } else {
-      await bot.postMessage(channelId, "_Nothing running_");
+      await bot.postMessage(channelId, formatNothingRunning(bot));
     }
   },
 

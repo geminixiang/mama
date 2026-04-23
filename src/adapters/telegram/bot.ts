@@ -4,6 +4,7 @@ import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
 
 // ============================================================================
@@ -26,6 +27,14 @@ interface MessageContext {
   threadTs: string | undefined;
   sessionKey: string;
 }
+
+const TELEGRAM_COMMANDS = [
+  { command: "start", description: "Show the welcome message" },
+  { command: "help", description: "Show help" },
+  { command: "stop", description: "Stop the current task" },
+  { command: "new", description: "Start a new conversation" },
+  { command: "login", description: "Open your secure login page" },
+] as const;
 
 // ============================================================================
 // Per-channel queue for sequential processing
@@ -94,13 +103,7 @@ export class TelegramBot implements Bot {
     this.botUsername = me.username ?? null;
     this.startupTime = Date.now();
 
-    await this.client.api.setMyCommands([
-      { command: "start", description: "Welcome message" },
-      { command: "help", description: "Show available commands" },
-      { command: "stop", description: "Stop ongoing conversation" },
-      { command: "new", description: "Reset conversation history and start fresh" },
-      { command: "login", description: "Open secure login page for your vault" },
-    ]);
+    await this.client.api.setMyCommands([...TELEGRAM_COMMANDS]);
 
     this.setupEventHandlers();
 
@@ -351,9 +354,10 @@ export class TelegramBot implements Bot {
           "",
           "I'm an AI coding agent. Send me a message or use these commands:",
           "",
-          "/new — Reset conversation history and start fresh",
-          "/stop — Stop the current conversation",
-          "/help — Show available commands",
+          "/new — Start a new conversation",
+          "/stop — Stop the current task",
+          "/help — Show help",
+          "/login — Open your secure login page",
         ].join("\n"),
       );
     });
@@ -366,11 +370,11 @@ export class TelegramBot implements Bot {
         [
           "<b>Available commands:</b>",
           "",
-          "/start — Welcome message",
-          "/help — Show this help",
-          "/stop — Stop ongoing conversation",
-          "/new — Reset conversation history and start fresh",
-          "/login — Open secure login page for your vault",
+          "/start — Show the welcome message",
+          "/help — Show help",
+          "/stop — Stop the current task",
+          "/new — Start a new conversation",
+          "/login — Open your secure login page",
           "",
           "You can also send a regular message to chat with the agent.",
         ].join("\n"),
@@ -383,7 +387,7 @@ export class TelegramBot implements Bot {
       if (this.handler.isRunning(mc.sessionKey)) {
         await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
       } else {
-        await this.postMessage(mc.chatId, "Nothing running.");
+        await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
       }
     });
 
@@ -446,13 +450,13 @@ export class TelegramBot implements Bot {
         if (this.handler.isRunning(mc.sessionKey)) {
           await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
         } else {
-          await this.postMessage(mc.chatId, "Nothing running.");
+          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
         }
         return;
       }
 
       if (this.handler.isRunning(mc.sessionKey)) {
-        await this.postMessage(mc.chatId, "Already working. Say <code>/stop</code> to cancel.");
+        await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));
       } else {
         this.getQueue(mc.sessionKey).enqueue(() => {
           const adapters = createTelegramAdapters(event, this, false);
