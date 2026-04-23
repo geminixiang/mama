@@ -335,9 +335,9 @@ export class SlackBot implements Bot {
    * This is the ONLY place messages are written to log.jsonl
    */
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channel);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   /**

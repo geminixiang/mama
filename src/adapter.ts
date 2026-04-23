@@ -92,16 +92,16 @@ export interface BotHandler {
   isRunning(sessionKey: string): boolean;
   getRunningSessions(): RunningSession[];
   handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
-  handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
   /** Force stop a running session (bypass normal stop mechanism) */
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
-  handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
   /** Handle credential onboarding for a user login command. */
   handleLogin(
     platform: string,
     platformUserId: string,
-    channelId: string,
+    conversationId: string,
     bot: Bot,
     commandText: string,
   ): Promise<void>;

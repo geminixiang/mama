@@ -196,9 +196,9 @@ export class TelegramBot implements Bot {
   }
 
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channel);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   logBotResponse(channel: string, text: string, ts: string): void {
@@ -268,9 +268,9 @@ export class TelegramBot implements Bot {
       const sanitizedName = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
       const filename = `${ts}_${sanitizedName}`;
       const localPath = `${chatId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, chatId, "attachments");
+      const attachmentsDir = join(this.workingDir, chatId, "attachments");
 
-      if (!existsSync(fullDir)) mkdirSync(fullDir, { recursive: true });
+      if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
 
       // Construct download URL
       const downloadUrl = `https://api.telegram.org/file/bot${this.botToken}/${file.file_path}`;
@@ -282,7 +282,7 @@ export class TelegramBot implements Bot {
       }
 
       const buffer = await response.arrayBuffer();
-      writeFileSync(join(fullDir, filename), Buffer.from(buffer));
+      writeFileSync(join(attachmentsDir, filename), Buffer.from(buffer));
 
       return {
         name: originalName,

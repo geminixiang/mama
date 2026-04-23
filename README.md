@@ -310,9 +310,9 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
     ├── scratch/           # Agent working directory
     ├── skills/            # Channel-specific skills
     └── sessions/
-        ├── current                      # Pointer for the channel-level session
+        ├── current                      # Pointer for the current channel session file
         ├── 2026-04-05T18-04-31-010Z_1d92b3ad.jsonl
-        └── <thread-ts>.jsonl            # Fixed-path thread session
+        └── <thread-ts>.jsonl            # Fixed-path thread session file
 ```
 
 Operator-managed state lives outside the workspace:

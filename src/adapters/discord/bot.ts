@@ -212,9 +212,9 @@ export class DiscordBot implements Bot {
   }
 
   logToFile(channelId: string, entry: object): void {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channelId);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   logBotResponse(channelId: string, text: string, ts: string): void {
@@ -252,7 +252,7 @@ export class DiscordBot implements Bot {
       const sanitizedName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const filename = `${ts}_${sanitizedName}`;
       const localPath = `${channelId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, channelId, "attachments");
+      const attachmentsDir = join(this.workingDir, channelId, "attachments");
 
       result.push({
         name: attachment.name,
@@ -260,7 +260,7 @@ export class DiscordBot implements Bot {
       });
 
       // Download in background (fire and forget)
-      this.downloadAttachment(fullDir, filename, attachment.url).catch((err) => {
+      this.downloadAttachment(attachmentsDir, filename, attachment.url).catch((err) => {
         log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
       });
     }
@@ -271,8 +271,12 @@ export class DiscordBot implements Bot {
   /**
    * Download an attachment from URL to local file
    */
-  private async downloadAttachment(dir: string, filename: string, url: string): Promise<void> {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  private async downloadAttachment(
+    attachmentsDir: string,
+    filename: string,
+    url: string,
+  ): Promise<void> {
+    if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
 
     try {
       const response = await fetch(url);
@@ -281,7 +285,7 @@ export class DiscordBot implements Bot {
       }
 
       const buffer = await response.arrayBuffer();
-      writeFileSync(join(dir, filename), Buffer.from(buffer));
+      writeFileSync(join(attachmentsDir, filename), Buffer.from(buffer));
     } catch (err) {
       throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
     }
