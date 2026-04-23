@@ -69,6 +69,12 @@ describe("session key derivation", () => {
     expect(m2.sessionKey).toBe("123456:1004");
     expect(m1.sessionKey).not.toBe(m2.sessionKey);
   });
+
+  test("explicit sessionKey overrides synthetic event ids", () => {
+    const event = makeEvent({ ts: "event:reminder.json", sessionKey: "123456" });
+    const { message } = createTelegramAdapters(event, makeTelegramBot(), true);
+    expect(message.sessionKey).toBe("123456");
+  });
 });
 
 // ============================================================================
@@ -116,6 +122,54 @@ describe("respond() — non-threaded", () => {
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("hello");
     expect(bot.logBotResponse).toHaveBeenCalledWith("123456", "hello", "2001");
+  });
+
+  test("escapes unsupported html-like tags before sending", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond("error: unsupported start tag <command> in output");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      "error: unsupported start tag &lt;command&gt; in output",
+    );
+  });
+
+  test("event without thread still posts top-level message", async () => {
+    const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
+    const event = makeEvent({
+      ts: "event:reminder.json",
+      thread_ts: undefined,
+      sessionKey: "123456",
+    });
+    const { responseCtx } = createTelegramAdapters(event, bot, true);
+    await responseCtx.respond("hello");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, expect.stringContaining("hello"));
+    expect(bot.postReply).not.toHaveBeenCalled();
+  });
+
+  test("escapes angle-bracket email senders while preserving supported tags", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond("<b>寄件者</b> Cloudflare &lt;noreply@notify.cloudflare.com&gt;");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      "<b>寄件者</b> Cloudflare &lt;noreply@notify.cloudflare.com&gt;",
+    );
+  });
+
+  test("preserves supported Telegram HTML tags", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond(
+      '<b>bold</b> <code>x</code> <a href="https://example.com?a=1&b=2">link</a>',
+    );
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      '<b>bold</b> <code>x</code> <a href="https://example.com?a=1&amp;b=2">link</a>',
+    );
   });
 });
 

@@ -39,12 +39,76 @@ function htmlTableToText(tableHtml: string): string {
   return lines.join("\n");
 }
 
+const ALLOWED_TELEGRAM_TAGS = new Set([
+  "b",
+  "strong",
+  "i",
+  "em",
+  "u",
+  "ins",
+  "s",
+  "strike",
+  "del",
+  "code",
+  "pre",
+  "a",
+]);
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&(?!(?:[a-z]+|#\d+|#x[0-9a-f]+);)/gi, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeAttr(value: string): string {
+  return escapeHtml(value).replace(/"/g, "&quot;");
+}
+
+function normalizeAllowedTelegramTag(tag: string): string | null {
+  const closing = tag.match(/^<\s*\/\s*([a-z0-9-]+)\s*>$/i);
+  if (closing) {
+    const name = closing[1].toLowerCase();
+    return ALLOWED_TELEGRAM_TAGS.has(name) ? `</${name}>` : null;
+  }
+
+  const simple = tag.match(/^<\s*([a-z0-9-]+)\s*>$/i);
+  if (simple) {
+    const name = simple[1].toLowerCase();
+    return ALLOWED_TELEGRAM_TAGS.has(name) && name !== "a" ? `<${name}>` : null;
+  }
+
+  const anchor = tag.match(/^<\s*a\s+href\s*=\s*(?:"([^"]*)"|'([^']*)')\s*>$/i);
+  if (anchor) {
+    const href = anchor[1] ?? anchor[2] ?? "";
+    return `<a href="${escapeAttr(href)}">`;
+  }
+
+  return null;
+}
+
 function sanitizeTelegramHtml(text: string): string {
-  if (!text.includes("<table")) return text;
-  return text.replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
+  const withTablesNormalized = text.replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
     const ascii = htmlTableToText(tableHtml);
-    return ascii ? `<pre>${ascii}</pre>` : "";
+    return ascii ? `<pre>${escapeHtml(ascii)}</pre>` : "";
   });
+
+  const placeholders: string[] = [];
+  const tokenized = withTablesNormalized.replace(/<\/?[a-z][^>]*>/gi, (tag) => {
+    const normalized = normalizeAllowedTelegramTag(tag);
+    if (!normalized) {
+      return tag;
+    }
+    const token = `__TG_HTML_${placeholders.length}__`;
+    placeholders.push(normalized);
+    return token;
+  });
+
+  const escaped = escapeHtml(tokenized);
+  return escaped.replace(
+    /__TG_HTML_(\d+)__/g,
+    (_match, index) => placeholders[Number(index)] ?? "",
+  );
 }
 
 async function notifyError(

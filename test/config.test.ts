@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  ensureSettingsFile,
   loadAgentConfig,
   resolveSentryDsn,
   resolveWorkspaceDirFromArgv,
@@ -18,15 +19,17 @@ describe("loadAgentConfig", () => {
   });
 
   afterEach(() => {
+    delete process.env.MOM_AI_PROVIDER;
+    delete process.env.MOM_AI_MODEL;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("returns defaults when no settings.json and no env vars", () => {
+  test("returns empty config when no settings.json exists", () => {
     const config = loadAgentConfig(tmpDir);
-    expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
-    expect(config.thinkingLevel).toBe("off");
-    expect(config.sessionScope).toBe("thread");
+    expect(config.provider).toBeUndefined();
+    expect(config.model).toBeUndefined();
+    expect(config.thinkingLevel).toBeUndefined();
+    expect(config.sessionScope).toBeUndefined();
   });
 
   test("reads provider and model from settings.json", () => {
@@ -48,40 +51,33 @@ describe("loadAgentConfig", () => {
     expect(config.sentryDsn).toBe("https://examplePublicKey@o0.ingest.sentry.io/0");
   });
 
-  test("env vars override defaults but not settings.json", () => {
-    // With env var only (no settings.json)
-    process.env.MOM_AI_PROVIDER = "google";
-    process.env.MOM_AI_MODEL = "gemini-2.0-flash";
-    try {
-      const config = loadAgentConfig(tmpDir);
-      expect(config.provider).toBe("google");
-      expect(config.model).toBe("gemini-2.0-flash");
-    } finally {
-      delete process.env.MOM_AI_PROVIDER;
-      delete process.env.MOM_AI_MODEL;
-    }
-  });
-
-  test("settings.json values override env vars", () => {
-    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
-    process.env.MOM_AI_PROVIDER = "google";
-    process.env.MOM_AI_MODEL = "gemini-2.0-flash";
-    try {
-      const config = loadAgentConfig(tmpDir);
-      expect(config.provider).toBe("openai");
-      expect(config.model).toBe("gpt-4o");
-    } finally {
-      delete process.env.MOM_AI_PROVIDER;
-      delete process.env.MOM_AI_MODEL;
-    }
-  });
-
-  test("silently ignores malformed settings.json and falls back to defaults", () => {
-    const { writeFileSync } = require("node:fs");
+  test("silently ignores malformed settings.json and returns empty config", () => {
     writeFileSync(join(tmpDir, "settings.json"), "{ invalid json }", "utf-8");
     const config = loadAgentConfig(tmpDir);
-    expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(config.provider).toBeUndefined();
+    expect(config.model).toBeUndefined();
+  });
+
+  test("lets provider and model environment variables override settings.json", () => {
+    saveAgentConfig(tmpDir, { provider: "anthropic", model: "claude-sonnet-4-6" });
+    process.env.MOM_AI_PROVIDER = "openai";
+    process.env.MOM_AI_MODEL = "gpt-5.4";
+
+    const config = loadAgentConfig(tmpDir);
+
+    expect(config.provider).toBe("openai");
+    expect(config.model).toBe("gpt-5.4");
+  });
+
+  test("applies provider and model environment variables to first-run template config", () => {
+    process.env.MOM_AI_PROVIDER = "openai";
+    process.env.MOM_AI_MODEL = "gpt-5.4";
+
+    const result = ensureSettingsFile(tmpDir);
+
+    expect(result.created).toBe(true);
+    expect(result.config.provider).toBe("openai");
+    expect(result.config.model).toBe("gpt-5.4");
   });
 });
 
@@ -108,19 +104,16 @@ describe("resolveSentryDsn", () => {
   });
 
   afterEach(() => {
-    delete process.env.SENTRY_DSN;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("prefers settings.json over env", () => {
+  test("reads sentryDsn from settings.json", () => {
     saveAgentConfig(tmpDir, { sentryDsn: "https://settings.example/1" });
-    process.env.SENTRY_DSN = "https://env.example/1";
     expect(resolveSentryDsn(tmpDir)).toBe("https://settings.example/1");
   });
 
-  test("falls back to env when settings.json has no sentryDsn", () => {
-    process.env.SENTRY_DSN = "https://env.example/2";
-    expect(resolveSentryDsn(tmpDir)).toBe("https://env.example/2");
+  test("returns undefined when settings.json has no sentryDsn", () => {
+    expect(resolveSentryDsn(tmpDir)).toBeUndefined();
   });
 });
 

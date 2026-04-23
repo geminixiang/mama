@@ -6,3 +6,6 @@ bin/
 *.env
 .env*
 
+# Per-user credential vaults (contains secrets)
+vaults/
+

@@ -27,12 +27,14 @@ export function createSlackAdapters(
   // Extract event filename for status message
   const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-  const rootTs = event.thread_ts ?? event.ts;
+  const rootTs = event.thread_ts || (!isEvent ? event.ts : undefined);
   const isThreaded = !!event.thread_ts;
 
   /** Post first reply in-thread under the user's message, creating a thread if none exists */
   const postFirstMessage = async (text: string): Promise<string> => {
-    return slack.postInThread(event.channel, event.ts, text);
+    return rootTs
+      ? slack.postInThread(event.channel, rootTs, text)
+      : slack.postMessage(event.channel, text);
   };
 
   const message: ChatMessage = {
@@ -76,7 +78,7 @@ export function createSlackAdapters(
             await slack.updateMessage(event.channel, messageTs, displayText);
           } else if (isThreaded) {
             // Reply within the user's thread
-            messageTs = await slack.postInThread(event.channel, rootTs, displayText);
+            messageTs = await slack.postInThread(event.channel, event.thread_ts!, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
           }
@@ -109,7 +111,7 @@ export function createSlackAdapters(
           if (messageTs) {
             await slack.updateMessage(event.channel, messageTs, displayText);
           } else if (isThreaded) {
-            messageTs = await slack.postInThread(event.channel, rootTs, displayText);
+            messageTs = await slack.postInThread(event.channel, event.thread_ts!, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
           }
@@ -127,7 +129,7 @@ export function createSlackAdapters(
       updatePromise = updatePromise.then(async () => {
         try {
           // Always anchor to the thread root (event.thread_ts ?? event.ts)
-          const threadAnchor = rootTs;
+          const threadAnchor = rootTs ?? messageTs;
           if (threadAnchor) {
             // Truncate thread messages if too long (20K limit for safety)
             const MAX_THREAD_LENGTH = 20000;
@@ -164,6 +166,9 @@ export function createSlackAdapters(
 
     setTyping: async (isTyping: boolean) => {
       if (isTyping && !messageTs) {
+        if (!rootTs) {
+          return;
+        }
         try {
           const statusText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
           await slack.setAssistantStatus(event.channel, rootTs, statusText);
@@ -186,7 +191,7 @@ export function createSlackAdapters(
             const updates: Promise<void>[] = [
               slack.updateMessage(event.channel, messageTs, displayText),
             ];
-            if (!working) {
+            if (!working && rootTs) {
               updates.push(slack.setAssistantStatus(event.channel, rootTs, "").catch(() => {}));
             }
             await Promise.all(updates);
@@ -204,10 +209,12 @@ export function createSlackAdapters(
     deleteResponse: async () => {
       updatePromise = updatePromise.then(async () => {
         // Clear assistant status first
-        try {
-          await slack.setAssistantStatus(event.channel, rootTs, "");
-        } catch {
-          // Ignore errors clearing status
+        if (rootTs) {
+          try {
+            await slack.setAssistantStatus(event.channel, rootTs, "");
+          } catch {
+            // Ignore errors clearing status
+          }
         }
 
         // Delete thread messages first (in reverse order)

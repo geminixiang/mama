@@ -3,6 +3,7 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
+import { homedir } from "os";
 import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
@@ -20,7 +21,19 @@ import {
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileUserBindingStore } from "./bindings.js";
+import { startLinkServer } from "./link-server.js";
+import { parseLoginCommand } from "./login.js";
+import { InMemoryLinkTokenStore } from "./link-token.js";
+import { DockerContainerManager } from "./provisioner.js";
+import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileVaultManager } from "./vault.js";
+import { ensureSettingsFile } from "./config.js";
+import {
+  createManagedVaultEntry,
+  ensureImageSandboxVault,
+  resolveActorVaultKey,
+} from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -53,9 +66,22 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+/** Base URL of the web login portal, e.g. https://platform.trygemini.xyz */
+const MOM_LINK_URL = process.env.MOM_LINK_URL;
+/**
+ * Port for the link callback HTTP server.
+ * Defaults to 8181 when MOM_LINK_URL is set (behind a reverse proxy).
+ * If neither is set, the server is not started.
+ */
+const MOM_LINK_PORT = process.env.MOM_LINK_PORT
+  ? parseInt(process.env.MOM_LINK_PORT, 10)
+  : MOM_LINK_URL
+    ? 8181
+    : undefined;
 
 interface ParsedArgs {
   workingDir?: string;
+  stateDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
   showVersion?: boolean;
@@ -65,6 +91,7 @@ function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
   let sandbox: SandboxConfig = { type: "host" };
   let workingDir: string | undefined;
+  let stateDirArg: string | undefined;
   let downloadChannelId: string | undefined;
   let showVersion = false;
 
@@ -76,6 +103,10 @@ function parseArgs(): ParsedArgs {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
       sandbox = parseSandboxArg(args[++i] || "");
+    } else if (arg.startsWith("--state-dir=")) {
+      stateDirArg = arg.slice("--state-dir=".length);
+    } else if (arg === "--state-dir") {
+      stateDirArg = args[++i];
     } else if (arg.startsWith("--download=")) {
       downloadChannelId = arg.slice("--download=".length);
     } else if (arg === "--download") {
@@ -87,13 +118,29 @@ function parseArgs(): ParsedArgs {
 
   return {
     workingDir: workingDir ? resolve(workingDir) : undefined,
+    stateDir: stateDirArg ? resolve(stateDirArg) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
     showVersion,
   };
 }
 
-const parsedArgs = parseArgs();
+function handleStartupError(error: unknown): never {
+  if (error instanceof SandboxError) {
+    for (const line of error.formatForCli()) {
+      console.error(line);
+    }
+    process.exit(1);
+  }
+  throw error;
+}
+
+let parsedArgs: ParsedArgs;
+try {
+  parsedArgs = parseArgs();
+} catch (error) {
+  handleStartupError(error);
+}
 
 // Handle --version
 if (parsedArgs.showVersion) {
@@ -114,13 +161,30 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>] [--state-dir=<path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+// stateDir holds operator-managed files (vaults, settings, bindings).
+// Defaults to ~/.mama to keep secrets outside the project workspace mounted into sandboxes.
+const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+// Share stateDir with instrument.ts (for Sentry config loading)
+process.env.MAMA_STATE_DIR = stateDir;
+
+// Ensure settings.json exists; create a template if first run.
+const { created: settingsCreated, config: agentSettings } = ensureSettingsFile(stateDir);
+if (settingsCreated) {
+  console.log(`Created default settings: ${join(stateDir, "settings.json")}`);
+  console.log("Review and update provider/model before starting.");
+}
+
+if (!agentSettings.provider || !agentSettings.model) {
+  console.error(`Error: 'provider' and 'model' must be set in ${join(stateDir, "settings.json")}`);
+  process.exit(1);
+}
 
 // Validate platform tokens
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
@@ -137,7 +201,29 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
   process.exit(1);
 }
 
-await validateSandbox(sandbox);
+try {
+  await validateSandbox(sandbox);
+} catch (error) {
+  handleStartupError(error);
+}
+
+const vaultManager = new FileVaultManager(stateDir);
+if (vaultManager.isEnabled()) {
+  console.log("  Vault system enabled. Per-user credential routing active.");
+}
+
+const bindingStore = new FileUserBindingStore(stateDir);
+if (bindingStore.isEnabled()) {
+  console.log("  Binding store enabled. Platform user → vault routing active.");
+}
+
+const provisioner =
+  sandbox.type === "image" ? new DockerContainerManager(sandbox.image, workingDir) : undefined;
+
+const linkTokenStore = new InMemoryLinkTokenStore();
+
+// Purge expired link tokens every 5 minutes
+setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
 
 // ============================================================================
 // State (per channel)
@@ -163,8 +249,49 @@ let isShuttingDown = false;
 
 /** Maximum number of cached sessions */
 const MAX_SESSIONS = 500;
-/** Idle timeout before a non-running session can be evicted (1 hour) */
-const IDLE_TIMEOUT_MS = 3600000;
+/** Idle timeout before a non-running session can be evicted (10 minutes) */
+const IDLE_TIMEOUT_MS = 600000;
+
+if (provisioner) {
+  await provisioner.reconcile();
+  await provisioner.stopIdle(IDLE_TIMEOUT_MS);
+}
+
+// Stop idle containers every hour (same cadence as session eviction)
+if (provisioner) {
+  setInterval(() => provisioner.stopIdle(IDLE_TIMEOUT_MS), IDLE_TIMEOUT_MS).unref();
+}
+
+function normalizeLoginBaseUrl(): string | undefined {
+  if (MOM_LINK_URL) {
+    return MOM_LINK_URL.replace(/\/+$/, "");
+  }
+  if (MOM_LINK_PORT) {
+    return `http://localhost:${MOM_LINK_PORT}`;
+  }
+  return undefined;
+}
+
+function ensureLoginVault(platform: string, platformUserId: string): string {
+  const vaultId = resolveActorVaultKey(
+    sandbox,
+    vaultManager,
+    bindingStore,
+    platform,
+    platformUserId,
+  );
+
+  if (sandbox.type === "image") {
+    ensureImageSandboxVault(sandbox, vaultManager, platform, platformUserId, vaultId);
+  } else {
+    vaultManager.addEntry(
+      vaultId,
+      createManagedVaultEntry(platform, platformUserId, vaultId, false),
+    );
+  }
+
+  return vaultId;
+}
 
 async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
   const key = sessionKey ?? channelId;
@@ -173,7 +300,17 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
     const channelDir = join(workingDir, channelId);
     state = {
       running: false,
-      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir),
+      runner: await createRunner(
+        sandbox,
+        key,
+        channelId,
+        channelDir,
+        workingDir,
+        vaultManager,
+        bindingStore,
+        provisioner,
+        stateDir,
+      ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
@@ -285,6 +422,44 @@ const handler: BotHandler = {
     await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
   },
 
+  async handleLogin(
+    platform: string,
+    platformUserId: string,
+    channelId: string,
+    bot: Bot,
+    commandText: string,
+  ): Promise<void> {
+    const parsed = parseLoginCommand(commandText);
+    if (!parsed) {
+      return;
+    }
+
+    const baseUrl = normalizeLoginBaseUrl();
+    if (!baseUrl) {
+      await bot.postMessage(
+        channelId,
+        "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+      );
+      return;
+    }
+
+    const vaultId = ensureLoginVault(platform, platformUserId);
+    const loginLabel = "credential";
+    await bot.postMessage(
+      channelId,
+      `Open this link to store ${loginLabel} in your personal vault ` +
+        `(expires in 15 minutes):\n${baseUrl}/link?token=${
+          linkTokenStore.create(
+            platform as "slack" | "discord" | "telegram",
+            platformUserId,
+            channelId,
+            vaultId,
+            "",
+          ).token
+        }`,
+    );
+  },
+
   async handleEvent(
     event: BotEvent,
     bot: Bot,
@@ -322,7 +497,7 @@ const handler: BotHandler = {
         return Sentry.withScope(async (scope) => {
           const { message, responseCtx, platform } = adapters;
           applyRunScope(scope, {
-            channelId: event.channel,
+            conversationId: event.channel,
             sessionKey,
             messageId: message.id,
             platform: platform.name,
@@ -416,10 +591,20 @@ const handler: BotHandler = {
 const sandboxDesc =
   sandbox.type === "host"
     ? "host"
-    : sandbox.type === "docker"
-      ? `docker:${sandbox.container}`
-      : `firecracker:${sandbox.vmId}`;
+    : sandbox.type === "container"
+      ? `container:${sandbox.container}`
+      : sandbox.type === "image"
+        ? `image:${sandbox.image}`
+        : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
+
+// Start link callback server if port is configured
+if (MOM_LINK_PORT) {
+  startLinkServer(MOM_LINK_PORT, linkTokenStore, vaultManager, async (platform, channelId, msg) => {
+    const bot = botsByPlatform[platform];
+    if (bot) await bot.postMessage(channelId, msg);
+  });
+}
 
 // Create platform bots
 const bots: Bot[] = [];

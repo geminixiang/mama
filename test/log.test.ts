@@ -17,14 +17,14 @@ describe("log config from settings.json", () => {
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("logFormat defaults to console", () => {
+  test("logFormat is undefined when no settings.json", () => {
     const config = loadAgentConfig(tmpDir);
-    expect(config.logFormat).toBe("console");
+    expect(config.logFormat).toBeUndefined();
   });
 
-  test("logLevel defaults to info", () => {
+  test("logLevel is undefined when no settings.json", () => {
     const config = loadAgentConfig(tmpDir);
-    expect(config.logLevel).toBe("info");
+    expect(config.logLevel).toBeUndefined();
   });
 
   test("reads logFormat from settings.json", () => {

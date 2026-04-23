@@ -185,6 +185,20 @@ describe("respondInThread()", () => {
       expect.stringContaining("detail"),
     );
   });
+
+  test("event without thread root falls back to bot message thread after initial post", async () => {
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG") });
+    const event = makeEvent({ ts: "event:reminder.json", thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respond("main");
+    await responseCtx.respondInThread("detail");
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("main"));
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "BOT_MSG",
+      expect.stringContaining("detail"),
+    );
+  });
 });
 
 // ============================================================================
@@ -229,6 +243,20 @@ describe("setTyping()", () => {
     vi.clearAllMocks();
     await responseCtx.setTyping(true); // should be no-op
     expect(bot.postMessage).not.toHaveBeenCalled();
+  });
+
+  test("event without thread root skips assistant status and posts top-level message", async () => {
+    const bot = makeSlackBot({
+      postMessage: vi.fn().mockResolvedValue("BOT_MSG"),
+      setAssistantStatus: vi.fn().mockResolvedValue(undefined),
+    });
+    const event = makeEvent({ ts: "event:reminder.json", thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.setTyping(true);
+    expect(bot.setAssistantStatus).not.toHaveBeenCalled();
+    await responseCtx.respond("hello");
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("hello"));
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 });
 
