@@ -5,6 +5,7 @@ import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
+import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { createSlackAdapters } from "./context.js";
@@ -632,6 +633,13 @@ export class SlackBot implements Bot {
         return;
       }
 
+      // Check for login command
+      if (parseLoginCommand(slackEvent.text)) {
+        this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
+        ack();
+        return;
+      }
+
       // SYNC: Check if busy (per-thread)
       if (this.handler.isRunning(sessionKey)) {
         this.postMessage(
@@ -737,6 +745,13 @@ export class SlackBot implements Bot {
           } else {
             this.postMessage(e.channel, "_Nothing running_");
           }
+          ack();
+          return;
+        }
+
+        // Check for login command
+        if (parseLoginCommand(slackEvent.text)) {
+          this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
           ack();
           return;
         }

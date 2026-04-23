@@ -19,8 +19,12 @@ import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
-import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import type { UserBindingStore } from "./bindings.js";
+import type { DockerContainerManager } from "./provisioner.js";
+import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
+import type { VaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import {
   createManagedSessionFileAtPath,
@@ -142,13 +146,14 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
 function buildSystemPrompt(
   workspacePath: string,
   channelId: string,
+  currentUserId: string | undefined,
   memory: string,
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
-  const isDocker = sandboxConfig.type === "docker";
+  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
@@ -163,8 +168,8 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isDocker
-    ? `You are running inside a Docker container (Alpine Linux).
+  const envDescription = isContainer
+    ? `You are running inside a container (Docker runtime, Alpine Linux).
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apk add <package>
 - Your changes persist across sessions`
@@ -239,18 +244,20 @@ You can schedule events that wake you up at specific times or when external thin
 
 **Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
 \`\`\`json
-{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "text": "New GitHub issue opened"}
+{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "New GitHub issue opened"}
 \`\`\`
 
 **One-shot** - Triggers once at a specific time. Use for reminders.
 \`\`\`json
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
 \`\`\`
 
 **Periodic** - Triggers on a cron schedule. Use for recurring tasks.
 \`\`\`json
-{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
+{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
+
+Set \`userId\` to the platform userId of whoever asked for the event (look it up in the user mappings above). When the event fires, tool execution will route to that user's vault so their credentials are available.
 
 ### Cron Format
 \`minute hour day-of-month month day-of-week\`
@@ -266,10 +273,19 @@ All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events us
 Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
 
 ### Creating Events
+Prefer the \`event\` tool. It automatically writes to the correct events directory and fills the current \`platform\`, \`channelId\`, and requester \`userId\`.
+Do not use \`bash\` or \`write\` to hand-create JSON files in \`/events\` unless the user explicitly asks for manual file editing.
+
+Current conversation defaults:
+- \`platform\`: \`${platform.name}\`
+- \`channelId\`: \`${channelId}\`
+- \`userId\`: \`${currentUserId ?? "unknown"}\`
+
+Manual file creation is fallback only:
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
@@ -316,7 +332,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
-${isDocker ? "Install jq: apk add jq" : ""}
+${isContainer ? "Install jq: apk add jq" : ""}
 ${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
@@ -418,8 +434,12 @@ export async function createRunner(
   channelId: string,
   channelDir: string,
   workspaceDir: string,
+  vaultManager?: VaultManager,
+  bindingStore?: UserBindingStore,
+  provisioner?: DockerContainerManager,
+  stateDir?: string,
 ): Promise<AgentRunner> {
-  const agentConfig = loadAgentConfig(workspaceDir);
+  const agentConfig = loadAgentConfig(stateDir ?? workspaceDir);
 
   // Initialize logger with settings from config
   log.initLogger({
@@ -427,11 +447,32 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executor = createExecutor(sandboxConfig);
-  const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+  const executionResolver =
+    vaultManager && (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "image")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
+      : undefined;
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
+  };
+  const workspaceBase = channelDir.replace(`/${channelId}`, "");
+  // Compute workspace path from the current executor. This may change per run.
+  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
+  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -451,6 +492,7 @@ export async function createRunner(
   const systemPrompt = buildSystemPrompt(
     workspacePath,
     channelId,
+    undefined,
     memory,
     sandboxConfig,
     emptyPlatform,
@@ -845,6 +887,19 @@ export async function createRunner(
       // Ensure channel directory exists
       await mkdir(channelDir, { recursive: true });
 
+      // Refresh vault config and clear executor cache so credential changes
+      // (env file updates, vault.json edits, token rotations) take effect.
+      // Then set the active actor BEFORE building system prompt, so workspacePath
+      // reflects the actor's sandbox type.
+      if (executionResolver) {
+        executionResolver.refresh();
+        activeExecutor = await executionResolver.resolve({
+          platform: platform.name,
+          userId: message.userId,
+        });
+        workspacePath = getWorkspacePath();
+      }
+
       // Sync messages from log.jsonl that arrived while we were offline or busy
       // Exclude the current message (it will be added via prompt())
       // Default sync range is 10 days (handled by syncLogToSessionManager)
@@ -874,13 +929,17 @@ export async function createRunner(
       }
 
       // Update system prompt with fresh memory, channel/user info, and skills
+      // Use the actual executor's sandbox config, not the initial config,
+      // to ensure accurate environment description for the model
       const memory = await getMemory(channelDir);
       const skills = loadMamaSkills(channelDir, workspacePath);
+      const actualSandboxConfig = executor.getSandboxConfig();
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
+        message.userId,
         memory,
-        sandboxConfig,
+        actualSandboxConfig,
         platform,
         skills,
       );
@@ -890,6 +949,11 @@ export async function createRunner(
       setUploadFunction(async (filePath: string, title?: string) => {
         const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
         await responseCtx.uploadFile(hostPath, title);
+      });
+      setEventContext({
+        platform: platform.name,
+        channelId,
+        userId: message.userId,
       });
 
       // Reset per-run state

@@ -97,6 +97,14 @@ export interface BotHandler {
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
   handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  /** Handle credential onboarding for a user login command. */
+  handleLogin(
+    platform: string,
+    platformUserId: string,
+    channelId: string,
+    bot: Bot,
+    commandText: string,
+  ): Promise<void>;
 }
 
 /** @deprecated Use BotHandler */

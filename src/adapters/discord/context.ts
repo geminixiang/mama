@@ -32,10 +32,11 @@ export function createDiscordAdapters(
 
   const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
   const isThreaded = !!event.thread_ts;
+  const isRootEvent = !!isEvent && !isThreaded;
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -78,6 +79,8 @@ export function createDiscordAdapters(
             stopTyping();
             if (isThreaded && event.thread_ts) {
               messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+            } else if (isRootEvent) {
+              messageId = await bot.postMessage(event.channel, displayText);
             } else {
               messageId = await bot.postReply(event.channel, event.ts, displayText);
             }
@@ -105,6 +108,8 @@ export function createDiscordAdapters(
             stopTyping();
             if (isThreaded && event.thread_ts) {
               messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+            } else if (isRootEvent) {
+              messageId = await bot.postMessage(event.channel, displayText);
             } else {
               messageId = await bot.postReply(event.channel, event.ts, displayText);
             }
