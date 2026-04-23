@@ -110,27 +110,32 @@ export class DiscordBot implements Bot {
     });
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
-    const ch = await this.fetchTextChannel(channel);
+  async postMessage(conversationId: string, text: string): Promise<string> {
+    const ch = await this.fetchTextChannel(conversationId);
     const msg = await ch.send(text);
     return msg.id;
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-    await this.updateMessageRaw(channel, ts, text);
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
+    await this.updateMessageRaw(conversationId, ts, text);
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createDiscordAdapters(event as DiscordEvent, this, true);
+      const discordEvent: DiscordEvent = {
+        ...event,
+        type: "mention",
+        conversationId: event.conversationId,
+      };
+      const adapters = createDiscordAdapters(discordEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -368,7 +373,7 @@ export class DiscordBot implements Bot {
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
-        channel: channelId,
+        conversationId: channelId,
         ts: msgId,
         thread_ts: threadTs,
         user: userId,

@@ -40,8 +40,8 @@ export interface ChatAdapter {
  */
 export interface BotEvent {
   type: string;
-  /** Platform-specific channel/chat identifier */
-  channel: string;
+  /** Internal conversation identifier used by the shared runtime */
+  conversationId: string;
   /** Message timestamp or ID as string */
   ts: string;
   /** Parent message ID for threaded replies (optional) */
@@ -52,7 +52,7 @@ export interface BotEvent {
   text: string;
   /** Downloaded attachments */
   attachments?: { name: string; localPath: string }[];
-  /** Platform-computed session key; overrides default channel:thread_ts computation */
+  /** Platform-computed session key; overrides default conversation:thread_ts computation */
   sessionKey?: string;
 }
 
@@ -62,8 +62,8 @@ export interface BotEvent {
  */
 export interface Bot {
   start(): Promise<void>;
-  postMessage(channel: string, text: string): Promise<string>;
-  updateMessage(channel: string, ts: string, text: string): Promise<void>;
+  postMessage(conversationId: string, text: string): Promise<string>;
+  updateMessage(conversationId: string, ts: string, text: string): Promise<void>;
   enqueueEvent(event: BotEvent): boolean;
   getPlatformInfo(): PlatformInfo;
 }

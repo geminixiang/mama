@@ -15,7 +15,7 @@ import { defaultVaultTargetPath, type VaultManager } from "./vault.js";
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /** Called after a binding is written, to notify the user in chat */
-export type NotifyFn = (platform: string, channelId: string, message: string) => Promise<void>;
+export type NotifyFn = (platform: string, conversationId: string, message: string) => Promise<void>;
 
 interface LinkCompleteBody {
   token: string;
@@ -679,7 +679,7 @@ async function handleLinkComplete(
 
   notify(
     linkToken.platform,
-    linkToken.channelId,
+    linkToken.conversationId,
     `${envKey} stored successfully in vault \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
     log.logWarning("Failed to notify user after credential login", err.message);
@@ -905,7 +905,7 @@ async function handleOAuthCallback(
 
   notify(
     linkToken.platform,
-    linkToken.channelId,
+    linkToken.conversationId,
     `${service.label} OAuth stored (${storedTargets.join(", ")}) in vault \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
     log.logWarning("Failed to notify user after OAuth login", err.message);

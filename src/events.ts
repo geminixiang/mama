@@ -450,7 +450,7 @@ export class EventsWatcher {
     // routing then resolves to an empty auto-created entry (no credentials).
     const syntheticEvent: BotEvent = {
       type: "mention",
-      channel: event.channelId,
+      conversationId: event.channelId,
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,

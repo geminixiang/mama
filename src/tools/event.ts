@@ -33,7 +33,7 @@ const eventSchema = Type.Object({
 
 interface EventToolContext {
   platform: string;
-  channelId: string;
+  conversationId: string;
   userId: string;
 }
 
@@ -83,7 +83,7 @@ export function createEventTool(workspaceDir: string): {
     name: "event",
     label: "event",
     description:
-      "Schedule an immediate, one-shot, or periodic event for the current conversation. This automatically writes to the correct events directory and fills the current platform, channel, and requester userId.",
+      "Schedule an immediate, one-shot, or periodic event for the current conversation. This automatically writes to the correct events directory and fills the current platform, conversation, and requester userId.",
     parameters: eventSchema,
     execute: async (_toolCallId: string, params: EventToolParams, signal?: AbortSignal) => {
       if (signal?.aborted) {
@@ -131,7 +131,7 @@ export function createEventTool(workspaceDir: string): {
 function buildEventPayload(params: EventToolParams, context: EventToolContext): EventPayload {
   const base = {
     platform: context.platform,
-    channelId: context.channelId,
+    channelId: context.conversationId,
     userId: context.userId,
     text: params.text,
   };

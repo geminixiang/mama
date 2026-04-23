@@ -117,7 +117,7 @@ export interface SlackContext {
     userName?: string;
     channel: string;
     ts: string;
-    attachments: Array<{ local: string }>;
+    attachments: Array<{ localPath: string }>;
   };
   channelName?: string;
   channels: ChannelInfo[];
@@ -200,6 +200,22 @@ export class SlackBot implements Bot {
     this.eventsWatcher = watcher;
   }
 
+  private toBotEvent(event: SlackEvent): BotEvent {
+    return {
+      type: event.type,
+      conversationId: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      user: event.user,
+      text: event.text,
+      attachments: event.attachments?.map((attachment) => ({
+        name: attachment.original,
+        localPath: attachment.localPath,
+      })),
+      sessionKey: event.sessionKey,
+    };
+  }
+
   // ==========================================================================
   // Public API
   // ==========================================================================
@@ -238,16 +254,16 @@ export class SlackBot implements Bot {
     return Array.from(this.channels.values());
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
+  async postMessage(conversationId: string, text: string): Promise<string> {
     return withRetry(async () => {
-      const result = await this.webClient.chat.postMessage({ channel, text });
+      const result = await this.webClient.chat.postMessage({ channel: conversationId, text });
       return result.ts as string;
     });
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
     return withRetry(async () => {
-      await this.webClient.chat.update({ channel, ts, text });
+      await this.webClient.chat.update({ channel: conversationId, ts, text });
     });
   }
 
@@ -378,16 +394,25 @@ export class SlackBot implements Bot {
    * Returns true if enqueued, false if queue is full (max 5).
    */
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createSlackAdapters(event as unknown as SlackEvent, this, true);
+      const slackEvent: SlackEvent = {
+        type: "mention",
+        channel: event.conversationId,
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+        user: event.user,
+        text: event.text,
+        sessionKey: event.sessionKey,
+      };
+      const adapters = createSlackAdapters(slackEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -654,12 +679,7 @@ export class SlackBot implements Bot {
       } else {
         this.getQueue(sessionKey).enqueue(() => {
           const adapters = createSlackAdapters(slackEvent, this, false);
-          return this.handler.handleEvent(
-            slackEvent as unknown as import("../../adapter.js").BotEvent,
-            this,
-            adapters,
-            false,
-          );
+          return this.handler.handleEvent(this.toBotEvent(slackEvent), this, adapters, false);
         });
       }
 
@@ -766,12 +786,7 @@ export class SlackBot implements Bot {
         } else {
           this.getQueue(dmSessionKey).enqueue(() => {
             const adapters = createSlackAdapters(slackEvent, this, false);
-            return this.handler.handleEvent(
-              slackEvent as unknown as import("../../adapter.js").BotEvent,
-              this,
-              adapters,
-              false,
-            );
+            return this.handler.handleEvent(this.toBotEvent(slackEvent), this, adapters, false);
           });
         }
       }

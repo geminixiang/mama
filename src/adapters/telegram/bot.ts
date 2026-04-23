@@ -116,14 +116,14 @@ export class TelegramBot implements Bot {
     log.logInfo(`Telegram bot started as @${this.botUsername ?? this.botUserId}`);
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
-    const result = await this.postMessageRaw(parseInt(channel), text);
+  async postMessage(conversationId: string, text: string): Promise<string> {
+    const result = await this.postMessageRaw(parseInt(conversationId), text);
     return String(result);
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
     try {
-      await this.client.api.editMessageText(parseInt(channel), parseInt(ts), text, {
+      await this.client.api.editMessageText(parseInt(conversationId), parseInt(ts), text, {
         parse_mode: "HTML",
       });
     } catch (err) {
@@ -135,16 +135,21 @@ export class TelegramBot implements Bot {
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createTelegramAdapters(event as TelegramEvent, this, true);
+      const telegramEvent: TelegramEvent = {
+        ...event,
+        type: "message",
+        conversationId: event.conversationId,
+      };
+      const adapters = createTelegramAdapters(telegramEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -424,7 +429,7 @@ export class TelegramBot implements Bot {
 
       const event: TelegramEvent = {
         type: "message",
-        channel: mc.chatId,
+        conversationId: mc.chatId,
         ts: mc.msgId,
         thread_ts: mc.threadTs,
         sessionKey: mc.sessionKey,

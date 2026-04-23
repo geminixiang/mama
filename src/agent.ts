@@ -43,7 +43,7 @@ import * as Sentry from "@sentry/node";
 export interface PendingMessage {
   userName: string;
   text: string;
-  attachments: { local: string }[];
+  attachments: { localPath: string }[];
   timestamp: number;
 }
 
@@ -95,7 +95,7 @@ async function getMemory(conversationDir: string): Promise<string> {
         parts.push(`### Conversation-Specific Memory\n${content}`);
       }
     } catch (error) {
-      log.logWarning("Failed to read channel memory", `${conversationMemoryPath}: ${error}`);
+      log.logWarning("Failed to read conversation memory", `${conversationMemoryPath}: ${error}`);
     }
   }
 
@@ -155,7 +155,7 @@ function buildSystemPrompt(
   const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
-  // Format channel mappings
+  // Format platform conversation mappings
   const channelMappings =
     platform.channels.length > 0
       ? platform.channels.map((c) => `${c.id}\t#${c.name}`).join("\n")
@@ -313,7 +313,7 @@ Maximum 5 events can be queued. Don't create excessive immediate or periodic eve
 ## Memory
 Write to MEMORY.md files to persist context across conversations.
 - Global (${workspacePath}/MEMORY.md): skills, preferences, project info
-- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work
+- Conversation (${conversationPath}/MEMORY.md): conversation-specific decisions, ongoing work
 Update when you learn something important or when asked to remember something.
 
 ### Current Memory
@@ -421,10 +421,10 @@ function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>
 // ============================================================================
 
 /**
- * Create a new AgentRunner for a channel.
+ * Create a new AgentRunner for a conversation.
  * Sets up the session and subscribes to events once.
  *
- * Runner caching is handled by the caller (channelStates in main.ts).
+ * Runner caching is handled by the caller (conversationStates in main.ts).
  * This is a stateless factory function.
  */
 export async function createRunner(
@@ -499,7 +499,7 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager.
-  // Channel sessions use {conversationDir}/sessions/current.
+  // Top-level conversation sessions use {conversationDir}/sessions/current.
   // Thread sessions use fixed files: {conversationDir}/sessions/{threadTs}.jsonl.
   const sessionDir = getChannelSessionDir(conversationDir);
   const isThread = sessionKey.includes(":");
@@ -529,7 +529,7 @@ export async function createRunner(
       }
     }
   } else {
-    // Channel/DM session: resolve the current session file.
+    // Top-level conversation session: resolve the current session file.
     sessionFile = resolveManagedSessionFile(sessionDir, conversationDir);
     sessionManager = openManagedSession(sessionFile, sessionDir, conversationDir);
   }
@@ -955,7 +955,7 @@ export async function createRunner(
       });
       setEventContext({
         platform: platform.name,
-        channelId: conversationId,
+        conversationId,
         userId: message.userId,
       });
 

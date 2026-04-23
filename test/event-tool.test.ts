@@ -22,7 +22,7 @@ describe("event tool", () => {
     const { tool, setEventContext } = createEventTool(workspaceDir);
     setEventContext({
       platform: "telegram",
-      channelId: "574247312",
+      conversationId: "574247312",
       userId: "574247312",
     });
 

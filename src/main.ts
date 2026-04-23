@@ -473,13 +473,13 @@ const handler: BotHandler = {
     // Don't accept new events during shutdown
     if (isShuttingDown) {
       log.logInfo(
-        `[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
+        `[${event.conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
       );
       return;
     }
 
-    const sessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
-    const state = await getState(event.channel, sessionKey);
+    const sessionKey = event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`;
+    const state = await getState(event.conversationId, sessionKey);
 
     // Start run
     state.running = true;
@@ -487,21 +487,25 @@ const handler: BotHandler = {
     state.startedAt = Date.now();
     state.lastActivityAt = Date.now();
 
-    log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
+    log.logInfo(`[${event.conversationId}] Starting run: ${event.text.substring(0, 50)}`);
 
     // Wrap in-flight run tracking
     Sentry.metrics.count("agent.run.started", 1, {
-      attributes: { channel: event.channel },
+      attributes: { channel: event.conversationId },
     });
     Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size + 1);
 
     const runPromise = Sentry.startSpan(
-      { name: "agent.run", op: "agent", attributes: { channelId: event.channel, sessionKey } },
+      {
+        name: "agent.run",
+        op: "agent",
+        attributes: { channelId: event.conversationId, sessionKey },
+      },
       async () => {
         return Sentry.withScope(async (scope) => {
           const { message, responseCtx, platform } = adapters;
           applyRunScope(scope, {
-            channelId: event.channel,
+            conversationId: event.conversationId,
             sessionKey,
             messageId: message.id,
             platform: platform.name,
@@ -511,7 +515,7 @@ const handler: BotHandler = {
             isEvent: _isEvent,
           });
           addLifecycleBreadcrumb("agent.run.started", {
-            channel_id: event.channel,
+            channel_id: event.conversationId,
             platform: platform.name,
             has_attachments: (message.attachments?.length ?? 0) > 0,
           });
@@ -526,20 +530,20 @@ const handler: BotHandler = {
             Sentry.metrics.distribution("agent.run.duration", durationMs, {
               unit: "millisecond",
               attributes: {
-                channel: event.channel,
+                channel: event.conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             Sentry.metrics.count("agent.run.completed", 1, {
               attributes: {
-                channel: event.channel,
+                channel: event.conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             addLifecycleBreadcrumb("agent.run.completed", {
-              channel_id: event.channel,
+              channel_id: event.conversationId,
               platform: platform.name,
               stop_reason: result.stopReason,
               duration_ms: durationMs,
@@ -547,15 +551,15 @@ const handler: BotHandler = {
 
             if (result.stopReason === "aborted" && state.stopRequested) {
               if (state.stopMessageTs) {
-                await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+                await bot.updateMessage(event.conversationId, state.stopMessageTs, "_Stopped_");
                 state.stopMessageTs = undefined;
               } else {
-                await bot.postMessage(event.channel, "_Stopped_");
+                await bot.postMessage(event.conversationId, "_Stopped_");
               }
             }
           } catch (err) {
             scope.setContext("agent_run_error", {
-              channelId: event.channel,
+              conversationId: event.conversationId,
               sessionKey,
               platform: adapters.platform.name,
               messageId: adapters.message.id,
@@ -563,10 +567,10 @@ const handler: BotHandler = {
             });
             Sentry.captureException(err);
             Sentry.metrics.count("agent.run.errors", 1, {
-              attributes: { channel: event.channel, platform: adapters.platform.name },
+              attributes: { channel: event.conversationId, platform: adapters.platform.name },
             });
             log.logWarning(
-              `[${event.channel}] Run error`,
+              `[${event.conversationId}] Run error`,
               err instanceof Error ? err.message : String(err),
             );
           } finally {
@@ -604,10 +608,15 @@ log.logStartup(workingDir, sandboxDesc);
 
 // Start link callback server if port is configured
 if (MOM_LINK_PORT) {
-  startLinkServer(MOM_LINK_PORT, linkTokenStore, vaultManager, async (platform, channelId, msg) => {
-    const bot = botsByPlatform[platform];
-    if (bot) await bot.postMessage(channelId, msg);
-  });
+  startLinkServer(
+    MOM_LINK_PORT,
+    linkTokenStore,
+    vaultManager,
+    async (platform, conversationId, msg) => {
+      const bot = botsByPlatform[platform];
+      if (bot) await bot.postMessage(conversationId, msg);
+    },
+  );
 }
 
 // Create platform bots

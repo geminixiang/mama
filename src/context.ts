@@ -125,7 +125,7 @@ export async function syncLogToSessionManager(
       // Thread filtering: only sync messages belonging to this session's thread
       if (threadFilter) {
         if (threadFilter.scope === "top-level") {
-          // Persistent channel/chat sessions should only ingest top-level messages.
+          // Persistent top-level sessions should only ingest top-level messages.
           // This avoids pulling in unrelated replies from other threads.
           if (logMsg.threadTs) {
             continue;
