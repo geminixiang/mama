@@ -8,8 +8,8 @@ export interface LinkToken {
   platformUserId: string;
   vaultId: string;
   providerId: string;
-  /** Channel/chat to notify when binding completes */
-  channelId: string;
+  /** Conversation to notify when binding completes */
+  conversationId: string;
   expiresAt: number;
   used: boolean;
 }
@@ -28,7 +28,7 @@ export class InMemoryLinkTokenStore {
   create(
     platform: "slack" | "discord" | "telegram",
     platformUserId: string,
-    channelId: string,
+    conversationId: string,
     vaultId: string,
     providerId: string,
   ): LinkToken {
@@ -45,7 +45,7 @@ export class InMemoryLinkTokenStore {
       platformUserId,
       vaultId,
       providerId,
-      channelId,
+      conversationId,
       expiresAt: Date.now() + TTL_MS,
       used: false,
     };

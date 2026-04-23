@@ -44,7 +44,10 @@ export function createSlackAdapters(
     userId: event.user,
     userName: user?.userName,
     text: event.text,
-    attachments: (event.attachments || []).map((a) => ({ name: a.local, localPath: a.local })),
+    attachments: (event.attachments || []).map((a) => ({
+      name: a.original,
+      localPath: a.localPath,
+    })),
     threadTs: event.thread_ts,
   };
 

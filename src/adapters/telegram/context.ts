@@ -120,7 +120,7 @@ async function notifyError(
   const errMsg = err instanceof Error ? err.message : String(err);
   log.logWarning(`Telegram ${label} error`, errMsg);
   try {
-    await bot.postPlainMessage(chatId, `⚠️ 發送失敗：${errMsg}`);
+    await bot.postPlainMessage(chatId, `Delivery failed: ${errMsg}`);
   } catch {
     // ignore secondary failure
   }
@@ -147,12 +147,12 @@ export function createTelegramAdapters(
     }
   }
 
-  const chatId = parseInt(event.channel);
+  const chatId = parseInt(event.conversationId);
   const replyToId = event.thread_ts ? parseInt(event.thread_ts) : null;
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -180,7 +180,7 @@ export function createTelegramAdapters(
 
   async function sendOrUpdate(displayText: string): Promise<void> {
     if (messageId !== null) {
-      await bot.updateMessage(event.channel, String(messageId), displayText);
+      await bot.updateMessage(event.conversationId, String(messageId), displayText);
     } else if (replyToId !== null) {
       messageId = await bot.postReply(chatId, replyToId, displayText);
     } else {
@@ -197,7 +197,7 @@ export function createTelegramAdapters(
           const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
           await sendOrUpdate(displayText);
           if (messageId !== null) {
-            bot.logBotResponse(event.channel, text, String(messageId));
+            bot.logBotResponse(event.conversationId, text, String(messageId));
           }
         } catch (err) {
           await notifyError(bot, chatId, "respond", err);
@@ -238,7 +238,7 @@ export function createTelegramAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await bot.uploadFile(event.channel, filePath, title);
+      await bot.uploadFile(event.conversationId, filePath, title);
     },
 
     deleteResponse: async () => {

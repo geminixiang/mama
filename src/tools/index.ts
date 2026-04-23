@@ -13,7 +13,7 @@ export function createMamaTools(
 ): {
   tools: AgentTool<any>[];
   setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
-  setEventContext: (context: { platform: string; channelId: string; userId: string }) => void;
+  setEventContext: (context: { platform: string; conversationId: string; userId: string }) => void;
 } {
   const { tool: attachTool, setUploadFunction } = createAttachTool();
   const { tool: eventTool, setEventContext } = createEventTool(workspaceDir);

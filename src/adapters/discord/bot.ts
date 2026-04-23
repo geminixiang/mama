@@ -17,6 +17,7 @@ import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -109,27 +110,32 @@ export class DiscordBot implements Bot {
     });
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
-    const ch = await this.fetchTextChannel(channel);
+  async postMessage(conversationId: string, text: string): Promise<string> {
+    const ch = await this.fetchTextChannel(conversationId);
     const msg = await ch.send(text);
     return msg.id;
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-    await this.updateMessageRaw(channel, ts, text);
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
+    await this.updateMessageRaw(conversationId, ts, text);
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createDiscordAdapters(event as DiscordEvent, this, true);
+      const discordEvent: DiscordEvent = {
+        ...event,
+        type: "mention",
+        conversationId: event.conversationId,
+      };
+      const adapters = createDiscordAdapters(discordEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -211,9 +217,9 @@ export class DiscordBot implements Bot {
   }
 
   logToFile(channelId: string, entry: object): void {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channelId);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   logBotResponse(channelId: string, text: string, ts: string): void {
@@ -251,7 +257,7 @@ export class DiscordBot implements Bot {
       const sanitizedName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const filename = `${ts}_${sanitizedName}`;
       const localPath = `${channelId}/attachments/${filename}`;
-      const fullDir = join(this.workingDir, channelId, "attachments");
+      const attachmentsDir = join(this.workingDir, channelId, "attachments");
 
       result.push({
         name: attachment.name,
@@ -259,7 +265,7 @@ export class DiscordBot implements Bot {
       });
 
       // Download in background (fire and forget)
-      this.downloadAttachment(fullDir, filename, attachment.url).catch((err) => {
+      this.downloadAttachment(attachmentsDir, filename, attachment.url).catch((err) => {
         log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
       });
     }
@@ -270,8 +276,12 @@ export class DiscordBot implements Bot {
   /**
    * Download an attachment from URL to local file
    */
-  private async downloadAttachment(dir: string, filename: string, url: string): Promise<void> {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  private async downloadAttachment(
+    attachmentsDir: string,
+    filename: string,
+    url: string,
+  ): Promise<void> {
+    if (!existsSync(attachmentsDir)) mkdirSync(attachmentsDir, { recursive: true });
 
     try {
       const response = await fetch(url);
@@ -280,7 +290,7 @@ export class DiscordBot implements Bot {
       }
 
       const buffer = await response.arrayBuffer();
-      writeFileSync(join(dir, filename), Buffer.from(buffer));
+      writeFileSync(join(attachmentsDir, filename), Buffer.from(buffer));
     } catch (err) {
       throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -363,7 +373,7 @@ export class DiscordBot implements Bot {
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
-        channel: channelId,
+        conversationId: channelId,
         ts: msgId,
         thread_ts: threadTs,
         user: userId,
@@ -388,19 +398,19 @@ export class DiscordBot implements Bot {
         if (this.handler.isRunning(sessionKey)) {
           this.handler.handleStop(sessionKey, channelId, this);
         } else {
-          await this.postMessage(channelId, "_Nothing running_");
+          await this.postMessage(channelId, formatNothingRunning("discord"));
         }
         return;
       }
 
       // Handle login command
       if (parseLoginCommand(cleanedText)) {
-        await this.handler.handleLogin("discord", userId, channelId, this, cleanedText);
+        await this.handler.handleLogin("discord", userId, channelId, this, cleanedText, isDM);
         return;
       }
 
       if (this.handler.isRunning(sessionKey)) {
-        await this.postMessage(channelId, "_Already working. Say `stop` to cancel._");
+        await this.postMessage(channelId, formatAlreadyWorking("discord", "stop"));
       } else {
         this.getQueue(sessionKey).enqueue(() => {
           const adapters = createDiscordAdapters(event, this, false);

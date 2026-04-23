@@ -5,7 +5,7 @@ import * as log from "./log.js";
 
 export interface Attachment {
   original: string; // original filename from uploader
-  local: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
+  localPath: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
 }
 
 export interface LoggedMessage {
@@ -54,11 +54,11 @@ export class ChannelStore {
    * Get or create the directory for a channel/DM
    */
   getChannelDir(channelId: string): string {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const channelDir = join(this.workingDir, channelId);
+    if (!existsSync(channelDir)) {
+      mkdirSync(channelDir, { recursive: true });
     }
-    return dir;
+    return channelDir;
   }
 
   /**
@@ -96,7 +96,7 @@ export class ChannelStore {
 
       attachments.push({
         original: file.name,
-        local: localPath,
+        localPath,
       });
 
       // Queue for background download
@@ -214,9 +214,9 @@ export class ChannelStore {
     const filePath = join(this.workingDir, localPath);
 
     // Ensure directory exists
-    const dir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const parentDir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
+    if (!existsSync(parentDir)) {
+      mkdirSync(parentDir, { recursive: true });
     }
 
     const response = await fetch(url, {

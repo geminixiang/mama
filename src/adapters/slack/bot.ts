@@ -8,6 +8,12 @@ import type { EventsWatcher } from "../../events.js";
 import { parseLoginCommand } from "../../login.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
+import {
+  PRODUCT_NAME,
+  formatAlreadyWorking,
+  formatForceStopped,
+  formatNothingRunning,
+} from "../../ui-copy.js";
 import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
@@ -111,7 +117,7 @@ export interface SlackContext {
     userName?: string;
     channel: string;
     ts: string;
-    attachments: Array<{ local: string }>;
+    attachments: Array<{ localPath: string }>;
   };
   channelName?: string;
   channels: ChannelInfo[];
@@ -194,6 +200,22 @@ export class SlackBot implements Bot {
     this.eventsWatcher = watcher;
   }
 
+  private toBotEvent(event: SlackEvent): BotEvent {
+    return {
+      type: event.type,
+      conversationId: event.channel,
+      ts: event.ts,
+      thread_ts: event.thread_ts,
+      user: event.user,
+      text: event.text,
+      attachments: event.attachments?.map((attachment) => ({
+        name: attachment.original,
+        localPath: attachment.localPath,
+      })),
+      sessionKey: event.sessionKey,
+    };
+  }
+
   // ==========================================================================
   // Public API
   // ==========================================================================
@@ -232,16 +254,16 @@ export class SlackBot implements Bot {
     return Array.from(this.channels.values());
   }
 
-  async postMessage(channel: string, text: string): Promise<string> {
+  async postMessage(conversationId: string, text: string): Promise<string> {
     return withRetry(async () => {
-      const result = await this.webClient.chat.postMessage({ channel, text });
+      const result = await this.webClient.chat.postMessage({ channel: conversationId, text });
       return result.ts as string;
     });
   }
 
-  async updateMessage(channel: string, ts: string, text: string): Promise<void> {
+  async updateMessage(conversationId: string, ts: string, text: string): Promise<void> {
     return withRetry(async () => {
-      await this.webClient.chat.update({ channel, ts, text });
+      await this.webClient.chat.update({ channel: conversationId, ts, text });
     });
   }
 
@@ -329,9 +351,9 @@ export class SlackBot implements Bot {
    * This is the ONLY place messages are written to log.jsonl
    */
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    const channelDir = join(this.workingDir, channel);
+    if (!existsSync(channelDir)) mkdirSync(channelDir, { recursive: true });
+    appendFileSync(join(channelDir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
   }
 
   /**
@@ -372,16 +394,25 @@ export class SlackBot implements Bot {
    * Returns true if enqueued, false if queue is full (max 5).
    */
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const queue = this.getQueue(event.conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${event.conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${event.conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createSlackAdapters(event as unknown as SlackEvent, this, true);
+      const slackEvent: SlackEvent = {
+        type: "mention",
+        channel: event.conversationId,
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+        user: event.user,
+        text: event.text,
+        sessionKey: event.sessionKey,
+      };
+      const adapters = createSlackAdapters(slackEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -408,12 +439,12 @@ export class SlackBot implements Bot {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*Pi Agent*\nWelcome back! Start a new task or check on running work.",
+          text: `*${PRODUCT_NAME}*\nStart a new task or check on running work.`,
         },
         accessory: {
           type: "image",
           image_url: "https://media1.tenor.com/m/lfDATg4Bhc0AAAAC/happy-cat.gif",
-          alt_text: "Pi Agent",
+          alt_text: PRODUCT_NAME,
         },
       },
     ];
@@ -517,6 +548,12 @@ export class SlackBot implements Bot {
         elements: [{ type: "mrkdwn", text: "_No scheduled jobs._" }],
       });
     } else {
+      const timestampFormatter = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
       for (const ev of periodicEvents) {
         const channelLabel =
           ev.platform === "slack"
@@ -526,14 +563,7 @@ export class SlackBot implements Bot {
                 return `${ev.platform}:${channelName}`;
               })()
             : `${ev.platform}:${ev.channelId}`;
-        const nextStr = ev.nextRun
-          ? new Date(ev.nextRun).toLocaleString("en-US", {
-              month: "short",
-              day: "numeric",
-              hour: "2-digit",
-              minute: "2-digit",
-            })
-          : "—";
+        const nextStr = ev.nextRun ? timestampFormatter.format(new Date(ev.nextRun)) : "—";
         blocks.push({
           type: "section",
           text: {
@@ -627,7 +657,7 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
         ack();
         return;
@@ -635,7 +665,7 @@ export class SlackBot implements Bot {
 
       // Check for login command
       if (parseLoginCommand(slackEvent.text)) {
-        this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
+        void this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text, false);
         ack();
         return;
       }
@@ -644,17 +674,12 @@ export class SlackBot implements Bot {
       if (this.handler.isRunning(sessionKey)) {
         this.postMessage(
           e.channel,
-          "_Already working in this thread. Say `@mama stop` to cancel._",
+          formatAlreadyWorking("slack", "@mama stop", { scope: "thread" }),
         );
       } else {
         this.getQueue(sessionKey).enqueue(() => {
           const adapters = createSlackAdapters(slackEvent, this, false);
-          return this.handler.handleEvent(
-            slackEvent as unknown as import("../../adapter.js").BotEvent,
-            this,
-            adapters,
-            false,
-          );
+          return this.handler.handleEvent(this.toBotEvent(slackEvent), this, adapters, false);
         });
       }
 
@@ -729,7 +754,7 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
         ack();
         return;
@@ -743,7 +768,7 @@ export class SlackBot implements Bot {
           if (this.handler.isRunning(dmSessionKey)) {
             this.handler.handleStop(dmSessionKey, e.channel, this); // Don't await, don't queue
           } else {
-            this.postMessage(e.channel, "_Nothing running_");
+            this.postMessage(e.channel, formatNothingRunning("slack"));
           }
           ack();
           return;
@@ -751,22 +776,17 @@ export class SlackBot implements Bot {
 
         // Check for login command
         if (parseLoginCommand(slackEvent.text)) {
-          this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text);
+          void this.handler.handleLogin("slack", e.user, e.channel, this, slackEvent.text, true);
           ack();
           return;
         }
 
         if (this.handler.isRunning(dmSessionKey)) {
-          this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
+          this.postMessage(e.channel, formatAlreadyWorking("slack", "stop"));
         } else {
           this.getQueue(dmSessionKey).enqueue(() => {
             const adapters = createSlackAdapters(slackEvent, this, false);
-            return this.handler.handleEvent(
-              slackEvent as unknown as import("../../adapter.js").BotEvent,
-              this,
-              adapters,
-              false,
-            );
+            return this.handler.handleEvent(this.toBotEvent(slackEvent), this, adapters, false);
           });
         }
       }
@@ -809,7 +829,8 @@ export class SlackBot implements Bot {
       this.handler.forceStop(sessionKey);
 
       // Notify in channel
-      await this.postMessage(channelId, `_🔴 Force stopped by ${userId}_`);
+      const actorLabel = userId ? `<@${userId}>` : "someone";
+      await this.postMessage(channelId, formatForceStopped("slack", actorLabel));
 
       // Refresh home tab
       if (userId) {
