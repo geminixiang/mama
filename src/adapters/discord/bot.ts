@@ -3,6 +3,8 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  REST,
+  Routes,
   ThreadAutoArchiveDuration,
   type Collection,
   type Message,
@@ -12,8 +14,16 @@ import {
   type NewsChannel,
   type ThreadChannel,
 } from "discord.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "fs";
 import { basename, join } from "path";
+import { spawn } from "child_process";
 
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
@@ -65,6 +75,12 @@ class ChannelQueue {
 // DiscordBot
 // ============================================================================
 
+// Slash command skill definition
+interface SlashCommandSkill {
+  command: object; // Discord API command object
+  handlerPath: string; // Absolute path to handler script
+}
+
 export class DiscordBot implements Bot {
   private client: Client;
   private handler: BotHandler;
@@ -77,6 +93,7 @@ export class DiscordBot implements Bot {
   /** Thread IDs created by this bot — replies in these threads skip the @mention check */
   private ownThreads = new Set<string>();
   private ownThreadsPath: string;
+  private slashCommands = new Map<string, SlashCommandSkill>();
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
@@ -123,13 +140,14 @@ export class DiscordBot implements Bot {
 
   async start(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      this.client.once(Events.ClientReady, (readyClient) => {
+      this.client.once(Events.ClientReady, async (readyClient) => {
         this.botUserId = readyClient.user.id;
         this.startupTime = Date.now();
         log.logConnected();
         log.logInfo(`Discord bot started as ${readyClient.user.tag}`);
         this.loadCachedGuildData();
         this.setupEventHandlers();
+        await this.registerSlashCommands();
         resolve();
       });
       this.client.once(Events.Error, reject);
@@ -360,6 +378,98 @@ export class DiscordBot implements Bot {
     return queue;
   }
 
+  // ==========================================================================
+  // Private - Slash Commands
+  // ==========================================================================
+
+  private scanSlashCommandSkills(): void {
+    this.slashCommands.clear();
+    const searchDirs = [join(this.workingDir, "skills")];
+    // Also scan channel-specific skill dirs
+    try {
+      const entries = readdirSync(this.workingDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.isDirectory() && /^\d+$/.test(entry.name)) {
+          searchDirs.push(join(this.workingDir, entry.name, "skills"));
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    for (const skillsDir of searchDirs) {
+      if (!existsSync(skillsDir)) continue;
+      let skillDirs: string[];
+      try {
+        skillDirs = readdirSync(skillsDir);
+      } catch {
+        continue;
+      }
+
+      for (const skillName of skillDirs) {
+        const skillDir = join(skillsDir, skillName);
+        const commandDefPath = join(skillDir, "slash-command.json");
+        const handlerPath = join(skillDir, "slash-handler.sh");
+        if (!existsSync(commandDefPath) || !existsSync(handlerPath)) continue;
+        try {
+          const command = JSON.parse(readFileSync(commandDefPath, "utf-8"));
+          const name = (command as any).name as string;
+          this.slashCommands.set(name, { command, handlerPath });
+          log.logInfo(`Loaded slash command: /${name} from ${skillDir}`);
+        } catch (err) {
+          log.logWarning(`Failed to load slash command from ${skillDir}`, String(err));
+        }
+      }
+    }
+  }
+
+  private async registerSlashCommands(): Promise<void> {
+    this.scanSlashCommandSkills();
+    if (this.slashCommands.size === 0) return;
+
+    const token = process.env.MOM_DISCORD_BOT_TOKEN!;
+    const applicationId = process.env.MOM_DISCORD_APPLICATION_ID;
+    const guildId = process.env.MOM_DISCORD_GUILD_ID;
+
+    if (!applicationId || !guildId) {
+      log.logWarning(
+        "MOM_DISCORD_APPLICATION_ID or MOM_DISCORD_GUILD_ID not set, skipping slash command registration",
+      );
+      return;
+    }
+
+    const rest = new REST().setToken(token);
+    const commands = Array.from(this.slashCommands.values()).map((s) => s.command);
+
+    try {
+      await rest.put(Routes.applicationGuildCommands(applicationId, guildId), { body: commands });
+      log.logInfo(`Registered ${commands.length} slash command(s) to guild ${guildId}`);
+    } catch (err) {
+      log.logWarning("Failed to register slash commands", String(err));
+    }
+  }
+
+  private executeSlashHandler(
+    handlerPath: string,
+    args: string[],
+    env: Record<string, string>,
+  ): Promise<string> {
+    return new Promise((resolve) => {
+      const child = spawn("bash", [handlerPath, ...args], {
+        env: { ...process.env, ...env },
+        timeout: 30000,
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (d) => (stdout += d));
+      child.stderr.on("data", (d) => (stderr += d));
+      child.on("close", () => {
+        resolve(stdout.trim() || stderr.trim() || "(no output)");
+      });
+      child.on("error", (err) => resolve(`Error: ${err.message}`));
+    });
+  }
+
   private loadCachedGuildData(): void {
     for (const guild of this.client.guilds.cache.values()) {
       for (const channel of guild.channels.cache.values()) {
@@ -466,22 +576,63 @@ export class DiscordBot implements Bot {
       }
     });
 
-    // Handle button interactions (e.g. Stop button)
+    // Handle interactions (buttons + slash commands)
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isButton()) return;
-
-      const customId = interaction.customId;
-
-      if (customId.startsWith("mama_stop:")) {
-        const sessionKey = customId.slice("mama_stop:".length);
-        const channelId = interaction.channelId;
-
-        if (this.handler.isRunning(sessionKey)) {
-          this.handler.handleStop(sessionKey, channelId, this);
-          await interaction.reply({ content: "_Stopping..._", ephemeral: true });
-        } else {
-          await interaction.reply({ content: "_Nothing running_", ephemeral: true });
+      // Button interactions
+      if (interaction.isButton()) {
+        const customId = interaction.customId;
+        if (customId.startsWith("mama_stop:")) {
+          const sessionKey = customId.slice("mama_stop:".length);
+          const channelId = interaction.channelId;
+          if (this.handler.isRunning(sessionKey)) {
+            this.handler.handleStop(sessionKey, channelId, this);
+            await interaction.reply({ content: "_Stopping..._", ephemeral: true });
+          } else {
+            await interaction.reply({ content: "_Nothing running_", ephemeral: true });
+          }
         }
+        return;
+      }
+
+      // Slash command interactions
+      if (interaction.isChatInputCommand()) {
+        const commandName = interaction.commandName;
+        const skill = this.slashCommands.get(commandName);
+        if (!skill) return;
+
+        await interaction.deferReply({ ephemeral: true });
+
+        // Build args: subcommand, then options as KEY=VALUE pairs
+        const args: string[] = [];
+        const subcommand = interaction.options.getSubcommand(false);
+        if (subcommand) args.push(subcommand);
+
+        const env: Record<string, string> = {
+          DISCORD_USER_ID: interaction.user.id,
+          DISCORD_USER_NAME: interaction.user.username,
+          DISCORD_CHANNEL_ID: interaction.channelId ?? "",
+          DISCORD_GUILD_ID: interaction.guildId ?? "",
+        };
+
+        // Pass all options as env vars: OPTION_<NAME>=<value>
+        const opts = interaction.options.data;
+        const collectOptions = (options: typeof opts) => {
+          for (const opt of options) {
+            if (opt.options) collectOptions(opt.options);
+            else if (opt.value !== undefined) {
+              env[`OPTION_${opt.name.toUpperCase()}`] = String(opt.value);
+            }
+          }
+        };
+        collectOptions(opts);
+
+        try {
+          const result = await this.executeSlashHandler(skill.handlerPath, args, env);
+          await interaction.editReply({ content: result.substring(0, 2000) });
+        } catch (err) {
+          await interaction.editReply({ content: `Error: ${String(err)}` });
+        }
+        return;
       }
     });
   }
