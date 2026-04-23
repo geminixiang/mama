@@ -443,7 +443,9 @@ export class EventsWatcher {
       return;
     }
 
-    // Create synthetic BotEvent - use channelId as ts for stable session key.
+    // Create synthetic BotEvent. Keep a stable channel session key so recurring
+    // reminders share context, but use a unique synthetic message id because
+    // some adapters treat `ts`/message id as a reply target.
     // `user` falls back to "EVENT" when the event file omits a creator; vault
     // routing then resolves to an empty auto-created entry (no credentials).
     const syntheticEvent: BotEvent = {
@@ -451,7 +453,8 @@ export class EventsWatcher {
       channel: event.channelId,
       user: event.userId ?? "EVENT",
       text: message,
-      ts: event.channelId, // Stable key: same channel uses same ts for all events
+      ts: `event:${filename}`,
+      sessionKey: event.channelId,
     };
 
     // Enqueue for processing

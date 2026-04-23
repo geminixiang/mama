@@ -72,6 +72,12 @@ describe("session key derivation", () => {
     expect(m2.sessionKey).toBe("CH001:MSG004");
     expect(m1.sessionKey).not.toBe(m2.sessionKey);
   });
+
+  test("explicit sessionKey overrides synthetic event ids", () => {
+    const event = makeEvent({ ts: "event:reminder.json", sessionKey: "CH001" });
+    const { message } = createDiscordAdapters(event, makeDiscordBot(), true);
+    expect(message.sessionKey).toBe("CH001");
+  });
 });
 
 // ============================================================================
@@ -140,6 +146,19 @@ describe("respond() — threaded", () => {
       "THREAD_MSG001",
       expect.stringContaining("second"),
     );
+  });
+
+  test("event without thread posts top-level message instead of replying to synthetic id", async () => {
+    const bot = makeDiscordBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG001") });
+    const event = makeEvent({
+      ts: "event:reminder.json",
+      thread_ts: undefined,
+      sessionKey: "CH001",
+    });
+    const { responseCtx } = createDiscordAdapters(event, bot, true);
+    await responseCtx.respond("hello");
+    expect(bot.postMessage).toHaveBeenCalledWith("CH001", expect.stringContaining("hello"));
+    expect(bot.postReply).not.toHaveBeenCalled();
   });
 });
 

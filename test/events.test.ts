@@ -101,7 +101,8 @@ describe("EventsWatcher platform routing", () => {
       channel: "CH-42",
       user: "EVENT",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
-      ts: "CH-42",
+      ts: "event:deploy-reminder.json",
+      sessionKey: "CH-42",
     });
   });
 });

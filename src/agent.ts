@@ -145,6 +145,7 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
 function buildSystemPrompt(
   workspacePath: string,
   channelId: string,
+  currentUserId: string | undefined,
   memory: string,
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
@@ -271,6 +272,15 @@ All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events us
 Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
 
 ### Creating Events
+Prefer the \`event\` tool. It automatically writes to the correct events directory and fills the current \`platform\`, \`channelId\`, and requester \`userId\`.
+Do not use \`bash\` or \`write\` to hand-create JSON files in \`/events\` unless the user explicitly asks for manual file editing.
+
+Current conversation defaults:
+- \`platform\`: \`${platform.name}\`
+- \`channelId\`: \`${channelId}\`
+- \`userId\`: \`${currentUserId ?? "unknown"}\`
+
+Manual file creation is fallback only:
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
@@ -461,7 +471,7 @@ export async function createRunner(
   let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
+  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -481,6 +491,7 @@ export async function createRunner(
   const systemPrompt = buildSystemPrompt(
     workspacePath,
     channelId,
+    undefined,
     memory,
     sandboxConfig,
     emptyPlatform,
@@ -924,6 +935,7 @@ export async function createRunner(
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
+        message.userId,
         memory,
         actualSandboxConfig,
         platform,
@@ -935,6 +947,11 @@ export async function createRunner(
       setUploadFunction(async (filePath: string, title?: string) => {
         const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
         await responseCtx.uploadFile(hostPath, title);
+      });
+      setEventContext({
+        platform: platform.name,
+        channelId,
+        userId: message.userId,
       });
 
       // Reset per-run state
