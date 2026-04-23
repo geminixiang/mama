@@ -32,7 +32,7 @@ import { FileVaultManager } from "./vault.js";
 import { ensureSettingsFile } from "./config.js";
 import {
   createManagedVaultEntry,
-  ensureImageSandboxVault,
+  ensureSandboxVaultEntry,
   resolveActorVaultKey,
 } from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
@@ -210,12 +210,20 @@ try {
 
 const vaultManager = new FileVaultManager(stateDir);
 if (vaultManager.isEnabled()) {
-  console.log("  Vault system enabled. Per-user credential routing active.");
+  console.log(
+    sandbox.type === "container"
+      ? "  Vault system enabled. Shared container vault active."
+      : "  Vault system enabled. Per-user credential routing active.",
+  );
 }
 
 const bindingStore = new FileUserBindingStore(stateDir);
 if (bindingStore.isEnabled()) {
-  console.log("  Binding store enabled. Platform user → vault routing active.");
+  console.log(
+    sandbox.type === "container"
+      ? "  Binding store enabled. Shared container mode ignores per-user vault bindings."
+      : "  Binding store enabled. Platform user → vault routing active.",
+  );
 }
 
 const provisioner =
@@ -282,9 +290,8 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
     platformUserId,
   );
 
-  if (sandbox.type === "image") {
-    ensureImageSandboxVault(sandbox, vaultManager, platform, platformUserId, vaultId);
-  } else {
+  ensureSandboxVaultEntry(sandbox, vaultManager, platform, platformUserId, vaultId);
+  if (sandbox.type !== "image" && sandbox.type !== "container") {
     vaultManager.addEntry(
       vaultId,
       createManagedVaultEntry(platform, platformUserId, vaultId, false),
@@ -472,9 +479,10 @@ const handler: BotHandler = {
     }
 
     const loginLabel = "credential";
+    const vaultLabel = sandbox.type === "container" ? "the shared container vault" : "your vault";
     await bot.postMessage(
       conversationId,
-      `Open this link to store ${loginLabel} in your personal vault ` +
+      `Open this link to store ${loginLabel} in ${vaultLabel} ` +
         `(expires in 15 minutes):\n${baseUrl}/link?token=${
           linkTokenStore.create(
             platform as "slack" | "discord" | "telegram",

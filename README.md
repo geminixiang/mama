@@ -47,7 +47,7 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host or inside a container
+- **Sandbox execution** — run agent commands on host, in shared containers, per-user containers, or Firecracker VMs (see [docs/sandbox.md](docs/sandbox.md))
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files

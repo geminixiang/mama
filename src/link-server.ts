@@ -89,8 +89,8 @@ export function startLinkServer(
 
       const title = oauthServiceHint ? `${oauthServiceHint.label} OAuth` : "Store Secret";
       const helpText = oauthServiceHint
-        ? `Authorize ${oauthServiceHint.label} and store tokens in your personal vault.`
-        : "Set any environment variable key/value pair in your personal vault.";
+        ? `Authorize ${oauthServiceHint.label} and store tokens in your vault.`
+        : "Set any environment variable key/value pair in your vault.";
       const secretLabel = "Secret value";
       const placeholder = "sk-...";
       const initialEnvKey = "";
@@ -690,7 +690,7 @@ async function handleLinkComplete(
   );
 
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok: true, message: `${envKey} stored successfully in your vault.` }));
+  res.end(JSON.stringify({ ok: true, message: `${envKey} stored successfully in vault.` }));
 
   notify(
     linkToken.platform,

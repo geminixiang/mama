@@ -10,6 +10,10 @@ export function resolveActorVaultKey(
   platform: string,
   userId: string,
 ): string {
+  if (baseConfig.type === "container") {
+    return containerSharedVaultId(baseConfig.container);
+  }
+
   const binding = bindingStore?.resolve(platform, userId);
   if (binding) {
     return binding.vaultId;
@@ -40,6 +44,36 @@ export function createManagedVaultEntry(
         }
       : {}),
   };
+}
+
+export function containerSharedVaultId(containerName: string): string {
+  return `container-${containerName}`;
+}
+
+export function createSharedContainerVaultEntry(containerName: string): VaultEntry {
+  return {
+    displayName: `container:${containerName}`,
+  };
+}
+
+export function ensureSandboxVaultEntry(
+  baseConfig: SandboxConfig,
+  vaultManager: Pick<VaultManager, "addEntry" | "ensureImageSandboxEntry">,
+  platform: string,
+  userId: string,
+  vaultKey: string,
+): void {
+  if (baseConfig.type === "image") {
+    vaultManager.ensureImageSandboxEntry(
+      vaultKey,
+      createManagedVaultEntry(platform, userId, vaultKey, true),
+    );
+    return;
+  }
+
+  if (baseConfig.type === "container") {
+    vaultManager.addEntry(vaultKey, createSharedContainerVaultEntry(baseConfig.container));
+  }
 }
 
 export function ensureImageSandboxVault(

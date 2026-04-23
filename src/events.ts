@@ -22,7 +22,7 @@ export interface ImmediateEvent {
   type: "immediate";
   platform: string;
   channelId: string;
-  /** Creator userId — routes tool execution to this user's vault when fired. */
+  /** Creator userId — routes tool execution to the sandbox's vault selection for that user when fired. */
   userId?: string;
   text: string;
 }
@@ -447,7 +447,8 @@ export class EventsWatcher {
     // reminders share context, but use a unique synthetic message id because
     // some adapters treat `ts`/message id as a reply target.
     // `user` falls back to "EVENT" when the event file omits a creator; vault
-    // routing then resolves to an empty auto-created entry (no credentials).
+    // routing then resolves to an empty auto-created entry or shared container vault
+    // with no credentials configured yet.
     const syntheticEvent: BotEvent = {
       type: "mention",
       conversationId: event.channelId,

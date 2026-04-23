@@ -3,7 +3,7 @@ import type { UserBindingStore } from "./bindings.js";
 import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { ResolvedVault, VaultManager } from "./vault.js";
-import { ensureImageSandboxVault, resolveActorVaultKey } from "./vault-routing.js";
+import { ensureSandboxVaultEntry, resolveActorVaultKey } from "./vault-routing.js";
 
 export interface ActorContext {
   platform: string;
@@ -31,7 +31,7 @@ export class ActorExecutionResolver {
       context.platform,
       context.userId,
     );
-    ensureImageSandboxVault(
+    ensureSandboxVaultEntry(
       this.baseConfig,
       this.vaultManager,
       context.platform,

@@ -257,7 +257,7 @@ You can schedule events that wake you up at specific times or when external thin
 {"type": "periodic", "platform": "${platform.name}", "channelId": "${conversationId}", "userId": "<requester userId>", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
 
-Set \`userId\` to the platform userId of whoever asked for the event (look it up in the user mappings above). When the event fires, tool execution will route to that user's vault so their credentials are available.
+Set \`userId\` to the platform userId of whoever asked for the event (look it up in the user mappings above). When the event fires, tool execution will route to the sandbox vault selection for that user so the right credentials are available. In shared container mode, all events use the container's single shared vault.
 
 ### Cron Format
 \`minute hour day-of-month month day-of-week\`
@@ -448,7 +448,11 @@ export async function createRunner(
   });
 
   const executionResolver =
-    vaultManager && (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "image")
+    vaultManager &&
+    (vaultManager.isEnabled() ||
+      !!bindingStore ||
+      sandboxConfig.type === "image" ||
+      sandboxConfig.type === "container")
       ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
       : undefined;
   let activeExecutor: Executor =

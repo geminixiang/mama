@@ -6,7 +6,12 @@ import { FileUserBindingStore } from "../src/bindings.js";
 import { ActorExecutionResolver } from "../src/execution-resolver.js";
 import { DockerProvisioner } from "../src/provisioner.js";
 import { HostExecutor } from "../src/sandbox.js";
-import { ensureImageSandboxVault, resolveActorVaultKey } from "../src/vault-routing.js";
+import {
+  containerSharedVaultId,
+  ensureImageSandboxVault,
+  ensureSandboxVaultEntry,
+  resolveActorVaultKey,
+} from "../src/vault-routing.js";
 import { FileVaultManager, parseEnvFile, type VaultConfig } from "../src/vault.js";
 
 // ── parseEnvFile ──────────────────────────────────────────────────────────────
@@ -405,6 +410,49 @@ describe("ActorExecutionResolver", () => {
 
     const executor = await resolver.resolve({ platform: "slack", userId: "UNKNOWN_USER" });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
+  });
+
+  test("container mode routes all users to one shared vault", async () => {
+    writeVaultJson({
+      vaults: {
+        U123: { displayName: "Alice" },
+        alice: { displayName: "Bound Alice" },
+      },
+    });
+    writeFileSync(
+      join(vaultsDir, "bindings.json"),
+      JSON.stringify({
+        bindings: [
+          {
+            platform: "slack",
+            platformUserId: "U123",
+            internalUserId: "alice",
+            vaultId: "alice",
+            status: "active",
+            createdAt: "2026-04-22T00:00:00.000Z",
+            updatedAt: "2026-04-22T00:00:00.000Z",
+          },
+        ],
+      }),
+    );
+
+    const mgr = new FileVaultManager(tmpDir);
+    const bindings = new FileUserBindingStore(tmpDir);
+    const baseConfig = { type: "container", container: "shared-box" } as const;
+    const vaultKey = resolveActorVaultKey(baseConfig, mgr, bindings, "slack", "U123");
+
+    expect(vaultKey).toBe(containerSharedVaultId("shared-box"));
+
+    ensureSandboxVaultEntry(baseConfig, mgr, "slack", "U123", vaultKey);
+    expect(mgr.resolve(vaultKey)?.displayName).toBe("container:shared-box");
+
+    const resolver = new ActorExecutionResolver(baseConfig, mgr, bindings);
+    const executor = await resolver.resolve({ platform: "discord", userId: "DIFFERENT_USER" });
+
+    expect(executor.getSandboxConfig()).toEqual({ type: "container", container: "shared-box" });
+    expect(mgr.hasEntry(vaultKey)).toBe(true);
+    expect(mgr.hasEntry("alice")).toBe(true);
+    expect(mgr.hasEntry("U123")).toBe(true);
   });
 
   test("refresh picks up vault changes for later resolves", async () => {
