@@ -1,5 +1,5 @@
 {
-  "$comment": "Copy this file to vault.json and edit to enable per-user credential routing.",
+  "$comment": "Copy this file to vault.json. Entries are auto-created when a user's first tool call runs — this example is just a reference for hand-authored entries.",
   "vaults": {
     "U12345": {
       "displayName": "Alice",
@@ -20,19 +20,6 @@
         "type": "image",
         "container": "mama-sandbox-bob"
       }
-    },
-    "_shared": {
-      "displayName": "Shared (fallback)",
-      "mounts": [],
-      "envFile": true
-    },
-    "_system": {
-      "displayName": "System (events/scheduled tasks)",
-      "mounts": [],
-      "envFile": true
     }
-  },
-  "fallback": "_shared",
-  "systemActor": "_system",
-  "strict": false
+  }
 }

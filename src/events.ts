@@ -22,6 +22,8 @@ export interface ImmediateEvent {
   type: "immediate";
   platform: string;
   channelId: string;
+  /** Creator userId — routes tool execution to this user's vault when fired. */
+  userId?: string;
   text: string;
 }
 
@@ -29,6 +31,7 @@ export interface OneShotEvent {
   type: "one-shot";
   platform: string;
   channelId: string;
+  userId?: string;
   text: string;
   at: string; // ISO 8601 with timezone offset
 }
@@ -37,6 +40,7 @@ export interface PeriodicEvent {
   type: "periodic";
   platform: string;
   channelId: string;
+  userId?: string;
   text: string;
   schedule: string; // cron syntax
   timezone: string; // IANA timezone
@@ -282,9 +286,17 @@ export class EventsWatcher {
 
     const platform = this.resolvePlatform(data.platform, filename);
 
+    const userId = typeof data.userId === "string" ? data.userId : undefined;
+
     switch (data.type) {
       case "immediate":
-        return { type: "immediate", platform, channelId: data.channelId, text: data.text };
+        return {
+          type: "immediate",
+          platform,
+          channelId: data.channelId,
+          userId,
+          text: data.text,
+        };
 
       case "one-shot":
         if (!data.at) {
@@ -294,6 +306,7 @@ export class EventsWatcher {
           type: "one-shot",
           platform,
           channelId: data.channelId,
+          userId,
           text: data.text,
           at: data.at,
         };
@@ -309,6 +322,7 @@ export class EventsWatcher {
           type: "periodic",
           platform,
           channelId: data.channelId,
+          userId,
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
@@ -429,11 +443,13 @@ export class EventsWatcher {
       return;
     }
 
-    // Create synthetic BotEvent - use channelId as ts for stable session key
+    // Create synthetic BotEvent - use channelId as ts for stable session key.
+    // `user` falls back to "EVENT" when the event file omits a creator; vault
+    // routing then resolves to an empty auto-created entry (no credentials).
     const syntheticEvent: BotEvent = {
       type: "mention",
       channel: event.channelId,
-      user: "EVENT",
+      user: event.userId ?? "EVENT",
       text: message,
       ts: event.channelId, // Stable key: same channel uses same ts for all events
     };

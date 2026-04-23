@@ -7,7 +7,7 @@ import { ensureImageSandboxVault, resolveActorVaultKey } from "./vault-routing.j
 
 export interface ActorContext {
   platform: string;
-  userId?: string;
+  userId: string;
 }
 
 export class ActorExecutionResolver {
@@ -24,10 +24,6 @@ export class ActorExecutionResolver {
   }
 
   async resolve(context: ActorContext): Promise<Executor> {
-    if (!context.userId) {
-      return this.resolveSystemExecutor();
-    }
-
     const vaultKey = resolveActorVaultKey(
       this.baseConfig,
       this.vaultManager,
@@ -44,36 +40,9 @@ export class ActorExecutionResolver {
     );
     const vault = this.vaultManager.resolve(vaultKey);
 
-    if (!vault && this.vaultManager.isStrict()) {
-      throw new Error(
-        `No vault configured for user "${context.userId}". ` +
-          `Ask an admin to add an entry to vaults/vault.json.`,
-      );
-    }
-
     const config = this.vaultManager.getSandboxConfig(vaultKey, this.baseConfig);
     const env = vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
     return createExecutor(config, env, this.getEnsureReady(vaultKey, config, vault));
-  }
-
-  private resolveSystemExecutor(): Executor {
-    const systemVault = this.vaultManager.resolveSystemActor();
-    if (!systemVault) {
-      if (this.baseConfig.type === "image") {
-        throw new Error(
-          "image sandbox requires a configured systemActor vault for event/system-triggered runs.",
-        );
-      }
-      return createExecutor(this.baseConfig);
-    }
-
-    const config = this.applySandboxOverride(systemVault, this.baseConfig);
-    const env = Object.keys(systemVault.env).length > 0 ? systemVault.env : undefined;
-    // For image mode, we need getEnsureReady to auto-provision the container
-    // System vault uses userId from the vault config for container naming
-    const vaultKey = systemVault.userId;
-    const ensureReady = this.getEnsureReady(vaultKey, config, systemVault);
-    return createExecutor(config, env, ensureReady);
   }
 
   private getEnsureReady(
@@ -108,58 +77,5 @@ export class ActorExecutionResolver {
       mountsByTarget.set(mount.target, { source: mount.source, target: mount.target });
     }
     return [...mountsByTarget.values()];
-  }
-
-  private applySandboxOverride(vault: ResolvedVault, baseConfig: SandboxConfig): SandboxConfig {
-    const override = vault.sandboxOverride;
-    if (!override?.type) {
-      if (baseConfig.type === "image") {
-        return {
-          type: "container",
-          container: DockerContainerManager.containerName(vault.userId),
-        };
-      }
-      return baseConfig;
-    }
-
-    if (override.type === "image") {
-      if (baseConfig.type !== "image") {
-        throw new Error(
-          `systemActor vault uses sandbox.type=image, but base sandbox is "${baseConfig.type}". ` +
-            "Use --sandbox=image:<image> to enable per-user managed containers.",
-        );
-      }
-      return {
-        type: "container",
-        container: override.container || DockerContainerManager.containerName(vault.userId),
-      };
-    }
-
-    if (override.type === "firecracker" && override.vmId) {
-      const hostPath = baseConfig.type === "firecracker" ? baseConfig.hostPath : vault.dir;
-      return {
-        type: "firecracker",
-        vmId: override.vmId,
-        hostPath,
-        sshUser: override.sshUser,
-        sshPort: override.sshPort,
-      };
-    }
-
-    if (override.type === "host") {
-      throw new Error(
-        "systemActor vault uses sandbox.type=host, which is blocked for credential isolation. " +
-          "Use sandbox.type=image or sandbox.type=firecracker.",
-      );
-    }
-
-    if (override.type === "container" || override.type === "docker") {
-      throw new Error(
-        `systemActor vault uses sandbox.type=${override.type}, which is blocked for credential isolation. ` +
-          "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
-      );
-    }
-
-    return baseConfig;
   }
 }

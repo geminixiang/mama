@@ -129,21 +129,7 @@ describe("FileVaultManager", () => {
     expect(vault!.env).toEqual({ GITHUB_TOKEN: "ghp_abc" });
   });
 
-  test("resolve falls back to fallback vault", () => {
-    writeVaultJson({
-      vaults: { _shared: { displayName: "Shared" } },
-      fallback: "_shared",
-    });
-
-    const mgr = new FileVaultManager(tmpDir);
-    const vault = mgr.resolve("UNKNOWN_USER");
-
-    expect(vault).toBeDefined();
-    expect(vault!.userId).toBe("UNKNOWN_USER");
-    expect(vault!.displayName).toBe("Shared");
-  });
-
-  test("resolve returns undefined when no match and no fallback", () => {
+  test("resolve returns undefined when user has no vault entry", () => {
     writeVaultJson({
       vaults: { U123: { displayName: "Alice" } },
     });
@@ -358,69 +344,6 @@ describe("FileVaultManager", () => {
     expect(() => mgr.getSandboxConfig("U123", { type: "host" })).toThrow(/base sandbox is "host"/);
   });
 
-  // ── isStrict ──────────────────────────────────────────────────────────────
-
-  test("isStrict returns false by default", () => {
-    writeVaultJson({ vaults: {} });
-    const mgr = new FileVaultManager(tmpDir);
-    expect(mgr.isStrict()).toBe(false);
-  });
-
-  test("isStrict returns true when configured", () => {
-    writeVaultJson({ vaults: {}, strict: true });
-    const mgr = new FileVaultManager(tmpDir);
-    expect(mgr.isStrict()).toBe(true);
-  });
-
-  // ── resolveSystemActor ────────────────────────────────────────────────────
-
-  test("resolveSystemActor returns undefined when not configured", () => {
-    writeVaultJson({ vaults: {} });
-    const mgr = new FileVaultManager(tmpDir);
-    expect(mgr.resolveSystemActor()).toBeUndefined();
-  });
-
-  test("resolveSystemActor resolves configured system vault", () => {
-    writeVaultJson({
-      vaults: { _system: { displayName: "System" } },
-      systemActor: "_system",
-    });
-
-    const mgr = new FileVaultManager(tmpDir);
-    const vault = mgr.resolveSystemActor();
-    expect(vault).toBeDefined();
-    expect(vault!.displayName).toBe("System");
-    expect(vault!.userId).toBe("__system__");
-  });
-
-  test("resolveSystemActor with custom key does not interfere with resolve()", () => {
-    // Bug regression: getSandboxConfig("__system__") would re-resolve and miss the actual key
-    writeVaultJson({
-      vaults: {
-        _ops: { displayName: "Ops", sandbox: { type: "image", container: "ops-box" } },
-      },
-      systemActor: "_ops",
-    });
-
-    const mgr = new FileVaultManager(tmpDir);
-    const vault = mgr.resolveSystemActor();
-    expect(vault).toBeDefined();
-    expect(vault!.sandboxOverride).toEqual({ type: "image", container: "ops-box" });
-
-    // resolve("__system__") should NOT find _ops (it's only reachable via resolveSystemActor)
-    expect(mgr.resolve("__system__")).toBeUndefined();
-  });
-
-  test("resolveSystemActor returns undefined when key references missing vault", () => {
-    writeVaultJson({
-      vaults: {},
-      systemActor: "_nonexistent",
-    });
-
-    const mgr = new FileVaultManager(tmpDir);
-    expect(mgr.resolveSystemActor()).toBeUndefined();
-  });
-
   // ── list ──────────────────────────────────────────────────────────────────
 
   test("list returns all vaults", () => {
@@ -475,31 +398,12 @@ describe("ActorExecutionResolver", () => {
     writeFileSync(join(vaultsDir, "vault.json"), JSON.stringify(config));
   }
 
-  test("strict mode throws when user has no vault", async () => {
-    writeVaultJson({ vaults: {}, strict: true });
-    const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
-
-    await expect(resolver.resolve({ platform: "slack", userId: "UNKNOWN_USER" })).rejects.toThrow(
-      /No vault configured/,
-    );
-  });
-
-  test("non-strict mode falls back to base config for unknown user", async () => {
+  test("unknown user on host sandbox runs base config (no vault required)", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
     const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
 
     const executor = await resolver.resolve({ platform: "slack", userId: "UNKNOWN_USER" });
-    expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
-  });
-
-  test("system actor uses fallback executor", async () => {
-    writeVaultJson({ vaults: {} });
-    const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver({ type: "host" }, mgr);
-
-    const executor = await resolver.resolve({ platform: "slack", userId: undefined });
     expect(executor.getWorkspacePath("/workspace")).toBe("/workspace");
   });
 
@@ -523,28 +427,6 @@ describe("ActorExecutionResolver", () => {
     });
     resolver.refresh();
     executor = await resolver.resolve({ platform: "slack", userId: "U1" });
-    expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
-  });
-
-  test("system actor refresh picks up new system sandbox", async () => {
-    writeVaultJson({ vaults: {} });
-    const mgr = new FileVaultManager(tmpDir);
-    const resolver = new ActorExecutionResolver(
-      { type: "firecracker", vmId: "vm-base", hostPath: "/host/workspace" },
-      mgr,
-    );
-
-    writeVaultJson({
-      vaults: {
-        _sys: {
-          displayName: "System",
-          sandbox: { type: "firecracker", vmId: "vm-sys" },
-        },
-      },
-      systemActor: "_sys",
-    });
-    resolver.refresh();
-    const executor = await resolver.resolve({ platform: "slack", userId: undefined });
     expect(executor.getWorkspacePath("/any/path")).toBe("/workspace");
   });
 

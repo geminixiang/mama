@@ -10,12 +10,6 @@ const PRIVATE_FILE_MODE = 0o600;
 /** Shape of workspace/vaults/vault.json */
 export interface VaultConfig {
   vaults: Record<string, VaultEntry>;
-  /** Vault key for users without a dedicated vault (e.g. "_shared") */
-  fallback?: string;
-  /** When true, tool execution fails if user has no vault (and no fallback). Default: false */
-  strict?: boolean;
-  /** Vault key to use for system-triggered runs (events, scheduled tasks) with no userId */
-  systemActor?: string;
 }
 
 /** Per-user vault mount entry in vault.json */
@@ -62,9 +56,9 @@ export interface ResolvedVault {
 }
 
 export interface VaultManager {
-  /** Return true when vault.json contains this exact key (does not consider fallback). */
+  /** Return true when vault.json contains this exact key. */
   hasEntry(key: string): boolean;
-  /** Resolve vault for a user; returns undefined if no vault and no fallback */
+  /** Resolve vault for a user; returns undefined when no entry exists. */
   resolve(userId: string): ResolvedVault | undefined;
   /** Get sandbox config with credential injection for a user */
   getSandboxConfig(userId: string, baseConfig: SandboxConfig): SandboxConfig;
@@ -74,10 +68,6 @@ export interface VaultManager {
   reload(): void;
   /** Check if vault system is enabled (vault.json exists) */
   isEnabled(): boolean;
-  /** Check if strict mode is on (fail-fast when user has no vault) */
-  isStrict(): boolean;
-  /** Resolve the system actor vault (for events/scheduled tasks with no userId) */
-  resolveSystemActor(): ResolvedVault | undefined;
   /**
    * Add a vault entry and persist to disk.
    * No-op if the key already exists (idempotent).
@@ -199,37 +189,14 @@ export class FileVaultManager implements VaultManager {
     return this.config !== null;
   }
 
-  isStrict(): boolean {
-    return this.config?.strict === true;
-  }
-
   hasEntry(key: string): boolean {
     return !!this.config?.vaults[key];
   }
 
-  resolveSystemActor(): ResolvedVault | undefined {
-    if (!this.config?.systemActor) return undefined;
-    const key = this.config.systemActor;
-    const entry = this.config.vaults[key];
-    if (!entry) return undefined;
-    return this.buildResolved("__system__", key, entry);
-  }
-
   resolve(userId: string): ResolvedVault | undefined {
-    if (!this.config) return undefined;
-
-    let vaultKey = userId;
-    let entry = this.config.vaults[vaultKey];
-
-    // Fall back to the configured fallback key
-    if (!entry && this.config.fallback) {
-      vaultKey = this.config.fallback;
-      entry = this.config.vaults[vaultKey];
-    }
-
+    const entry = this.config?.vaults[userId];
     if (!entry) return undefined;
-
-    return this.buildResolved(userId, vaultKey, entry);
+    return this.buildResolved(userId, entry);
   }
 
   getSandboxConfig(userId: string, baseConfig: SandboxConfig): SandboxConfig {
@@ -286,7 +253,7 @@ export class FileVaultManager implements VaultManager {
 
     const results: ResolvedVault[] = [];
     for (const [key, entry] of Object.entries(this.config.vaults)) {
-      results.push(this.buildResolved(key, key, entry));
+      results.push(this.buildResolved(key, entry));
     }
     return results;
   }
@@ -431,8 +398,8 @@ export class FileVaultManager implements VaultManager {
     this.persistConfig();
   }
 
-  private buildResolved(userId: string, vaultKey: string, entry: VaultEntry): ResolvedVault {
-    const dir = join(this.vaultsDir, vaultKey);
+  private buildResolved(key: string, entry: VaultEntry): ResolvedVault {
+    const dir = join(this.vaultsDir, key);
 
     const mounts = (entry.mounts ?? [])
       .map((mount) => this.resolveMountEntry(dir, mount))
@@ -444,12 +411,12 @@ export class FileVaultManager implements VaultManager {
       try {
         env = parseEnvFile(readFileSync(envPath, "utf-8"));
       } catch (err) {
-        console.error(`vault: failed to parse env file for "${vaultKey}":`, err);
+        console.error(`vault: failed to parse env file for "${key}":`, err);
       }
     }
 
     return {
-      userId,
+      userId: key,
       displayName: entry.displayName,
       dir,
       mounts,

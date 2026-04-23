@@ -242,18 +242,20 @@ You can schedule events that wake you up at specific times or when external thin
 
 **Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
 \`\`\`json
-{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "text": "New GitHub issue opened"}
+{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "New GitHub issue opened"}
 \`\`\`
 
 **One-shot** - Triggers once at a specific time. Use for reminders.
 \`\`\`json
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
 \`\`\`
 
 **Periodic** - Triggers on a cron schedule. Use for recurring tasks.
 \`\`\`json
-{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
+{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
+
+Set \`userId\` to the platform userId of whoever asked for the event (look it up in the user mappings above). When the event fires, tool execution will route to that user's vault so their credentials are available.
 
 ### Cron Format
 \`minute hour day-of-month month day-of-week\`
@@ -272,7 +274,7 @@ Set \`platform\` to the target bot platform (\`${platform.name}\` for this conve
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "<requester userId>", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
@@ -876,13 +878,11 @@ export async function createRunner(
       // (env file updates, vault.json edits, token rotations) take effect.
       // Then set the active actor BEFORE building system prompt, so workspacePath
       // reflects the actor's sandbox type.
-      // "EVENT" is a synthetic userId from the events system — treat it as no-user
-      // so the executor falls back to the systemActor vault.
       if (executionResolver) {
         executionResolver.refresh();
         activeExecutor = await executionResolver.resolve({
           platform: platform.name,
-          userId: message.userId === "EVENT" ? undefined : message.userId,
+          userId: message.userId,
         });
         workspacePath = getWorkspacePath();
       }
