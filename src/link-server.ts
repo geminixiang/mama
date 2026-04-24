@@ -113,6 +113,7 @@ export function startLinkServer(
     }
 
     if (req.method === "POST" && url.pathname === "/api/link/complete") {
+      if (!enforceCsrf(req, res)) return;
       void readJsonBody(req, res, async (body) => {
         await handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
       });
@@ -120,6 +121,7 @@ export function startLinkServer(
     }
 
     if (req.method === "POST" && url.pathname === "/api/oauth/start") {
+      if (!enforceCsrf(req, res)) return;
       void readJsonBody(req, res, async (body) => {
         await handleOAuthStart(body, req, linkTokenStore, oauthStates, res);
       });
@@ -147,13 +149,18 @@ export function startLinkServer(
     res.end();
   });
 
-  server.listen(port, () => {
-    log.logInfo(`Link callback server listening on port ${port}`);
+  // Bind to loopback when MOM_LINK_URL is unset so the credential UI and OAuth
+  // callbacks are not exposed on public interfaces by default. Production
+  // deployments set MOM_LINK_URL and are expected to front this server with a
+  // reverse proxy, which can still reach it via 0.0.0.0.
+  const bindHost = resolveLinkBaseUrl() ? undefined : "127.0.0.1";
+  server.listen(port, bindHost, () => {
+    log.logInfo(`Link callback server listening on ${bindHost ?? "0.0.0.0"}:${port}`);
     if (!resolveLinkBaseUrl()) {
       log.logWarning(
-        "MOM_LINK_URL is not set. OAuth redirect_uri will be derived from " +
-          "request headers (Host / X-Forwarded-*), which is insecure in production. " +
-          "Set MOM_LINK_URL=https://your-host.example.com",
+        "MOM_LINK_URL is not set — bound to 127.0.0.1 and OAuth redirect_uri will be " +
+          "derived from request headers (Host / X-Forwarded-*). Set " +
+          "MOM_LINK_URL=https://your-host.example.com for production.",
       );
     }
   });
@@ -183,6 +190,67 @@ function requestBaseUrl(req: IncomingMessage): string {
       `localhost`) ||
     `localhost`;
   return `${proto}://${host}`;
+}
+
+/**
+ * Block cross-site POSTs to the credential endpoints. Two defenses:
+ *   1. Require Content-Type: application/json, which forces a CORS preflight
+ *      for any cross-origin fetch and rules out `<form enctype="text/plain">`
+ *      tricks that could otherwise smuggle a JSON body.
+ *   2. When MOM_LINK_URL is configured, require that the Origin (or Referer,
+ *      as a fallback for browsers that strip Origin) matches that base URL.
+ *      This stops an attacker-controlled page — even one that somehow stole a
+ *      victim's link token — from completing the flow.
+ */
+function enforceCsrf(req: IncomingMessage, res: ServerResponse): boolean {
+  const contentType = (req.headers["content-type"] as string | undefined)
+    ?.split(";")[0]
+    ?.trim()
+    .toLowerCase();
+  if (contentType !== "application/json") {
+    res.writeHead(415, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Content-Type must be application/json" }));
+    return false;
+  }
+
+  const configured = resolveLinkBaseUrl();
+  if (!configured) {
+    // No trusted origin to compare against in local/dev mode; the loopback
+    // bind already prevents cross-host access.
+    return true;
+  }
+
+  let configuredOrigin: string;
+  try {
+    configuredOrigin = new URL(configured).origin;
+  } catch {
+    // Misconfigured MOM_LINK_URL — fail closed.
+    res.writeHead(500, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Server misconfiguration" }));
+    return false;
+  }
+
+  if (requestOrigin(req) !== configuredOrigin) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Cross-origin request rejected" }));
+    return false;
+  }
+
+  return true;
+}
+
+/** Best-effort origin of the request, derived from Origin or Referer. */
+function requestOrigin(req: IncomingMessage): string | undefined {
+  const origin = (req.headers.origin as string | undefined)?.trim();
+  if (origin && origin !== "null") return origin;
+
+  const referer = (req.headers.referer as string | undefined)?.trim();
+  if (!referer) return undefined;
+  try {
+    return new URL(referer).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 async function readJsonBody(

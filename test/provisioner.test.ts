@@ -238,6 +238,54 @@ describe("DockerContainerManager", () => {
     expect(stateField.get("slack-u123")?.lastUsed).toBe(Date.parse("2026-04-22T00:00:00.000Z"));
   });
 
+  test("concurrent provision calls for the same vaultId share one docker run", async () => {
+    let startResolve: (value: { stdout: string }) => void = () => {};
+    const startPromise = new Promise<{ stdout: string }>((resolvePromise) => {
+      startResolve = resolvePromise;
+    });
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockRejectedValueOnce(new Error("No such object")) // first inspect → missing
+      .mockReturnValueOnce(startPromise); // first docker run (pending)
+
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+
+    const first = manager.provision("slack-u123");
+    const second = manager.provision("slack-u123");
+
+    startResolve({ stdout: "new-container-id\n" });
+    await Promise.all([first, second]);
+
+    // Exactly two docker calls total: one inspect, one run — the second
+    // provision() piggybacked on the first instead of racing a duplicate run.
+    expect(execMock).toHaveBeenCalledTimes(2);
+    expect(execMock.mock.calls[0][1][0]).toBe("inspect");
+    expect(execMock.mock.calls[1][1][0]).toBe("run");
+  });
+
+  test("failed docker start clears cached state and allows re-inspection", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      // First attempt: container exists but stopped, start fails.
+      .mockResolvedValueOnce({ stdout: "false\n" })
+      .mockRejectedValueOnce(new Error("docker start failed"))
+      // Second attempt: inspect again, still missing, then docker run succeeds.
+      .mockRejectedValueOnce(new Error("No such object"))
+      .mockResolvedValueOnce({ stdout: "new-id\n" });
+
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+
+    await expect(manager.provision("slack-u123")).rejects.toThrow(/start failed/);
+
+    // State should have been dropped — next call re-inspects from scratch.
+    const stateField = (manager as any).state as Map<string, unknown>;
+    expect(stateField.has("slack-u123")).toBe(false);
+
+    await expect(manager.provision("slack-u123")).resolves.toBe("mama-sandbox-slack-u123");
+    // Third call in the mock queue must be an inspect (not a start on stale state).
+    expect(execMock.mock.calls[2][1][0]).toBe("inspect");
+  });
+
   test("reconcile falls back to legacy name prefix when label is missing", async () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()

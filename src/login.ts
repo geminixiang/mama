@@ -36,18 +36,34 @@ const DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES = [
   "https://www.googleapis.com/auth/chat.messages.create",
 ];
 
-function resolveGoogleWorkspaceCliScopes(): string[] {
-  const raw = process.env.MOM_GOOGLE_WORKSPACE_CLI_OAUTH_SCOPES?.trim();
-  if (!raw) {
-    return DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES;
-  }
+// Conservative default: enough for `gh` CLI repo/user/org operations, but
+// without `workflow` (can dispatch CI), `write:packages` (can publish
+// packages), or `project`. Operators who need those can opt in via
+// MOM_GITHUB_OAUTH_SCOPES to keep the blast radius of a compromised agent
+// host explicit and configurable.
+const DEFAULT_GITHUB_OAUTH_SCOPES = ["repo", "read:user", "user:email", "read:org", "gist"];
+
+function resolveScopesFromEnv(envKey: string, fallback: string[]): string[] {
+  const raw = process.env[envKey]?.trim();
+  if (!raw) return fallback;
 
   const scopes = raw
     .split(/[\s,]+/)
     .map((scope) => scope.trim())
     .filter(Boolean);
 
-  return scopes.length > 0 ? scopes : DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES;
+  return scopes.length > 0 ? scopes : fallback;
+}
+
+function resolveGoogleWorkspaceCliScopes(): string[] {
+  return resolveScopesFromEnv(
+    "MOM_GOOGLE_WORKSPACE_CLI_OAUTH_SCOPES",
+    DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES,
+  );
+}
+
+function resolveGitHubOAuthScopes(): string[] {
+  return resolveScopesFromEnv("MOM_GITHUB_OAUTH_SCOPES", DEFAULT_GITHUB_OAUTH_SCOPES);
 }
 
 function getBuiltinOAuthServices(): OAuthService[] {
@@ -58,16 +74,7 @@ function getBuiltinOAuthServices(): OAuthService[] {
       aliases: ["github", "github_oauth", "gh_oauth"],
       authorizationUrl: "https://github.com/login/oauth/authorize",
       tokenUrl: "https://github.com/login/oauth/access_token",
-      scopes: [
-        "repo",
-        "read:user",
-        "user:email",
-        "read:org",
-        "gist",
-        "project",
-        "workflow",
-        "write:packages",
-      ],
+      scopes: resolveGitHubOAuthScopes(),
       clientIdEnvKey: "GITHUB_OAUTH_CLIENT_ID",
       clientSecretEnvKey: "GITHUB_OAUTH_CLIENT_SECRET",
       accessTokenEnvKey: "GITHUB_OAUTH_ACCESS_TOKEN",

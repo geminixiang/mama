@@ -1,5 +1,17 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, isAbsolute, join, normalize, sep } from "path";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from "fs";
+import { randomBytes } from "crypto";
+import { basename, dirname, isAbsolute, join, normalize, sep } from "path";
 import type { SandboxConfig } from "./sandbox.js";
 
 const PRIVATE_DIR_MODE = 0o700;
@@ -333,8 +345,7 @@ export class FileVaultManager implements VaultManager {
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([envKey, value]) => `${envKey}=${value}`)
         .join("\n") + "\n";
-    writeFileSync(envPath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-    chmodSync(envPath, PRIVATE_FILE_MODE);
+    atomicWritePrivateFile(envPath, content);
   }
 
   upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void {
@@ -351,8 +362,7 @@ export class FileVaultManager implements VaultManager {
     ensurePrivateDir(dir);
     const parentDir = dirname(filePath);
     if (parentDir !== dir) ensurePrivateDir(parentDir);
-    writeFileSync(filePath, content, { encoding: "utf-8", mode: PRIVATE_FILE_MODE });
-    chmodSync(filePath, PRIVATE_FILE_MODE);
+    atomicWritePrivateFile(filePath, content);
     this.ensureMountEntry(key, normalizedPath, normalizedTarget);
   }
 
@@ -360,11 +370,39 @@ export class FileVaultManager implements VaultManager {
 
   private persistConfig(): void {
     ensurePrivateDir(this.vaultsDir);
-    writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", {
-      encoding: "utf-8",
-      mode: PRIVATE_FILE_MODE,
-    });
-    chmodSync(this.configPath, PRIVATE_FILE_MODE);
+
+    // Preserve concurrent external edits: pull in any entries that appear on
+    // disk but not in our in-memory view, so a background edit (e.g. another
+    // admin adding a user) is not silently dropped by the next upsert here.
+    // Individual field edits still follow last-writer-wins per key.
+    const onDisk = this.readConfigFromDisk();
+    if (onDisk && this.config) {
+      for (const [key, entry] of Object.entries(onDisk.vaults)) {
+        if (!(key in this.config.vaults)) {
+          this.config.vaults[key] = entry;
+        }
+      }
+    }
+
+    atomicWritePrivateFile(this.configPath, JSON.stringify(this.config, null, 2) + "\n");
+  }
+
+  private readConfigFromDisk(): VaultConfig | null {
+    if (!existsSync(this.configPath)) return null;
+    try {
+      const parsed = JSON.parse(readFileSync(this.configPath, "utf-8"));
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        !parsed.vaults ||
+        typeof parsed.vaults !== "object"
+      ) {
+        return null;
+      }
+      return parsed as VaultConfig;
+    } catch {
+      return null;
+    }
   }
 
   private ensureMountEntry(key: string, relativePath: string, targetPath?: string): void {
@@ -445,6 +483,47 @@ export class FileVaultManager implements VaultManager {
 function ensurePrivateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIR_MODE });
   chmodSync(path, PRIVATE_DIR_MODE);
+}
+
+/**
+ * Write `content` to `targetPath` with mode 0600, even when `targetPath`
+ * already exists. Uses O_CREAT|O_EXCL on a temp sibling (so the kernel
+ * guarantees permissions at creation, not after a racy chmod) and then
+ * rename(2) into place for atomicity. Readers never see a torn write.
+ */
+function atomicWritePrivateFile(targetPath: string, content: string): void {
+  const dir = dirname(targetPath);
+  const tmpPath = join(
+    dir,
+    `.${basename(targetPath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
+  );
+  const fd = openSync(
+    tmpPath,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
+    PRIVATE_FILE_MODE,
+  );
+  try {
+    writeSync(fd, content);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // ignore — original error is more informative
+    }
+    throw err;
+  } finally {
+    closeSync(fd);
+  }
+  try {
+    renameSync(tmpPath, targetPath);
+  } catch (err) {
+    try {
+      unlinkSync(tmpPath);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 }
 
 function normalizeVaultRelativePath(relativePath: string): string | undefined {

@@ -4,7 +4,7 @@ import "./instrument.js";
 
 import { join, resolve } from "path";
 import { homedir } from "os";
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync, statSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
@@ -126,6 +126,52 @@ function parseArgs(): ParsedArgs {
   };
 }
 
+const WORLD_WRITABLE_MODE = 0o002;
+
+/**
+ * Create stateDir if missing and refuse to use it if another local user could
+ * tamper with its contents. stateDir holds vaults, bindings, and settings —
+ * a world-writable or foreign-owned directory there would let a local attacker
+ * swap in credentials or change routing.
+ */
+function ensureSecureStateDir(path: string): void {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      return;
+    }
+    console.error(`Error: cannot access --state-dir ${path}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  if (!stat.isDirectory()) {
+    console.error(`Error: --state-dir ${path} exists but is not a directory`);
+    process.exit(1);
+  }
+
+  if (stat.mode & WORLD_WRITABLE_MODE) {
+    console.error(
+      `Error: --state-dir ${path} is world-writable (mode ${(stat.mode & 0o777).toString(8)}). ` +
+        `Credentials stored there would be exposed to other local users. ` +
+        `Fix with: chmod 0700 ${path}`,
+    );
+    process.exit(1);
+  }
+
+  const euid = typeof process.geteuid === "function" ? process.geteuid() : undefined;
+  if (euid !== undefined && stat.uid !== euid) {
+    console.error(
+      `Error: --state-dir ${path} is owned by uid ${stat.uid} but mama is running as uid ${euid}. ` +
+        `Run mama as the directory owner or point --state-dir at a directory you own.`,
+    );
+    process.exit(1);
+  }
+}
+
 function handleStartupError(error: unknown): never {
   if (error instanceof SandboxError) {
     for (const line of error.formatForCli()) {
@@ -172,6 +218,7 @@ const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: pa
 // stateDir holds operator-managed files (vaults, settings, bindings).
 // Defaults to ~/.mama to keep secrets outside the project workspace mounted into sandboxes.
 const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+ensureSecureStateDir(stateDir);
 // Share stateDir with instrument.ts (for Sentry config loading)
 process.env.MAMA_STATE_DIR = stateDir;
 

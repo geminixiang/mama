@@ -190,6 +190,25 @@ describe("FileVaultManager", () => {
     expect(envMode & 0o077).toBe(0);
   });
 
+  test("upsertEnv tightens permissions on a pre-existing wide-open env file", () => {
+    writeVaultJson({
+      vaults: { U123: { displayName: "Alice" } },
+    });
+    const userDir = join(vaultsDir, "U123");
+    mkdirSync(userDir, { recursive: true });
+    const envPath = join(userDir, "env");
+    writeFileSync(envPath, "OLD=value\n");
+    // Simulate a pre-existing env file that was left world-readable — e.g.
+    // from an earlier version or a manual edit.
+    require("node:fs").chmodSync(envPath, 0o644);
+
+    const mgr = new FileVaultManager(tmpDir);
+    mgr.upsertEnv("U123", { OPENAI_API_KEY: "sk-test" });
+
+    const envMode = statSync(envPath).mode & 0o777;
+    expect(envMode & 0o077).toBe(0);
+  });
+
   test("upsertFile writes private credential files and adds mounts", () => {
     writeVaultJson({
       vaults: { U123: { displayName: "Alice" } },

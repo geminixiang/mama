@@ -34,6 +34,13 @@ export interface ProvisionOptions {
  */
 export class DockerContainerManager {
   private state = new Map<string, ContainerState>();
+  /**
+   * In-flight provision() calls per vaultId. A concurrent second call for the
+   * same user piggybacks on the first docker start/run instead of racing —
+   * without this, two parallel messages from one user could produce duplicate
+   * containers or conflict on docker run.
+   */
+  private inflight = new Map<string, Promise<string>>();
   private static readonly MANAGED_LABEL = "mama.managed=true";
   private static readonly IMAGE_MODE_LABEL = "mama.sandbox=image";
   private static readonly VAULT_ID_LABEL_KEY = "mama.vault-id";
@@ -76,23 +83,42 @@ export class DockerContainerManager {
    * Returns the container name.
    */
   async provision(vaultId: string, options: ProvisionOptions = {}): Promise<string> {
+    const existing = this.inflight.get(vaultId);
+    if (existing) return existing;
+
+    const pending = this.provisionInner(vaultId, options).finally(() => {
+      this.inflight.delete(vaultId);
+    });
+    this.inflight.set(vaultId, pending);
+    return pending;
+  }
+
+  private async provisionInner(vaultId: string, options: ProvisionOptions): Promise<string> {
     const containerName = options.containerName ?? DockerContainerManager.containerName(vaultId);
     const mounts = options.mounts ?? [];
     const status = await this.inspectStatus(containerName);
 
-    if (status !== "missing" && (await this.hasBindMountDrift(containerName, mounts))) {
-      log.logInfo(`Container ${containerName} mounts changed; recreating container`);
-      await this.execFileImpl("docker", ["rm", "-f", containerName]);
-      await this.runContainer(vaultId, containerName, mounts);
-      log.logInfo(`Container ${containerName} recreated`);
-    } else if (status === "running") {
-      log.logInfo(`Container ${containerName} already running`);
-    } else if (status === "stopped") {
-      await this.execFileImpl("docker", ["start", containerName]);
-      log.logInfo(`Container ${containerName} started`);
-    } else {
-      await this.runContainer(vaultId, containerName, mounts);
-      log.logInfo(`Container ${containerName} created`);
+    try {
+      if (status !== "missing" && (await this.hasBindMountDrift(containerName, mounts))) {
+        log.logInfo(`Container ${containerName} mounts changed; recreating container`);
+        await this.execFileImpl("docker", ["rm", "-f", containerName]);
+        await this.runContainer(vaultId, containerName, mounts);
+        log.logInfo(`Container ${containerName} recreated`);
+      } else if (status === "running") {
+        log.logInfo(`Container ${containerName} already running`);
+      } else if (status === "stopped") {
+        await this.execFileImpl("docker", ["start", containerName]);
+        log.logInfo(`Container ${containerName} started`);
+      } else {
+        await this.runContainer(vaultId, containerName, mounts);
+        log.logInfo(`Container ${containerName} created`);
+      }
+    } catch (err) {
+      // Drop cached state so the next provision() re-inspects Docker cleanly
+      // and stopIdle doesn't keep trying to stop a container that never
+      // became running. We deliberately don't bump lastUsed here.
+      this.state.delete(vaultId);
+      throw err;
     }
 
     this.setState(vaultId, "running", containerName);
