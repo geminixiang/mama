@@ -17,6 +17,10 @@ function makeDiscordBot(overrides: Partial<DiscordBot> = {}): DiscordBot {
     logBotResponse: vi.fn(),
     getAllChannels: vi.fn().mockReturnValue([]),
     getAllUsers: vi.fn().mockReturnValue([]),
+    createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH001"),
+    postEmbed: vi.fn().mockResolvedValue("EMBED_MSG001"),
+    updateMessageWithComponents: vi.fn().mockResolvedValue(undefined),
+    registerThreadAlias: vi.fn(),
     // Bot interface stubs
     start: vi.fn(),
     postMessage: vi.fn().mockResolvedValue("MSG001"),
@@ -88,6 +92,18 @@ describe("respond() — non-threaded (replies to trigger message)", () => {
     expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
+  test("first call auto-creates thread on reply message", async () => {
+    const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("REPLY001") });
+    const event = makeEvent({ ts: "MSG001", thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.respond("hello");
+    expect(bot.createThreadOnMessage).toHaveBeenCalledWith(
+      "CH001",
+      "REPLY001",
+      "🤖 unknown · hello",
+    );
+  });
+
   test("subsequent calls update the same message", async () => {
     const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("REPLY001") });
     const event = makeEvent({ ts: "MSG001", thread_ts: undefined });
@@ -95,10 +111,12 @@ describe("respond() — non-threaded (replies to trigger message)", () => {
     await responseCtx.respond("first");
     await responseCtx.respond("second");
     expect(bot.postReply).toHaveBeenCalledTimes(1);
-    expect(bot.updateMessageRaw).toHaveBeenCalledWith(
+    // While working, updates go through updateMessageWithComponents (with stop button)
+    expect(bot.updateMessageWithComponents).toHaveBeenCalledWith(
       "CH001",
       "REPLY001",
       expect.stringContaining("second"),
+      expect.any(Array),
     );
   });
 
@@ -108,9 +126,11 @@ describe("respond() — non-threaded (replies to trigger message)", () => {
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("line1");
     await responseCtx.respond("line2");
-    const updateCall = vi.mocked(bot.updateMessageRaw).mock.calls[0];
-    expect(updateCall[2]).toContain("line1");
-    expect(updateCall[2]).toContain("line2");
+    // Second respond triggers an update (first may be the button attachment after initial post)
+    const calls = vi.mocked(bot.updateMessageWithComponents).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[2]).toContain("line1");
+    expect(lastCall[2]).toContain("line2");
   });
 });
 
@@ -134,11 +154,12 @@ describe("respond() — threaded", () => {
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("first");
     await responseCtx.respond("second");
-    expect(bot.postInThread).toHaveBeenCalledTimes(1);
-    expect(bot.updateMessageRaw).toHaveBeenCalledWith(
+    // While working, updates go through updateMessageWithComponents (with stop button)
+    expect(bot.updateMessageWithComponents).toHaveBeenCalledWith(
       "CH001",
       "THREAD_MSG001",
       expect.stringContaining("second"),
+      expect.any(Array),
     );
   });
 });
@@ -148,32 +169,122 @@ describe("respond() — threaded", () => {
 // ============================================================================
 
 describe("respondInThread()", () => {
-  // Discord threads not used here — respondInThread is a no-op
-  test("non-threaded: does nothing", async () => {
-    const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("BOT_MSG") });
+  test("posts embed in thread after main message is created", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("main");
     await responseCtx.respondInThread("detail");
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    // Should have posted in thread (embed or plain)
+    const threadCalls = vi
+      .mocked(bot.postInThread)
+      .mock.calls.concat(vi.mocked(bot.postEmbed).mock.calls as any[]);
+    expect(threadCalls.length).toBeGreaterThan(0);
   });
 
-  test("threaded: does nothing", async () => {
-    const bot = makeDiscordBot({ postInThread: vi.fn().mockResolvedValue("THREAD_MSG") });
-    const event = makeEvent({ ts: "MSG003", thread_ts: "THREAD001" });
+  test("buffers thread messages posted before main message", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    // respondInThread before respond — should be buffered
+    const threadPromise = responseCtx.respondInThread("buffered detail");
+    const respondPromise = responseCtx.respond("main");
+    await Promise.all([threadPromise, respondPromise]);
+    // After main message + thread creation, buffered message should have been flushed
+    const embedCalls = vi.mocked(bot.postEmbed).mock.calls;
+    const inThreadCalls = vi.mocked(bot.postInThread).mock.calls;
+    const totalThreadPosts =
+      embedCalls.length + inThreadCalls.filter((c) => c[0] === "THREAD_CH").length;
+    expect(totalThreadPosts).toBeGreaterThan(0);
+  });
+
+  test("error messages get red embed", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("main");
-    vi.clearAllMocks();
-    await responseCtx.respondInThread("detail");
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    await responseCtx.respondInThread("_Error: something went wrong_");
+    expect(bot.postEmbed).toHaveBeenCalledWith(
+      "THREAD_CH",
+      expect.objectContaining({ color: 0xff4444 }),
+    );
   });
 
-  test("non-threaded: does nothing if no main message posted yet", async () => {
+  test("muted style gets gray embed", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.respond("main");
+    await responseCtx.respondInThread("Usage: 100 tokens", { style: "muted" });
+    expect(bot.postEmbed).toHaveBeenCalledWith(
+      "THREAD_CH",
+      expect.objectContaining({ color: 0x808080 }),
+    );
+  });
+
+  test("tool success gets green embed", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.respond("main");
+    await responseCtx.respondInThread("*✓ readFile*: reading file (200ms)");
+    expect(bot.postEmbed).toHaveBeenCalledWith(
+      "THREAD_CH",
+      expect.objectContaining({ color: 0x44ff44 }),
+    );
+  });
+
+  test("tool failure gets red embed", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.respond("main");
+    await responseCtx.respondInThread("*✗ readFile*: failed (50ms)");
+    expect(bot.postEmbed).toHaveBeenCalledWith(
+      "THREAD_CH",
+      expect.objectContaining({ color: 0xff4444 }),
+    );
+  });
+
+  test("no main message: buffers (postInThread not called)", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respondInThread("detail");
     expect(bot.postInThread).not.toHaveBeenCalled();
+    expect(bot.postEmbed).not.toHaveBeenCalled();
+  });
+
+  test("thread creation failure is handled gracefully", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("BOT_MSG"),
+      createThreadOnMessage: vi.fn().mockRejectedValue(new Error("no permission")),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    // Should not throw
+    await expect(responseCtx.respond("main")).resolves.toBeUndefined();
+    // Thread messages should be silently dropped
+    await expect(responseCtx.respondInThread("detail")).resolves.toBeUndefined();
+    expect(bot.postEmbed).not.toHaveBeenCalled();
   });
 });
 
@@ -263,15 +374,19 @@ describe("setWorking()", () => {
     expect(posted).toContain(" ...");
   });
 
-  test("setWorking(false) removes indicator on update", async () => {
+  test("setWorking(false) removes indicator and buttons on update", async () => {
     const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("REPLY001") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("content");
     await responseCtx.setWorking(false);
-    const updateCall = vi.mocked(bot.updateMessageRaw).mock.calls[0];
-    expect(updateCall[2]).not.toContain(" ...");
-    expect(updateCall[2]).toContain("content");
+    // setWorking(false) uses updateMessageWithComponents with empty components array
+    const calls = vi.mocked(bot.updateMessageWithComponents).mock.calls;
+    const lastCall = calls[calls.length - 1];
+    expect(lastCall[2]).not.toContain(" ...");
+    expect(lastCall[2]).toContain("content");
+    // Components should be empty (buttons removed)
+    expect(lastCall[3]).toEqual([]);
   });
 });
 
@@ -293,21 +408,52 @@ describe("replaceResponse()", () => {
 });
 
 // ============================================================================
-// Text truncation
+// Message splitting (replaces truncation)
 // ============================================================================
 
-describe("text truncation", () => {
-  test("long text is truncated at 1900 chars with a note", async () => {
+describe("message splitting", () => {
+  test("short text is posted as-is", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.setWorking(false);
+    await responseCtx.respond("short text");
+    const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
+    expect(posted).toBe("short text");
+    expect(bot.postInThread).not.toHaveBeenCalled();
+  });
+
+  test("long text: first part goes to main message (≤1900 chars)", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("REPLY001"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.setWorking(false);
     await responseCtx.respond("x".repeat(2100));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBeLessThanOrEqual(1900);
-    expect(posted).toContain("truncated");
+    // No truncation note
+    expect(posted).not.toContain("truncated");
+    // Has continued marker
+    expect(posted).toContain("continued");
   });
 
-  test("text exactly at 1900 chars is not truncated when not working", async () => {
+  test("long text: overflow goes to thread", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("REPLY001"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.setWorking(false);
+    await responseCtx.respond("x".repeat(2100));
+    // The overflow part should be posted in thread
+    expect(bot.postInThread).toHaveBeenCalledWith("THREAD_CH", "THREAD_CH", expect.any(String));
+  });
+
+  test("text exactly at 1900 chars is not split when not working", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
@@ -315,17 +461,21 @@ describe("text truncation", () => {
     await responseCtx.respond("x".repeat(1900));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBe(1900);
-    expect(posted).not.toContain("truncated");
+    expect(posted).not.toContain("continued");
   });
 
-  test("text at 1901 chars is truncated", async () => {
-    const bot = makeDiscordBot();
+  test("text at 1901 chars is split", async () => {
+    const bot = makeDiscordBot({
+      postReply: vi.fn().mockResolvedValue("REPLY001"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
+    });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.setWorking(false);
     await responseCtx.respond("x".repeat(1901));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBeLessThanOrEqual(1900);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
   });
 });
 
@@ -334,11 +484,10 @@ describe("text truncation", () => {
 // ============================================================================
 
 describe("deleteResponse()", () => {
-  // Discord threads not used here — only deletes main message
   test("deletes main message", async () => {
     const bot = makeDiscordBot({
       postReply: vi.fn().mockResolvedValue("MAIN_MSG"),
-      postInThread: vi.fn().mockResolvedValue("THREAD_MSG"),
+      createThreadOnMessage: vi.fn().mockResolvedValue("THREAD_CH"),
     });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
