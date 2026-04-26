@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   loadAgentConfig,
   resolveSentryDsn,
+  resolveStateDirFromArgv,
   resolveWorkspaceDirFromArgv,
   saveAgentConfig,
 } from "../src/config.js";
@@ -18,6 +19,9 @@ describe("loadAgentConfig", () => {
   });
 
   afterEach(() => {
+    delete process.env.MAMA_STATE_DIR;
+    delete process.env.MOM_AI_PROVIDER;
+    delete process.env.MOM_AI_MODEL;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
@@ -49,30 +53,37 @@ describe("loadAgentConfig", () => {
   });
 
   test("env vars override defaults but not settings.json", () => {
-    // With env var only (no settings.json)
     process.env.MOM_AI_PROVIDER = "google";
     process.env.MOM_AI_MODEL = "gemini-2.0-flash";
-    try {
-      const config = loadAgentConfig(tmpDir);
-      expect(config.provider).toBe("google");
-      expect(config.model).toBe("gemini-2.0-flash");
-    } finally {
-      delete process.env.MOM_AI_PROVIDER;
-      delete process.env.MOM_AI_MODEL;
-    }
+
+    const config = loadAgentConfig(tmpDir);
+    expect(config.provider).toBe("google");
+    expect(config.model).toBe("gemini-2.0-flash");
   });
 
   test("settings.json values override env vars", () => {
     saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
     process.env.MOM_AI_PROVIDER = "google";
     process.env.MOM_AI_MODEL = "gemini-2.0-flash";
+
+    const config = loadAgentConfig(tmpDir);
+    expect(config.provider).toBe("openai");
+    expect(config.model).toBe("gpt-4o");
+  });
+
+  test("prefers state-dir settings.json over workspace settings.json", () => {
+    const stateDir = join(tmpdir(), `mama-state-${Date.now()}`);
+    mkdirSync(stateDir, { recursive: true });
+    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
+    saveAgentConfig(stateDir, { provider: "google", model: "gemini-2.0-flash" });
+    process.env.MAMA_STATE_DIR = stateDir;
+
     try {
       const config = loadAgentConfig(tmpDir);
-      expect(config.provider).toBe("openai");
-      expect(config.model).toBe("gpt-4o");
+      expect(config.provider).toBe("google");
+      expect(config.model).toBe("gemini-2.0-flash");
     } finally {
-      delete process.env.MOM_AI_PROVIDER;
-      delete process.env.MOM_AI_MODEL;
+      rmSync(stateDir, { recursive: true, force: true });
     }
   });
 
@@ -85,7 +96,7 @@ describe("loadAgentConfig", () => {
   });
 });
 
-describe("resolveWorkspaceDirFromArgv", () => {
+describe("argv config resolution", () => {
   test("returns the positional workspace dir", () => {
     expect(resolveWorkspaceDirFromArgv(["--sandbox=host", "/tmp/mama"])).toBe("/tmp/mama");
   });
@@ -96,6 +107,11 @@ describe("resolveWorkspaceDirFromArgv", () => {
 
   test("ignores download mode channel ids", () => {
     expect(resolveWorkspaceDirFromArgv(["--download", "C123"])).toBeUndefined();
+  });
+
+  test("resolves explicit state-dir from argv", () => {
+    expect(resolveStateDirFromArgv(["--state-dir", "/tmp/state", "/tmp/mama"])).toBe("/tmp/state");
+    expect(resolveStateDirFromArgv(["--state-dir=/tmp/state", "/tmp/mama"])).toBe("/tmp/state");
   });
 });
 
@@ -108,6 +124,7 @@ describe("resolveSentryDsn", () => {
   });
 
   afterEach(() => {
+    delete process.env.MAMA_STATE_DIR;
     delete process.env.SENTRY_DSN;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
@@ -121,6 +138,20 @@ describe("resolveSentryDsn", () => {
   test("falls back to env when settings.json has no sentryDsn", () => {
     process.env.SENTRY_DSN = "https://env.example/2";
     expect(resolveSentryDsn(tmpDir)).toBe("https://env.example/2");
+  });
+
+  test("prefers state-dir sentryDsn over workspace settings", () => {
+    const stateDir = join(tmpdir(), `mama-state-sentry-${Date.now()}`);
+    mkdirSync(stateDir, { recursive: true });
+    saveAgentConfig(tmpDir, { sentryDsn: "https://workspace.example/1" });
+    saveAgentConfig(stateDir, { sentryDsn: "https://state.example/1" });
+    process.env.MAMA_STATE_DIR = stateDir;
+
+    try {
+      expect(resolveSentryDsn(tmpDir)).toBe("https://state.example/1");
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -147,9 +178,9 @@ describe("saveAgentConfig", () => {
     saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o", sessionScope: "channel" });
     saveAgentConfig(tmpDir, { model: "gpt-4o-mini" });
     const config = loadAgentConfig(tmpDir);
-    expect(config.provider).toBe("openai"); // preserved
-    expect(config.model).toBe("gpt-4o-mini"); // updated
-    expect(config.sessionScope).toBe("channel"); // preserved
+    expect(config.provider).toBe("openai");
+    expect(config.model).toBe("gpt-4o-mini");
+    expect(config.sessionScope).toBe("channel");
   });
 
   test("creates parent directories if they don't exist", () => {
