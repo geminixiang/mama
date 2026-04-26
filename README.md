@@ -47,7 +47,8 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host or inside a container
+- **Sandbox execution** — run agent commands on host, in a container, or in a Firecracker VM
+- **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/Firecracker runs
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
@@ -169,7 +170,7 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
-mama [--sandbox=host|container:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 The bot responds when `@mentioned` in any channel or via DM.
@@ -188,7 +189,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
-mama [--sandbox=host|container:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Private chats** — every message is forwarded to the bot automatically.
@@ -208,7 +209,7 @@ mama [--sandbox=host|container:<container>] <working-directory>
 ```bash
 export MOM_DISCORD_BOT_TOKEN=MTI...
 
-mama [--sandbox=host|container:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Server channels** — the bot responds when `@mentioned`.
@@ -221,23 +222,47 @@ mama [--sandbox=host|container:<container>] <working-directory>
 
 ## Options
 
-| Option                                 | Default | Description                                                         |
-| -------------------------------------- | ------- | ------------------------------------------------------------------- |
-| `--sandbox=host`                       | ✓       | Run commands directly on host                                       |
-| `--sandbox=container:<name>`           |         | Run commands in a shared container (mama does not manage lifecycle) |
-| `--sandbox=firecracker:<vm-id>:<path>` |         | Run commands inside a Firecracker microVM                           |
-| `--download <channel-id>`              |         | Download channel history to stdout and exit (Slack only)            |
+| Option                                 | Default   | Description                                              |
+| -------------------------------------- | --------- | -------------------------------------------------------- |
+| `--state-dir=<dir>`                    | `~/.mama` | Store credential vaults and bindings outside workspace   |
+| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected |
+| `--sandbox=container:<name>`           |           | Run commands in an existing container                    |
+| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                |
+| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only) |
 
-### Container Mode Semantics
+### Sandbox and Vault Semantics
 
-- `container:*` uses one shared container for all sessions/users. mama does not create/start/stop/delete this container.
-- `docker:*` and `image:*` are reserved for future modes where each session gets an isolated container and mama manages container lifecycle.
+- `host`: no vault env injection.
+- `container:<name>`: one container maps to one vault key: `container-<name>`.
+- `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault.
+- `docker:*` and `image:*` are reserved for future managed-container modes.
+
+See [docs/sandbox.md](docs/sandbox.md) for the full sandbox/vault behavior matrix.
 
 ### Download channel history (Slack)
 
 ```bash
 mama --download C0123456789
 ```
+
+## `/login` Credential Onboarding
+
+Set `MOM_LINK_URL` to enable the web credential onboarding flow:
+
+```bash
+export MOM_LINK_URL="https://mama.example.com"
+# optional; defaults to 8181 when MOM_LINK_URL is set
+export MOM_LINK_PORT=8181
+```
+
+Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers.
+
+Built-in OAuth guides:
+
+- [GitHub OAuth](docs/oauth/github.md)
+- [Google Workspace CLI OAuth](docs/oauth/google-workspace.md)
+
+Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Runtime env injection only happens in `container` and `firecracker` modes.
 
 ## Configuration
 
@@ -316,13 +341,15 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
 
 ```bash
 # Create a container (mount your working directory to /workspace)
-docker run -d --name mama-sandbox \
+docker run -d --name mama-tools \
   -v /path/to/workspace:/workspace \
   alpine:latest sleep infinity
 
 # Start mama with container sandbox
-mama --sandbox=container:mama-sandbox /path/to/workspace
+mama --sandbox=container:mama-tools /path/to/workspace
 ```
+
+`container:mama-tools` uses vault key `container-mama-tools`. If multiple users share the same container, they share that container vault.
 
 ## Firecracker Sandbox
 
@@ -438,12 +465,12 @@ npm run build   # production build
 
 ## 📦 Dependencies & Versions
 
-| Package                         | mama Version | pi-mom Synced Version         |
-| ------------------------------- | ------------ | ----------------------------- |
-| `@mariozechner/pi-agent-core`   | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-ai`           | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-coding-agent` | `^0.57.1`    | ✅ Synchronized               |
-| `@anthropic-ai/sandbox-runtime` | `^0.0.40`    | ⚠️ Newer (pi-mom uses 0.0.16) |
+| Package                         | mama Version | pi-mom Synced Version            |
+| ------------------------------- | ------------ | -------------------------------- |
+| `@mariozechner/pi-agent-core`   | `^0.69.0`    | ✅ Synchronized                  |
+| `@mariozechner/pi-ai`           | `^0.69.0`    | ✅ Synchronized                  |
+| `@mariozechner/pi-coding-agent` | `^0.69.0`    | ✅ Synchronized                  |
+| `@anthropic-ai/sandbox-runtime` | `^0.0.49`    | ⚠️ Newer than original fork base |
 
 ## License
 
