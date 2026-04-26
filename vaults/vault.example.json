@@ -1,0 +1,25 @@
+{
+  "$comment": "Copy this file to vault.json. Entries are auto-created when a user's first tool call runs — this example is just a reference for hand-authored entries.",
+  "vaults": {
+    "U12345": {
+      "displayName": "Alice",
+      "platform": "slack",
+      "mounts": [".gcloud", ".ssh", ".kube", ".gitconfig"],
+      "envFile": true,
+      "sandbox": {
+        "type": "image",
+        "container": "mama-sandbox-alice"
+      }
+    },
+    "U67890": {
+      "displayName": "Bob",
+      "platform": "slack",
+      "mounts": [".gcloud", ".ssh"],
+      "envFile": true,
+      "sandbox": {
+        "type": "image",
+        "container": "mama-sandbox-bob"
+      }
+    }
+  }
+}
