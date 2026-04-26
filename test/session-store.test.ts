@@ -8,7 +8,7 @@ import {
   createManagedSessionFileAtPath,
   createNewSessionFile,
   forkThreadSessionFile,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
   resolveChannelSessionFile,
@@ -83,13 +83,13 @@ function seedManagedSession(
   return sessionFile;
 }
 
-describe("getSessionDir", () => {
+describe("getChannelSessionDir", () => {
   test("channel session key uses shared sessions directory", () => {
-    expect(getSessionDir(channelDir, "C123")).toBe(join(channelDir, "sessions"));
+    expect(getChannelSessionDir(channelDir)).toBe(join(channelDir, "sessions"));
   });
 
   test("thread session key also uses shared sessions directory", () => {
-    expect(getSessionDir(channelDir, "C123:1000.0001")).toBe(join(channelDir, "sessions"));
+    expect(getChannelSessionDir(channelDir)).toBe(join(channelDir, "sessions"));
   });
 });
 
@@ -103,14 +103,14 @@ describe("getThreadSessionFile", () => {
 
 describe("resolveSessionFile", () => {
   test("creates new placeholder session file when none exists", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const file = resolveSessionFile(sessionDir);
     expect(existsSync(file)).toBe(true);
     expect(file).toContain(join(channelDir, "sessions"));
   });
 
   test("returns existing current session file on second call", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const file1 = resolveSessionFile(sessionDir);
     writeFileSync(file1, '{"type":"session","id":"test"}\n');
     const file2 = resolveSessionFile(sessionDir);
@@ -125,7 +125,7 @@ describe("tryResolveThreadSession", () => {
   });
 
   test("ignores empty placeholder files without a valid header", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const threadFile = getThreadSessionFile(channelDir, "C123:1000.0001");
     mkdirSync(sessionDir, { recursive: true });
     writeFileSync(threadFile, "", "utf-8");
@@ -133,7 +133,7 @@ describe("tryResolveThreadSession", () => {
   });
 
   test("returns fixed thread file path when a valid session exists", () => {
-    const sessionDir = getSessionDir(channelDir, "C123:1000.0001");
+    const sessionDir = getChannelSessionDir(channelDir);
     const threadFile = getThreadSessionFile(channelDir, "C123:1000.0001");
     const created = seedManagedSession(threadFile, sessionDir, channelDir, "thread msg");
     expect(tryResolveThreadSession(threadFile)).toBe(created);
@@ -147,7 +147,7 @@ describe("resolveChannelSessionFile", () => {
   });
 
   test("returns current channel session file when it exists", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const created = createManagedSessionFile(sessionDir, channelDir);
     expect(resolveChannelSessionFile(channelDir)).toBe(created);
   });
@@ -155,7 +155,7 @@ describe("resolveChannelSessionFile", () => {
 
 describe("managed session initialization", () => {
   test("channel session filename uses a short UUID suffix", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const sessionFile = createManagedSessionFile(sessionDir, channelDir);
     const filename = sessionFile.split("/").pop()!;
     const suffix = filename.replace(".jsonl", "").split("_").pop()!;
@@ -164,7 +164,7 @@ describe("managed session initialization", () => {
   });
 
   test("creates a channel session with the provided cwd", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const sessionFile = resolveManagedSessionFile(sessionDir, channelDir);
     const sessionManager = openManagedSession(sessionFile, sessionDir, channelDir);
 
@@ -182,7 +182,7 @@ describe("managed session initialization", () => {
   });
 
   test("creates a fixed-path thread session with the provided cwd", () => {
-    const sessionDir = getSessionDir(channelDir, "C123:1000.0001");
+    const sessionDir = getChannelSessionDir(channelDir);
     const threadFile = getThreadSessionFile(channelDir, "C123:1000.0001");
     createManagedSessionFileAtPath(threadFile, channelDir);
     const sessionManager = openManagedSession(threadFile, sessionDir, channelDir);
@@ -202,7 +202,7 @@ describe("managed session initialization", () => {
 
 describe("thread fork", () => {
   test("forked thread session has a different session ID than channel session", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
     const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
     channelSM.appendMessage(makeUserMessage("hello channel"));
@@ -219,7 +219,7 @@ describe("thread fork", () => {
   });
 
   test("second thread access reuses the same fixed thread file", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
     const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
     channelSM.appendMessage(makeUserMessage("channel msg"));
@@ -241,7 +241,7 @@ describe("thread fork", () => {
   });
 
   test("different threads get independent session IDs", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
     const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
     channelSM.appendMessage(makeUserMessage("shared"));
@@ -270,7 +270,7 @@ describe("thread fork", () => {
   });
 
   test("fresh thread file can be created without a channel source", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const threadFile = getThreadSessionFile(channelDir, "C123:1000.0001");
     createManagedSessionFileAtPath(threadFile, channelDir);
     const threadSM = openManagedSession(threadFile, sessionDir, channelDir);
@@ -281,7 +281,7 @@ describe("thread fork", () => {
 
 describe("session-scoped /new reset", () => {
   test("channel /new rotates channel current pointer and keeps thread session intact", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const channelFile = createManagedSessionFile(sessionDir, channelDir);
     const originalChannel = openManagedSession(channelFile, sessionDir, channelDir);
     originalChannel.appendMessage(makeUserMessage("channel"));
@@ -299,7 +299,7 @@ describe("session-scoped /new reset", () => {
   });
 
   test("thread /new resets the same fixed file and keeps channel plus sibling thread intact", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const channelFile = createManagedSessionFile(sessionDir, channelDir);
     const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
     channelSM.appendMessage(makeUserMessage("channel"));
@@ -324,7 +324,7 @@ describe("session-scoped /new reset", () => {
 
 describe("persistence across restart", () => {
   test("thread session survives simulated restart via fixed file path", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const threadFile = getThreadSessionFile(channelDir, "C123:1000.0001");
     seedManagedSession(threadFile, sessionDir, channelDir, "thread specific");
 
@@ -335,7 +335,7 @@ describe("persistence across restart", () => {
 
 describe("placeholder sessions", () => {
   test("createNewSessionFile still updates current pointer for channel placeholder files", () => {
-    const sessionDir = getSessionDir(channelDir, "C123");
+    const sessionDir = getChannelSessionDir(channelDir);
     const placeholder = createNewSessionFile(sessionDir);
     expect(tryResolveCurrentSession(sessionDir)).toBeNull();
     expect(existsSync(placeholder)).toBe(true);

@@ -30,7 +30,7 @@ import {
   extractSessionSuffix,
   extractSessionUuid,
   forkThreadSessionFile,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
   resolveChannelSessionFile,
@@ -493,7 +493,7 @@ export async function createRunner(
   // Create session manager and settings manager
   // Channel sessions use {channelDir}/sessions/current.
   // Thread sessions use fixed files: {channelDir}/sessions/{threadTs}.jsonl
-  const sessionDir = getSessionDir(channelDir, sessionKey);
+  const sessionDir = getChannelSessionDir(channelDir);
   const isThread = sessionKey.includes(":");
 
   let sessionManager!: SessionManager;

@@ -15,7 +15,7 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
 } from "./session-store.js";
 import { downloadChannel } from "./download.js";
@@ -484,7 +484,7 @@ const handler: BotHandler = {
     if (sessionKey.includes(":")) {
       createManagedSessionFileAtPath(getThreadSessionFile(channelDir, sessionKey), channelDir);
     } else {
-      createManagedSessionFile(getSessionDir(channelDir, sessionKey), channelDir);
+      createManagedSessionFile(getChannelSessionDir(channelDir), channelDir);
     }
 
     // Remove from in-memory cache
