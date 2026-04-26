@@ -3,6 +3,7 @@ import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
 
 // ============================================================================
@@ -380,7 +381,7 @@ export class TelegramBot implements Bot {
       if (this.handler.isRunning(mc.sessionKey)) {
         await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
       } else {
-        await this.postMessage(mc.chatId, "Nothing running.");
+        await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
       }
     });
 
@@ -432,13 +433,13 @@ export class TelegramBot implements Bot {
         if (this.handler.isRunning(mc.sessionKey)) {
           await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
         } else {
-          await this.postMessage(mc.chatId, "Nothing running.");
+          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
         }
         return;
       }
 
       if (this.handler.isRunning(mc.sessionKey)) {
-        await this.postMessage(mc.chatId, "Already working. Say <code>/stop</code> to cancel.");
+        await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));
       } else {
         this.getQueue(mc.sessionKey).enqueue(() => {
           const adapters = createTelegramAdapters(event, this, false);

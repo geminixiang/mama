@@ -34,6 +34,7 @@ import {
 } from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
+import { formatNothingRunning, formatStopped, formatStopping } from "./ui-copy.js";
 import * as Sentry from "@sentry/node";
 
 // ============================================================================
@@ -453,10 +454,10 @@ const handler: BotHandler = {
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
-      const ts = await bot.postMessage(channelId, "_Stopping..._");
+      const ts = await bot.postMessage(channelId, formatStopping(bot));
       state.stopMessageTs = ts;
     } else {
-      await bot.postMessage(channelId, "_Nothing running_");
+      await bot.postMessage(channelId, formatNothingRunning(bot));
     }
   },
 
@@ -585,10 +586,10 @@ const handler: BotHandler = {
 
             if (result.stopReason === "aborted" && state.stopRequested) {
               if (state.stopMessageTs) {
-                await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+                await bot.updateMessage(event.channel, state.stopMessageTs, formatStopped(bot));
                 state.stopMessageTs = undefined;
               } else {
-                await bot.postMessage(event.channel, "_Stopped_");
+                await bot.postMessage(event.channel, formatStopped(bot));
               }
             }
           } catch (err) {
