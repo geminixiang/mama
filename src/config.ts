@@ -90,6 +90,17 @@ export function resolveSentryDsn(workspaceDir?: string): string | undefined {
   return process.env.SENTRY_DSN;
 }
 
+/**
+ * Externally-visible base URL of the link/OAuth server, e.g.
+ * `https://mama.example.com` (no trailing slash). Read from `MOM_LINK_URL`,
+ * the same env var the bot uses to build credential onboarding links.
+ */
+export function resolveLinkBaseUrl(): string | undefined {
+  const raw = process.env.MOM_LINK_URL?.trim();
+  if (!raw) return undefined;
+  return raw.replace(/\/+$/, "");
+}
+
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
   const settingsPath = join(workspaceDir, "settings.json");
 
