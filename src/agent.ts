@@ -145,6 +145,7 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
 function buildSystemPrompt(
   workspacePath: string,
   channelId: string,
+  currentUserId: string | undefined,
   memory: string,
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
@@ -242,17 +243,17 @@ You can schedule events that wake you up at specific times or when external thin
 
 **Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
 \`\`\`json
-{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "text": "New GitHub issue opened"}
+{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "New GitHub issue opened"}
 \`\`\`
 
 **One-shot** - Triggers once at a specific time. Use for reminders.
 \`\`\`json
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
 \`\`\`
 
 **Periodic** - Triggers on a cron schedule. Use for recurring tasks.
 \`\`\`json
-{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
+{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
 
 ### Cron Format
@@ -265,14 +266,18 @@ You can schedule events that wake you up at specific times or when external thin
 ### Timezones
 All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events use IANA timezone names. The harness runs in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. When users mention times without timezone, assume ${Intl.DateTimeFormat().resolvedOptions().timeZone}.
 
-### Platform Routing
+### Platform and Credential Routing
 Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
+
+Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single vault.
+
+Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`channelId\`, and \`userId\` for the current conversation automatically.
 
 ### Creating Events
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
@@ -458,7 +463,7 @@ export async function createRunner(
   let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
+  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -478,6 +483,7 @@ export async function createRunner(
   const systemPrompt = buildSystemPrompt(
     workspacePath,
     channelId,
+    undefined,
     memory,
     sandboxConfig,
     emptyPlatform,
@@ -915,12 +921,19 @@ export async function createRunner(
       const systemPrompt = buildSystemPrompt(
         workspacePath,
         channelId,
+        message.userId,
         memory,
         executor.getSandboxConfig(),
         platform,
         skills,
       );
       session.agent.state.systemPrompt = systemPrompt;
+
+      setEventContext({
+        platform: platform.name,
+        channelId,
+        userId: message.userId,
+      });
 
       // Set up file upload function
       setUploadFunction(async (filePath: string, title?: string) => {
