@@ -434,6 +434,7 @@ export async function createRunner(
 
   const executionResolver =
     vaultManager &&
+    sandboxConfig.type !== "host" &&
     (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "container")
       ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore)
       : undefined;

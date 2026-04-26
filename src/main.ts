@@ -214,8 +214,10 @@ const vaultManager = new FileVaultManager(stateDir);
 if (vaultManager.isEnabled()) {
   console.log(
     sandbox.type === "container"
-      ? "  Vault system enabled. Shared container vault active."
-      : "  Vault system enabled. Per-user credential routing active.",
+      ? "  Vault system enabled. Container vault active."
+      : sandbox.type === "firecracker"
+        ? "  Vault system enabled. Per-user credential routing active."
+        : "  Vault system enabled. Host mode will not inject vault env.",
   );
 }
 
@@ -223,8 +225,10 @@ const bindingStore = new FileUserBindingStore(stateDir);
 if (bindingStore.isEnabled()) {
   console.log(
     sandbox.type === "container"
-      ? "  Binding store enabled. Shared container mode ignores per-user vault bindings."
-      : "  Binding store enabled. Platform user → vault routing active.",
+      ? "  Binding store enabled. Container mode uses the container vault."
+      : sandbox.type === "firecracker"
+        ? "  Binding store enabled. Platform user → vault routing active."
+        : "  Binding store enabled. Host mode will not inject vault env.",
   );
 }
 

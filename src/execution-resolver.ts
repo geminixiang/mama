@@ -38,7 +38,8 @@ export class ActorExecutionResolver {
 
     const vault = this.vaultManager.resolve(vaultKey);
     const config = this.vaultManager.getSandboxConfig(vaultKey, this.baseConfig);
-    const env = vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
+    const env =
+      config.type !== "host" && vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
     return createExecutor(config, env);
   }
 }
