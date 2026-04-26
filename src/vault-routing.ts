@@ -1,4 +1,5 @@
 import type { UserBindingStore } from "./bindings.js";
+import { DockerContainerManager } from "./provisioner.js";
 import type { SandboxConfig } from "./sandbox.js";
 import type { VaultEntry, VaultManager } from "./vault.js";
 
@@ -22,17 +23,26 @@ export function resolveActorVaultKey(
     return userId;
   }
 
-  return userId;
+  return baseConfig.type === "image" ? DockerContainerManager.vaultId(platform, userId) : userId;
 }
 
 export function createManagedVaultEntry(
   platform: string,
   userId: string,
-  _vaultKey: string,
+  vaultKey: string,
+  withImageSandbox = false,
 ): VaultEntry {
   return {
     displayName: `${platform}:${userId}`,
     platform: asVaultPlatform(platform),
+    ...(withImageSandbox
+      ? {
+          sandbox: {
+            type: "image" as const,
+            container: DockerContainerManager.containerName(vaultKey),
+          },
+        }
+      : {}),
   };
 }
 
@@ -48,18 +58,22 @@ export function createSharedContainerVaultEntry(containerName: string): VaultEnt
 
 export function ensureSandboxVaultEntry(
   baseConfig: SandboxConfig,
-  vaultManager: Pick<VaultManager, "addEntry">,
-  _platform: string,
-  _userId: string,
+  vaultManager: Pick<VaultManager, "addEntry" | "ensureImageSandboxEntry">,
+  platform: string,
+  userId: string,
   vaultKey: string,
 ): void {
-  if (baseConfig.type === "container") {
-    vaultManager.addEntry(vaultKey, createSharedContainerVaultEntry(baseConfig.container));
+  if (baseConfig.type === "image") {
+    vaultManager.ensureImageSandboxEntry(
+      vaultKey,
+      createManagedVaultEntry(platform, userId, vaultKey, true),
+    );
     return;
   }
 
-  // Host and firecracker modes should not create credential entries merely
-  // because a user sent a message. `/login` owns first-time vault creation.
+  if (baseConfig.type === "container") {
+    vaultManager.addEntry(vaultKey, createSharedContainerVaultEntry(baseConfig.container));
+  }
 }
 
 function asVaultPlatform(platform: string): VaultEntry["platform"] | undefined {

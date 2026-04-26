@@ -1,4 +1,8 @@
-export type SandboxConfig = HostSandboxConfig | ContainerSandboxConfig | FirecrackerSandboxConfig;
+export type SandboxConfig =
+  | HostSandboxConfig
+  | ContainerSandboxConfig
+  | ImageSandboxConfig
+  | FirecrackerSandboxConfig;
 
 export interface HostSandboxConfig {
   type: "host";
@@ -7,6 +11,11 @@ export interface HostSandboxConfig {
 export interface ContainerSandboxConfig {
   type: "container";
   container: string;
+}
+
+export interface ImageSandboxConfig {
+  type: "image";
+  image: string;
 }
 
 export interface FirecrackerSandboxConfig {

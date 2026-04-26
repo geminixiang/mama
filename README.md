@@ -47,8 +47,8 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host, in a container, or in a Firecracker VM
-- **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/Firecracker runs
+- **Sandbox execution** — run agent commands on host, in a shared container, in a managed per-user container, or in a Firecracker VM
+- **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/image/Firecracker runs
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
@@ -170,7 +170,7 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 The bot responds when `@mentioned` in any channel or via DM.
@@ -189,7 +189,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Private chats** — every message is forwarded to the bot automatically.
@@ -209,7 +209,7 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm
 ```bash
 export MOM_DISCORD_BOT_TOKEN=MTI...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Server channels** — the bot responds when `@mentioned`.
@@ -226,16 +226,18 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|firecracker:<vm
 | -------------------------------------- | --------- | -------------------------------------------------------- |
 | `--state-dir=<dir>`                    | `~/.mama` | Store credential vaults and bindings outside workspace   |
 | `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected |
-| `--sandbox=container:<name>`           |           | Run commands in an existing container                    |
+| `--sandbox=container:<name>`           |           | Run commands in an existing shared container             |
+| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user    |
 | `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                |
 | `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only) |
 
 ### Sandbox and Vault Semantics
 
 - `host`: no vault env injection.
-- `container:<name>`: one container maps to one vault key: `container-<name>`.
+- `container:<name>`: one container maps to one shared vault key: `container-<name>`.
+- `image:<image>`: mama creates one container per resolved vault/user and injects that vault's env and file mounts.
 - `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault.
-- `docker:*` and `image:*` are reserved for future managed-container modes.
+- `docker:*` is not supported; use `container:*` or `image:*`.
 
 See [docs/sandbox.md](docs/sandbox.md) for the full sandbox/vault behavior matrix.
 
@@ -262,7 +264,7 @@ Built-in OAuth guides:
 - [GitHub OAuth](docs/oauth/github.md)
 - [Google Workspace CLI OAuth](docs/oauth/google-workspace.md)
 
-Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Runtime env injection only happens in `container` and `firecracker` modes.
+Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Runtime env injection only happens in `container`, `image`, and `firecracker` modes.
 
 ## Configuration
 
@@ -350,6 +352,18 @@ mama --sandbox=container:mama-tools /path/to/workspace
 ```
 
 `container:mama-tools` uses vault key `container-mama-tools`. If multiple users share the same container, they share that container vault.
+
+## Managed Per-User Container Sandbox
+
+```bash
+# Build the bundled image once
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+
+# Start mama with managed image sandboxes
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
+```
+
+In this mode mama creates one Docker container per resolved vault/user, mounts the workspace at `/workspace`, injects vault env on execution, mounts any credential files declared in the vault, and stops idle containers automatically.
 
 ## Firecracker Sandbox
 

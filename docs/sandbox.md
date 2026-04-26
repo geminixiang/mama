@@ -8,9 +8,10 @@
 | ----------------------------------------------------------- | --------------------- | ------------------- | ----------------------------------------- | -------------------------------------------------------------- |
 | `host`                                                      | 宿主機                | 不注入              | 可存，但執行時不用                        | 最適合本機開發；不把 vault env 放進 host process               |
 | `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`                        | one container one vault；多人共用同一 container 就共用該 vault |
+| `image:<image>`                                             | mama 管理的 Docker    | 注入                | binding / direct userId / generated vault | per-user container lifecycle 由 mama 管理                      |
 | `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | binding 優先，再 fallback 到 userId vault | VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`           |
 
-目前 `docker:*` / `image:*` 不是可用模式；`image:*` 保留給未來由 mama 管理 per-user container lifecycle 的設計。
+`docker:*` 不是可用模式；請改用 `container:*` 或 `image:*`。
 
 ---
 
@@ -130,6 +131,38 @@ container-<name>
 
 ---
 
+## `image:<image>`
+
+```bash
+# Build the bundled image once
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+
+# Run mama with managed per-user containers
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
+```
+
+特性：
+
+- mama 會為每個 resolved vault / user 建立一個獨立 container
+- workspace 會固定 mount 到 `/workspace`
+- vault env 會在執行時注入
+- vault file credential 會依 target path 自動 bind mount 進 container
+- 閒置 container 會自動 stop；下次需要時再 start 或 recreate
+
+vault key 選擇邏輯：
+
+1. 先看 `bindings.json` 是否把 platform user 綁到指定 vault
+2. 若沒有 binding，但存在同名 `userId` vault，使用該 direct vault
+3. 若都沒有，建立一個 platform-scoped vault key，例如 `slack-u123`
+
+適合：
+
+- 多使用者共用一個 mama instance
+- 需要 per-user env/file credential isolation
+- 想比 shared container 更安全，但又不想直接上 Firecracker
+
+---
+
 ## `firecracker:<vm-id>:<host-path>`
 
 ```bash
@@ -226,4 +259,4 @@ OAuth callback URL 是：
 }
 ```
 
-目前 binding 主要影響 `firecracker` 這類 per-user routing 模式。`container:<name>` 會固定使用 container vault，因此不看 per-user binding。
+目前 binding 主要影響 `image` / `firecracker` 這類 per-user routing 模式。`container:<name>` 會固定使用 container vault，因此不看 per-user binding。

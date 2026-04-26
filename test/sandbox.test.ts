@@ -24,6 +24,13 @@ describe("parseSandboxArg", () => {
     });
   });
 
+  test("parses image sandbox for managed per-user containers", () => {
+    expect(parseSandboxArg("image:ubuntu:24.04")).toEqual({
+      type: "image",
+      image: "ubuntu:24.04",
+    });
+  });
+
   test("parses firecracker sandbox with defaults", () => {
     expect(parseSandboxArg("firecracker:172.16.0.2:/home/user/workspace")).toEqual({
       type: "firecracker",
@@ -66,13 +73,6 @@ describe("parseSandboxArg", () => {
       "Use 'container:<container-name>' for the shared-container mode",
     );
   });
-
-  test("rejects image mode with migration hint", () => {
-    expect(() => parseSandboxArg("image:alpine:latest")).toThrowError(SandboxError);
-    expect(() => parseSandboxArg("image:alpine:latest")).toThrow(
-      "Future 'docker:'/'image:' modes are reserved for per-session containers managed by mama.",
-    );
-  });
 });
 
 describe("createExecutor", () => {
@@ -83,6 +83,12 @@ describe("createExecutor", () => {
   test("creates container executor", () => {
     expect(createExecutor({ type: "container", container: "mama-sandbox" })).toBeInstanceOf(
       ContainerExecutor,
+    );
+  });
+
+  test("rejects unresolved image executor", () => {
+    expect(() => createExecutor({ type: "image", image: "ubuntu:24.04" })).toThrowError(
+      SandboxError,
     );
   });
 

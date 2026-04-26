@@ -22,6 +22,7 @@ import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { UserBindingStore } from "./bindings.js";
+import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
@@ -145,7 +146,8 @@ function buildSystemPrompt(
   skills: Skill[],
 ): string {
   const channelPath = `${workspacePath}/${channelId}`;
-  const isContainer = sandboxConfig.type === "container";
+  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
+  const isImageSandbox = sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
@@ -160,17 +162,22 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isContainer
-    ? `You are running inside a container (Docker runtime, Alpine Linux).
+  const envDescription = isImageSandbox
+    ? `You are running inside a managed per-user container.
 - Bash working directory: / (use cd or absolute paths)
-- Install tools with: apk add <package>
+- Install tools with the image's package manager
+- Your changes persist for this user's container until it is recreated`
+    : isContainer
+      ? `You are running inside a shared container.
+- Bash working directory: / (use cd or absolute paths)
+- Install tools with the container's package manager
 - Your changes persist across sessions`
-    : isFirecracker
-      ? `You are running inside a Firecracker microVM.
+      : isFirecracker
+        ? `You are running inside a Firecracker microVM.
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apt-get install <package> (Debian-based)
 - Your changes persist across sessions`
-      : `You are running directly on the host machine.
+        : `You are running directly on the host machine.
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
@@ -262,7 +269,7 @@ All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events us
 ### Platform and Credential Routing
 Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
 
-Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single vault.
+Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single shared vault.
 
 Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`channelId\`, and \`userId\` for the current conversation automatically.
 
@@ -421,6 +428,7 @@ export async function createRunner(
   workspaceDir: string,
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
+  provisioner?: DockerContainerManager,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
 
@@ -433,8 +441,11 @@ export async function createRunner(
   const executionResolver =
     vaultManager &&
     sandboxConfig.type !== "host" &&
-    (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "container")
-      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore)
+    (vaultManager.isEnabled() ||
+      !!bindingStore ||
+      sandboxConfig.type === "container" ||
+      sandboxConfig.type === "image")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
       : undefined;
   let activeExecutor: Executor =
     executionResolver !== undefined
