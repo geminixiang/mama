@@ -24,7 +24,7 @@ export interface OAuthService {
 }
 
 export interface ParsedLoginCommand {
-  command: "login" | "/login";
+  command: "login" | "/login" | "/pi-login";
 }
 
 const DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES = [
@@ -212,9 +212,9 @@ export function parseLoginCommand(text: string): ParsedLoginCommand | null {
   if (tokens.length === 0) return null;
 
   const command = tokens[0].toLowerCase();
-  if (command !== "login" && command !== "/login") {
+  if (command !== "login" && command !== "/login" && command !== "/pi-login") {
     return null;
   }
 
-  return { command: command as "login" | "/login" };
+  return { command: command as "login" | "/login" | "/pi-login" };
 }

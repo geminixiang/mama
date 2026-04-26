@@ -100,7 +100,8 @@ npm run build
    - `assistant_thread_context_changed`, `assistant_thread_started`
    - `message.channels`, `message.groups`, `message.im`
 5. Enable **Interactivity** (Settings → Interactivity & Shortcuts → toggle on).
-6. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
+6. (Optional) Add a **Slash Command** such as `/pi-login` in the Slack app settings if you want a dedicated login command with less naming conflict.
+7. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
 
 Or import this **App Manifest** directly (Settings → App Manifest → paste JSON):
 
@@ -260,6 +261,8 @@ export MOM_LINK_PORT=8181
 For local-only testing, you can set `MOM_LINK_PORT` without `MOM_LINK_URL`; mama will use `http://localhost:<port>` for the onboarding link.
 
 Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers. `/login` is rejected in shared channels to avoid leaking onboarding links.
+
+On Slack, you can also register a native slash command such as `/pi-login`. When `/pi-login` is used in a shared channel, mama opens a DM and continues the credential flow there.
 
 Built-in OAuth guides:
 

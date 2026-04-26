@@ -6,6 +6,7 @@ describe("login command parsing", () => {
     expect(parseLoginCommand("/login")).toEqual({ command: "/login" });
     expect(parseLoginCommand("login")).toEqual({ command: "login" });
     expect(parseLoginCommand("/login github_oauth")).toEqual({ command: "/login" });
+    expect(parseLoginCommand("/pi-login github")).toEqual({ command: "/pi-login" });
     expect(parseLoginCommand("help")).toBeNull();
   });
 

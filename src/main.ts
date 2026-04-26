@@ -290,11 +290,20 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
   return vaultId;
 }
 
+async function replyWithContext(
+  responseCtx: BotAdapters["responseCtx"],
+  text: string,
+): Promise<void> {
+  await responseCtx.setTyping(false);
+  await responseCtx.setWorking(false);
+  await responseCtx.respond(text);
+}
+
 async function handleLoginCommand(
   platform: string,
   platformUserId: string,
   conversationId: string,
-  bot: Bot,
+  responseCtx: BotAdapters["responseCtx"],
   commandText: string,
   privateConversation: boolean,
 ): Promise<boolean> {
@@ -302,8 +311,8 @@ async function handleLoginCommand(
   if (!parsed) return false;
 
   if (!privateConversation) {
-    await bot.postMessage(
-      conversationId,
+    await replyWithContext(
+      responseCtx,
       "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
     );
     return true;
@@ -311,8 +320,8 @@ async function handleLoginCommand(
 
   const baseUrl = normalizeLoginBaseUrl();
   if (!baseUrl) {
-    await bot.postMessage(
-      conversationId,
+    await replyWithContext(
+      responseCtx,
       "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
     );
     return true;
@@ -326,8 +335,8 @@ async function handleLoginCommand(
       `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
       error instanceof Error ? error.message : String(error),
     );
-    await bot.postMessage(
-      conversationId,
+    await replyWithContext(
+      responseCtx,
       "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
     );
     return true;
@@ -341,8 +350,8 @@ async function handleLoginCommand(
     "",
   );
   const vaultLabel = sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
-  await bot.postMessage(
-    conversationId,
+  await replyWithContext(
+    responseCtx,
     `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${baseUrl}/link?token=${token.token}`,
   );
   return true;
@@ -535,7 +544,7 @@ const handler: BotHandler = {
       adapters.platform.name,
       event.user,
       conversationId,
-      bot,
+      adapters.responseCtx,
       event.text,
       isPrivateConversation(event),
     );

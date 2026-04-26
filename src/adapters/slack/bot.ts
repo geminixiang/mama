@@ -3,7 +3,16 @@ import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
-import type { Bot, BotEvent, BotHandler, ConversationKind, PlatformInfo } from "../../adapter.js";
+import type {
+  Bot,
+  BotAdapters,
+  BotEvent,
+  BotHandler,
+  ChatMessage,
+  ChatResponseContext,
+  ConversationKind,
+  PlatformInfo,
+} from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
@@ -243,6 +252,23 @@ export class SlackBot implements Bot {
     return withRetry(async () => {
       const result = await this.webClient.chat.postMessage({ channel, text });
       return result.ts as string;
+    });
+  }
+
+  async postEphemeral(channel: string, user: string, text: string): Promise<void> {
+    return withRetry(async () => {
+      await this.webClient.chat.postEphemeral({ channel, user, text });
+    });
+  }
+
+  async openDirectMessage(userId: string): Promise<string> {
+    return withRetry(async () => {
+      const result = await this.webClient.conversations.open({ users: userId });
+      const channelId = result.channel?.id;
+      if (!channelId) {
+        throw new Error(`Failed to open DM for user ${userId}`);
+      }
+      return channelId;
     });
   }
 
@@ -598,6 +624,109 @@ export class SlackBot implements Bot {
     return this.handler.isRunning(channelId) ? channelId : null;
   }
 
+  private createDirectCommandAdapters(
+    conversationId: string,
+    userId: string,
+    userName: string | undefined,
+    text: string,
+    ts: string,
+  ): BotAdapters {
+    const message: ChatMessage = {
+      id: ts,
+      sessionKey: conversationId,
+      conversationKind: "direct",
+      userId,
+      userName,
+      text,
+      attachments: [],
+    };
+
+    const responseCtx: ChatResponseContext = {
+      respond: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      replaceResponse: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      respondInThread: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      setTyping: async () => {},
+      setWorking: async () => {},
+      uploadFile: async (filePath: string, title?: string) => {
+        await this.uploadFile(conversationId, filePath, title);
+      },
+      deleteResponse: async () => {},
+    };
+
+    return {
+      message,
+      responseCtx,
+      platform: this.getPlatformInfo(),
+    };
+  }
+
+  private async routeSlashLoginCommand(payload: {
+    command: string;
+    text?: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const commandSuffix = payload.text?.trim();
+    const commandText = commandSuffix ? `${payload.command} ${commandSuffix}` : payload.command;
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const sourceChannelId = payload.channel_id;
+    const isDirectMessage = sourceChannelId.startsWith("D");
+    const targetChannelId = isDirectMessage
+      ? sourceChannelId
+      : await this.openDirectMessage(payload.user_id);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+
+    this.logToFile(targetChannelId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: commandText,
+      attachments: [],
+      isBot: false,
+    });
+
+    if (!isDirectMessage) {
+      await this.postEphemeral(
+        sourceChannelId,
+        payload.user_id,
+        `我已私訊你 ${PRODUCT_NAME} 的登入連結，請到私訊完成設定。`,
+      );
+    }
+
+    const event: BotEvent = {
+      type: "dm",
+      conversationId: targetChannelId,
+      conversationKind: "direct",
+      ts: eventTs,
+      user: payload.user_id,
+      text: commandText,
+      attachments: [],
+      sessionKey: targetChannelId,
+    };
+
+    const adapters = this.createDirectCommandAdapters(
+      targetChannelId,
+      payload.user_id,
+      userName,
+      commandText,
+      eventTs,
+    );
+
+    await this.handler.handleEvent(event, this, adapters, false);
+  }
+
   private setupEventHandlers(): void {
     // Channel @mentions
     this.socketClient.on("app_mention", ({ event, ack }) => {
@@ -786,6 +915,35 @@ export class SlackBot implements Bot {
       }
 
       ack();
+    });
+
+    this.socketClient.on("slash_commands", async ({ body, ack }) => {
+      const payload = body as {
+        command?: string;
+        text?: string;
+        channel_id?: string;
+        user_id?: string;
+        user_name?: string;
+      };
+
+      await ack();
+
+      if (payload.command !== "/pi-login" || !payload.channel_id || !payload.user_id) {
+        return;
+      }
+
+      this.routeSlashLoginCommand({
+        command: payload.command,
+        text: payload.text,
+        channel_id: payload.channel_id,
+        user_id: payload.user_id,
+        user_name: payload.user_name,
+      }).catch((err) => {
+        log.logWarning(
+          "Slack slash command error",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
     });
 
     // App Home tab

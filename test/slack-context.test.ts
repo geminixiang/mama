@@ -240,6 +240,24 @@ describe("setTyping()", () => {
 // Text accumulation and truncation
 // ============================================================================
 
+describe("setWorking()", () => {
+  test("setWorking(false) before first respond omits indicator and still replies in thread", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot);
+
+    await responseCtx.setWorking(false);
+    await responseCtx.respond("login link");
+
+    expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", "login link");
+    expect(bot.postMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Text accumulation and truncation
+// ============================================================================
+
 describe("text accumulation", () => {
   test("multiple respond() calls accumulate text with newlines", async () => {
     const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
