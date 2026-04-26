@@ -55,6 +55,7 @@ describe("EventsWatcher platform routing", () => {
       type: "immediate",
       platform: "telegram",
       channelId: "123",
+      userId: undefined,
       text: "Check inbox",
     });
   });
@@ -92,6 +93,7 @@ describe("EventsWatcher platform routing", () => {
       platform: "discord",
       channelId: "CH-42",
       text: "Deploy in 10 minutes",
+      userId: "U123",
     });
 
     expect(enqueueSlack).not.toHaveBeenCalled();
@@ -99,9 +101,10 @@ describe("EventsWatcher platform routing", () => {
     expect(enqueueDiscord).toHaveBeenCalledWith({
       type: "mention",
       channel: "CH-42",
-      user: "EVENT",
+      user: "U123",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
-      ts: "CH-42",
+      ts: "event:deploy-reminder.json",
+      sessionKey: "CH-42",
     });
   });
 });
