@@ -22,8 +22,16 @@ import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { FileUserBindingStore } from "./bindings.js";
+import { startLinkServer } from "./link-server.js";
+import { parseLoginCommand } from "./login.js";
+import { InMemoryLinkTokenStore } from "./link-token.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
+import {
+  createManagedVaultEntry,
+  ensureSandboxVaultEntry,
+  resolveActorVaultKey,
+} from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -56,6 +64,12 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+const MOM_LINK_URL = process.env.MOM_LINK_URL;
+const MOM_LINK_PORT = process.env.MOM_LINK_PORT
+  ? parseInt(process.env.MOM_LINK_PORT, 10)
+  : MOM_LINK_URL
+    ? 8181
+    : undefined;
 
 interface ParsedArgs {
   workingDir?: string;
@@ -232,6 +246,98 @@ if (bindingStore.isEnabled()) {
   );
 }
 
+const linkTokenStore = new InMemoryLinkTokenStore();
+setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
+
+function normalizeLoginBaseUrl(): string | undefined {
+  if (MOM_LINK_URL) {
+    return MOM_LINK_URL.replace(/\/+$/, "");
+  }
+  if (MOM_LINK_PORT) {
+    return `http://localhost:${MOM_LINK_PORT}`;
+  }
+  return undefined;
+}
+
+function isPrivateConversation(event: BotEvent): boolean {
+  return event.type === "dm" || event.sessionKey === event.channel;
+}
+
+function ensureLoginVault(platform: string, platformUserId: string): string {
+  const vaultId = resolveActorVaultKey(
+    sandbox,
+    vaultManager,
+    bindingStore,
+    platform,
+    platformUserId,
+  );
+
+  ensureSandboxVaultEntry(sandbox, vaultManager, platform, platformUserId, vaultId);
+  if (sandbox.type !== "container") {
+    vaultManager.addEntry(vaultId, createManagedVaultEntry(platform, platformUserId, vaultId));
+  }
+
+  return vaultId;
+}
+
+async function handleLoginCommand(
+  platform: string,
+  platformUserId: string,
+  channelId: string,
+  bot: Bot,
+  commandText: string,
+  privateConversation: boolean,
+): Promise<boolean> {
+  const parsed = parseLoginCommand(commandText);
+  if (!parsed) return false;
+
+  if (!privateConversation) {
+    await bot.postMessage(
+      channelId,
+      "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
+    );
+    return true;
+  }
+
+  const baseUrl = normalizeLoginBaseUrl();
+  if (!baseUrl) {
+    await bot.postMessage(
+      channelId,
+      "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+    );
+    return true;
+  }
+
+  let vaultId: string;
+  try {
+    vaultId = ensureLoginVault(platform, platformUserId);
+  } catch (error) {
+    log.logWarning(
+      `[${channelId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    await bot.postMessage(
+      channelId,
+      "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
+    );
+    return true;
+  }
+
+  const token = linkTokenStore.create(
+    platform as "slack" | "discord" | "telegram",
+    platformUserId,
+    channelId,
+    vaultId,
+    "",
+  );
+  const vaultLabel = sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
+  await bot.postMessage(
+    channelId,
+    `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${baseUrl}/link?token=${token.token}`,
+  );
+  return true;
+}
+
 // ============================================================================
 // State (per channel)
 // ============================================================================
@@ -401,6 +507,16 @@ const handler: BotHandler = {
     }
 
     const sessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
+    const handledLogin = await handleLoginCommand(
+      adapters.platform.name,
+      event.user,
+      event.channel,
+      bot,
+      event.text,
+      isPrivateConversation(event),
+    );
+    if (handledLogin) return;
+
     const state = await getState(event.channel, sessionKey);
 
     // Start run
@@ -555,6 +671,18 @@ if (hasDiscord) {
   bots.push(discordBot);
   botsByPlatform.discord = discordBot;
   log.logInfo("Platform: Discord");
+}
+
+if (MOM_LINK_PORT) {
+  startLinkServer(
+    MOM_LINK_PORT,
+    linkTokenStore,
+    vaultManager,
+    async (platform, channelId, message) => {
+      const bot = botsByPlatform[platform];
+      if (bot) await bot.postMessage(channelId, message);
+    },
+  );
 }
 
 // Start events watcher with explicit platform routing
