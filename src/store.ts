@@ -5,7 +5,7 @@ import * as log from "./log.js";
 
 export interface Attachment {
   original: string; // original filename from uploader
-  local: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
+  localPath: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
 }
 
 export interface LoggedMessage {
@@ -96,7 +96,7 @@ export class ChannelStore {
 
       attachments.push({
         original: file.name,
-        local: localPath,
+        localPath,
       });
 
       // Queue for background download

@@ -117,7 +117,7 @@ export interface SlackContext {
     userName?: string;
     channel: string;
     ts: string;
-    attachments: Array<{ local: string }>;
+    attachments: Array<{ localPath: string }>;
   };
   channelName?: string;
   channels: ChannelInfo[];
@@ -398,7 +398,7 @@ export class SlackBot implements Bot {
         text: event.text,
         attachments: event.attachments?.map((attachment) => ({
           original: attachment.name,
-          local: attachment.localPath,
+          localPath: attachment.localPath,
         })),
         sessionKey: event.sessionKey,
       };
