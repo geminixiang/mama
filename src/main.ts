@@ -20,7 +20,7 @@ import {
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -93,7 +93,22 @@ function parseArgs(): ParsedArgs {
   };
 }
 
-const parsedArgs = parseArgs();
+function handleStartupError(error: unknown): never {
+  if (error instanceof SandboxError) {
+    for (const line of error.formatForCli()) {
+      console.error(line);
+    }
+    process.exit(1);
+  }
+  throw error;
+}
+
+let parsedArgs: ParsedArgs;
+try {
+  parsedArgs = parseArgs();
+} catch (error) {
+  handleStartupError(error);
+}
 
 // Handle --version
 if (parsedArgs.showVersion) {
@@ -114,7 +129,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--sandbox=host|container:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
@@ -137,7 +152,11 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
   process.exit(1);
 }
 
-await validateSandbox(sandbox);
+try {
+  await validateSandbox(sandbox);
+} catch (error) {
+  handleStartupError(error);
+}
 
 // ============================================================================
 // State (per channel)
@@ -416,8 +435,8 @@ const handler: BotHandler = {
 const sandboxDesc =
   sandbox.type === "host"
     ? "host"
-    : sandbox.type === "docker"
-      ? `docker:${sandbox.container}`
+    : sandbox.type === "container"
+      ? `container:${sandbox.container}`
       : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
 
