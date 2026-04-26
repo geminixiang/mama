@@ -120,14 +120,15 @@ export class DiscordBot implements Bot {
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const conversationId = event.conversationId;
+    const queue = this.getQueue(conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
       const adapters = createDiscordAdapters(event as DiscordEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
@@ -363,7 +364,7 @@ export class DiscordBot implements Bot {
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
-        channel: channelId,
+        conversationId: channelId,
         ts: msgId,
         thread_ts: threadTs,
         user: userId,

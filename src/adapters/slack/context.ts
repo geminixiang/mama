@@ -22,6 +22,8 @@ export function createSlackAdapters(
   const workingIndicator = " ...";
   let updatePromise = Promise.resolve();
 
+  const channelId = event.channel;
+  const conversationId = event.conversationId;
   const user = slack.getUser(event.user);
 
   // Extract event filename for status message
@@ -32,13 +34,14 @@ export function createSlackAdapters(
 
   /** Post first reply in-thread under the user's message, creating a thread if none exists */
   const postFirstMessage = async (text: string): Promise<string> => {
-    return slack.postInThread(event.channel, event.ts, text);
+    return slack.postInThread(channelId, event.ts, text);
   };
 
   const message: ChatMessage = {
     id: event.ts,
     sessionKey:
-      event.sessionKey ?? (event.thread_ts ? `${event.channel}:${event.thread_ts}` : event.channel),
+      event.sessionKey ??
+      (event.thread_ts ? `${conversationId}:${event.thread_ts}` : conversationId),
     userId: event.user,
     userName: user?.userName,
     text: event.text,
@@ -73,16 +76,16 @@ export function createSlackAdapters(
           const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
           if (messageTs) {
-            await slack.updateMessage(event.channel, messageTs, displayText);
+            await slack.updateMessage(channelId, messageTs, displayText);
           } else if (isThreaded) {
             // Reply within the user's thread
-            messageTs = await slack.postInThread(event.channel, rootTs, displayText);
+            messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
           }
 
           if (messageTs) {
-            slack.logBotResponse(event.channel, text, messageTs, isThreaded ? rootTs : undefined);
+            slack.logBotResponse(channelId, text, messageTs, isThreaded ? rootTs : undefined);
           }
         } catch (err) {
           log.logWarning("Slack respond error", err instanceof Error ? err.message : String(err));
@@ -107,9 +110,9 @@ export function createSlackAdapters(
           const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
           if (messageTs) {
-            await slack.updateMessage(event.channel, messageTs, displayText);
+            await slack.updateMessage(channelId, messageTs, displayText);
           } else if (isThreaded) {
-            messageTs = await slack.postInThread(event.channel, rootTs, displayText);
+            messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
           }
@@ -143,12 +146,12 @@ export function createSlackAdapters(
                 threadText.length > CONTEXT_TEXT_LIMIT
                   ? threadText.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
                   : threadText;
-              const ts = await slack.postInThreadBlocks(event.channel, threadAnchor, threadText, [
+              const ts = await slack.postInThreadBlocks(channelId, threadAnchor, threadText, [
                 { type: "context", elements: [{ type: "mrkdwn", text: blockText }] },
               ]);
               threadMessageTs.push(ts);
             } else {
-              const ts = await slack.postInThread(event.channel, threadAnchor, threadText);
+              const ts = await slack.postInThread(channelId, threadAnchor, threadText);
               threadMessageTs.push(ts);
             }
           }
@@ -166,7 +169,7 @@ export function createSlackAdapters(
       if (isTyping && !messageTs) {
         try {
           const statusText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
-          await slack.setAssistantStatus(event.channel, rootTs, statusText);
+          await slack.setAssistantStatus(channelId, rootTs, statusText);
         } catch {
           // Assistant API not available — first respond() call will create the message
         }
@@ -174,7 +177,7 @@ export function createSlackAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await slack.uploadFile(event.channel, filePath, title, rootTs);
+      await slack.uploadFile(channelId, filePath, title, rootTs);
     },
 
     setWorking: async (working: boolean) => {
@@ -184,10 +187,10 @@ export function createSlackAdapters(
           if (messageTs) {
             const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
             const updates: Promise<void>[] = [
-              slack.updateMessage(event.channel, messageTs, displayText),
+              slack.updateMessage(channelId, messageTs, displayText),
             ];
             if (!working) {
-              updates.push(slack.setAssistantStatus(event.channel, rootTs, "").catch(() => {}));
+              updates.push(slack.setAssistantStatus(channelId, rootTs, "").catch(() => {}));
             }
             await Promise.all(updates);
           }
@@ -205,7 +208,7 @@ export function createSlackAdapters(
       updatePromise = updatePromise.then(async () => {
         // Clear assistant status first
         try {
-          await slack.setAssistantStatus(event.channel, rootTs, "");
+          await slack.setAssistantStatus(channelId, rootTs, "");
         } catch {
           // Ignore errors clearing status
         }
@@ -213,7 +216,7 @@ export function createSlackAdapters(
         // Delete thread messages first (in reverse order)
         for (let i = threadMessageTs.length - 1; i >= 0; i--) {
           try {
-            await slack.deleteMessage(event.channel, threadMessageTs[i]);
+            await slack.deleteMessage(channelId, threadMessageTs[i]);
           } catch {
             // Ignore errors deleting thread messages
           }
@@ -221,7 +224,7 @@ export function createSlackAdapters(
         threadMessageTs.length = 0;
         // Then delete main message
         if (messageTs) {
-          await slack.deleteMessage(event.channel, messageTs);
+          await slack.deleteMessage(channelId, messageTs);
           messageTs = null;
         }
       });

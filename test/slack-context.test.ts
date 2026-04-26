@@ -26,13 +26,16 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
 }
 
 function makeEvent(overrides: Partial<SlackEvent> = {}): SlackEvent {
+  const { channel: overrideChannel, conversationId: overrideConversationId, ...rest } = overrides;
+  const channel = overrideChannel ?? "C001";
   return {
     type: "mention",
-    channel: "C001",
+    channel,
+    conversationId: overrideConversationId ?? channel,
     ts: "1000.0001",
     user: "U001",
     text: "hello",
-    ...overrides,
+    ...rest,
   };
 }
 

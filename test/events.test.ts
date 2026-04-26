@@ -100,7 +100,7 @@ describe("EventsWatcher platform routing", () => {
     expect(enqueueDiscord).toHaveBeenCalledTimes(1);
     expect(enqueueDiscord).toHaveBeenCalledWith({
       type: "mention",
-      channel: "CH-42",
+      conversationId: "CH-42",
       user: "U123",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
       ts: "event:deploy-reminder.json",

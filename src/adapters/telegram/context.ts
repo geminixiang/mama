@@ -83,12 +83,13 @@ export function createTelegramAdapters(
     }
   }
 
-  const chatId = parseInt(event.channel);
+  const conversationId = event.conversationId;
+  const chatId = parseInt(conversationId);
   const replyToId = event.thread_ts ? parseInt(event.thread_ts) : null;
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -116,7 +117,7 @@ export function createTelegramAdapters(
 
   async function sendOrUpdate(displayText: string): Promise<void> {
     if (messageId !== null) {
-      await bot.updateMessage(event.channel, String(messageId), displayText);
+      await bot.updateMessage(conversationId, String(messageId), displayText);
     } else if (replyToId !== null) {
       messageId = await bot.postReply(chatId, replyToId, displayText);
     } else {
@@ -133,7 +134,7 @@ export function createTelegramAdapters(
           const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
           await sendOrUpdate(displayText);
           if (messageId !== null) {
-            bot.logBotResponse(event.channel, text, String(messageId));
+            bot.logBotResponse(conversationId, text, String(messageId));
           }
         } catch (err) {
           await notifyError(bot, chatId, "respond", err);
@@ -174,7 +175,7 @@ export function createTelegramAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await bot.uploadFile(event.channel, filePath, title);
+      await bot.uploadFile(conversationId, filePath, title);
     },
 
     deleteResponse: async () => {

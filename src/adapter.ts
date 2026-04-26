@@ -40,8 +40,8 @@ export interface ChatAdapter {
  */
 export interface BotEvent {
   type: string;
-  /** Platform-specific channel/chat identifier */
-  channel: string;
+  /** Platform-specific conversation/channel/chat identifier */
+  conversationId: string;
   /** Message timestamp or ID as string */
   ts: string;
   /** Parent message ID for threaded replies (optional) */
@@ -52,7 +52,7 @@ export interface BotEvent {
   text: string;
   /** Downloaded attachments */
   attachments?: { name: string; localPath: string }[];
-  /** Platform-computed session key; overrides default channel:thread_ts computation */
+  /** Platform-computed session key; overrides default conversationId:thread_ts computation */
   sessionKey?: string;
 }
 
@@ -92,11 +92,11 @@ export interface BotHandler {
   isRunning(sessionKey: string): boolean;
   getRunningSessions(): RunningSession[];
   handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
-  handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
   /** Force stop a running session (bypass normal stop mechanism) */
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
-  handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
 }
 
 /** @deprecated Use BotHandler */

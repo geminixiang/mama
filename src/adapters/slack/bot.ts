@@ -73,6 +73,7 @@ async function withRetry<T>(
 
 export interface SlackEvent {
   type: "mention" | "dm";
+  conversationId: string;
   channel: string;
   ts: string;
   thread_ts?: string;
@@ -377,16 +378,31 @@ export class SlackBot implements Bot {
    * Returns true if enqueued, false if queue is full (max 5).
    */
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const conversationId = event.conversationId;
+    const queue = this.getQueue(conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createSlackAdapters(event as unknown as SlackEvent, this, true);
+      const slackEvent: SlackEvent = {
+        type: event.type as SlackEvent["type"],
+        conversationId,
+        channel: conversationId,
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+        user: event.user,
+        text: event.text,
+        attachments: event.attachments?.map((attachment) => ({
+          original: attachment.name,
+          local: attachment.localPath,
+        })),
+        sessionKey: event.sessionKey,
+      };
+      const adapters = createSlackAdapters(slackEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -604,6 +620,7 @@ export class SlackBot implements Bot {
 
       const slackEvent: SlackEvent = {
         type: "mention",
+        conversationId: e.channel,
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,
@@ -698,6 +715,7 @@ export class SlackBot implements Bot {
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
+        conversationId: e.channel,
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,
