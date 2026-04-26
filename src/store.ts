@@ -54,11 +54,11 @@ export class ChannelStore {
    * Get or create the directory for a channel/DM
    */
   getChannelDir(channelId: string): string {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const channelDir = join(this.workingDir, channelId);
+    if (!existsSync(channelDir)) {
+      mkdirSync(channelDir, { recursive: true });
     }
-    return dir;
+    return channelDir;
   }
 
   /**
@@ -214,9 +214,9 @@ export class ChannelStore {
     const filePath = join(this.workingDir, localPath);
 
     // Ensure directory exists
-    const dir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const parentDir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
+    if (!existsSync(parentDir)) {
+      mkdirSync(parentDir, { recursive: true });
     }
 
     const response = await fetch(url, {
