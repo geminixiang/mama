@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { homedir } from "os";
+import { dirname, join, resolve } from "path";
 
 export interface AgentConfig {
   provider: string;
@@ -20,11 +21,9 @@ const DEFAULTS: AgentConfig = {
   logLevel: "info",
 };
 
-function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
-  const settingsPath = join(workspaceDir, "settings.json");
-
+function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined {
   if (!existsSync(settingsPath)) {
-    return {};
+    return undefined;
   }
 
   try {
@@ -34,7 +33,29 @@ function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
       return parsed as Partial<AgentConfig>;
     }
   } catch {
-    // Ignore parse errors, fall through to env/defaults
+    // Ignore parse errors, fall through to next candidate
+  }
+
+  return undefined;
+}
+
+function getConfiguredStateDir(): string | undefined {
+  const raw = process.env.MAMA_STATE_DIR?.trim();
+  return raw ? resolve(raw) : undefined;
+}
+
+function loadRawAgentConfig(workspaceDir?: string): Partial<AgentConfig> {
+  const stateDir = getConfiguredStateDir();
+  const candidates = [
+    ...(stateDir ? [join(stateDir, "settings.json")] : []),
+    ...(workspaceDir ? [join(workspaceDir, "settings.json")] : []),
+  ];
+
+  for (const settingsPath of candidates) {
+    const config = loadConfigFile(settingsPath);
+    if (config) {
+      return config;
+    }
   }
 
   return {};
@@ -83,12 +104,24 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
   return undefined;
 }
 
-export function resolveSentryDsn(workspaceDir?: string): string | undefined {
-  if (workspaceDir) {
-    const fromFile = loadRawAgentConfig(workspaceDir);
-    if (fromFile.sentryDsn) {
-      return fromFile.sentryDsn;
+export function resolveStateDirFromArgv(args = process.argv.slice(2)): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--state-dir=")) {
+      return resolve(arg.slice("--state-dir=".length));
     }
+    if (arg === "--state-dir") {
+      return resolve(args[++i] || "");
+    }
+  }
+
+  return join(homedir(), ".mama");
+}
+
+export function resolveSentryDsn(workspaceDir?: string): string | undefined {
+  const fromFile = loadRawAgentConfig(workspaceDir);
+  if (fromFile.sentryDsn) {
+    return fromFile.sentryDsn;
   }
 
   return process.env.SENTRY_DSN;

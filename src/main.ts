@@ -202,6 +202,7 @@ if (!parsedArgs.workingDir) {
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
 const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+process.env.MAMA_STATE_DIR = stateDir;
 ensureSecureStateDir(stateDir);
 
 // Validate platform tokens
