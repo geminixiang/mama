@@ -1,6 +1,8 @@
+import { existsSync } from "fs";
 import type { UserBindingStore } from "./bindings.js";
+import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
-import type { VaultManager } from "./vault.js";
+import type { ResolvedVault, VaultManager } from "./vault.js";
 import { ensureSandboxVaultEntry, resolveActorVaultKey } from "./vault-routing.js";
 
 export interface ActorContext {
@@ -13,6 +15,7 @@ export class ActorExecutionResolver {
     private baseConfig: SandboxConfig,
     private vaultManager: VaultManager,
     private bindingStore?: UserBindingStore,
+    private provisioner?: DockerContainerManager,
   ) {}
 
   refresh(): void {
@@ -40,6 +43,38 @@ export class ActorExecutionResolver {
     const config = this.vaultManager.getSandboxConfig(vaultKey, this.baseConfig);
     const env =
       config.type !== "host" && vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
-    return createExecutor(config, env);
+    return createExecutor(config, env, this.getEnsureReady(vaultKey, config, vault));
+  }
+
+  private getEnsureReady(
+    vaultKey: string,
+    config: SandboxConfig,
+    vault?: ResolvedVault,
+  ): (() => Promise<void>) | undefined {
+    if (this.baseConfig.type !== "image" || config.type !== "container") {
+      return undefined;
+    }
+
+    return async () => {
+      const expected = config.container || DockerContainerManager.containerName(vaultKey);
+      const actual = await this.provisioner?.provision(vaultKey, {
+        containerName: expected,
+        mounts: vault ? this.resolveMounts(vault) : [],
+      });
+      if (actual && actual !== expected) {
+        throw new Error(
+          `Provisioner returned container "${actual}" for vault "${vaultKey}", expected "${expected}"`,
+        );
+      }
+    };
+  }
+
+  private resolveMounts(vault: ResolvedVault): ContainerMount[] {
+    const mountsByTarget = new Map<string, ContainerMount>();
+    for (const mount of vault.mounts) {
+      if (!existsSync(mount.source)) continue;
+      mountsByTarget.set(mount.target, { source: mount.source, target: mount.target });
+    }
+    return [...mountsByTarget.values()];
   }
 }

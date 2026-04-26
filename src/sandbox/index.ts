@@ -16,6 +16,7 @@ import {
   parseHostSandboxArg,
   validateHostSandbox,
 } from "./host.js";
+import { imageSandboxAdapter, parseImageSandboxArg, validateImageSandbox } from "./image.js";
 import { SandboxError } from "./errors.js";
 import type { Executor, SandboxAdapter, SandboxConfig } from "./types.js";
 
@@ -26,6 +27,7 @@ export type {
   Executor,
   FirecrackerSandboxConfig,
   HostSandboxConfig,
+  ImageSandboxConfig,
   SandboxAdapter,
   SandboxConfig,
 } from "./types.js";
@@ -43,10 +45,12 @@ export {
   validateFirecrackerSandbox,
 } from "./firecracker.js";
 export { hostSandboxAdapter, parseHostSandboxArg, validateHostSandbox } from "./host.js";
+export { imageSandboxAdapter, parseImageSandboxArg, validateImageSandbox } from "./image.js";
 
 const sandboxAdapters = [
   hostSandboxAdapter,
   containerSandboxAdapter,
+  imageSandboxAdapter,
   firecrackerSandboxAdapter,
 ] as const;
 const sandboxAdapterByType = new Map(
@@ -65,14 +69,14 @@ export function parseSandboxArg(value: string): SandboxConfig {
     }
   }
 
-  if (value.startsWith("docker:") || value.startsWith("image:")) {
+  if (value.startsWith("docker:")) {
     throw new SandboxError(
-      `Error: '${value}' is not supported yet. Use 'container:<container-name>' for the shared-container mode. Future 'docker:'/'image:' modes are reserved for per-session containers managed by mama.`,
+      `Error: '${value}' is not supported. Use 'container:<container-name>' for the shared-container mode or 'image:<image-name>' for mama-managed per-user containers.`,
     );
   }
 
   throw new SandboxError(
-    `Error: Invalid sandbox type '${value}'. Use 'host', 'container:<container-name>', or 'firecracker:<vm-id>:<host-path>'`,
+    `Error: Invalid sandbox type '${value}'. Use 'host', 'container:<container-name>', 'image:<image-name>', or 'firecracker:<vm-id>:<host-path>'`,
   );
 }
 

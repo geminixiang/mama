@@ -218,10 +218,14 @@ export class FileVaultManager implements VaultManager {
     const override = vault.sandboxOverride;
 
     if (override.type === "image") {
-      throw new Error(
-        `vault "${userId}" sets sandbox.type=image, but image sandbox support is not enabled in this build. ` +
-          "Use sandbox.type=firecracker or merge the managed image sandbox change first.",
-      );
+      if (baseConfig.type !== "image") {
+        throw new Error(
+          `vault "${userId}" sets sandbox.type=image, but base sandbox is "${baseConfig.type}". ` +
+            "Use --sandbox=image:<image> to enable per-user managed containers.",
+        );
+      }
+      const container = override.container || `mama-sandbox-${userId}`;
+      return { type: "container", container };
     }
 
     if (override.type === "firecracker") {

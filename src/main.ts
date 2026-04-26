@@ -25,6 +25,7 @@ import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./link-server.js";
 import { parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
+import { DockerContainerManager } from "./provisioner.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import {
@@ -194,7 +195,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
@@ -231,7 +232,7 @@ if (vaultManager.isEnabled()) {
   console.log(
     sandbox.type === "container"
       ? "  Vault system enabled. Container vault active."
-      : sandbox.type === "firecracker"
+      : sandbox.type === "image" || sandbox.type === "firecracker"
         ? "  Vault system enabled. Per-user credential routing active."
         : "  Vault system enabled. Host mode will not inject vault env.",
   );
@@ -242,11 +243,14 @@ if (bindingStore.isEnabled()) {
   console.log(
     sandbox.type === "container"
       ? "  Binding store enabled. Container mode uses the container vault."
-      : sandbox.type === "firecracker"
+      : sandbox.type === "image" || sandbox.type === "firecracker"
         ? "  Binding store enabled. Platform user → vault routing active."
         : "  Binding store enabled. Host mode will not inject vault env.",
   );
 }
+
+const provisioner =
+  sandbox.type === "image" ? new DockerContainerManager(sandbox.image, workingDir) : undefined;
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
@@ -275,7 +279,7 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
   );
 
   ensureSandboxVaultEntry(sandbox, vaultManager, platform, platformUserId, vaultId);
-  if (sandbox.type !== "container") {
+  if (sandbox.type !== "container" && sandbox.type !== "image") {
     vaultManager.addEntry(vaultId, createManagedVaultEntry(platform, platformUserId, vaultId));
   }
 
@@ -366,6 +370,14 @@ let isShuttingDown = false;
 const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
 const IDLE_TIMEOUT_MS = 3600000;
+/** Idle timeout for managed image containers (10 minutes) */
+const IMAGE_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+
+if (provisioner) {
+  await provisioner.reconcile();
+  await provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS);
+  setInterval(() => provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS), IMAGE_IDLE_TIMEOUT_MS).unref();
+}
 
 async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
   const key = sessionKey ?? channelId;
@@ -382,6 +394,7 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
         workingDir,
         vaultManager,
         bindingStore,
+        provisioner,
       ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
@@ -639,7 +652,9 @@ const sandboxDesc =
     ? "host"
     : sandbox.type === "container"
       ? `container:${sandbox.container}`
-      : `firecracker:${sandbox.vmId}`;
+      : sandbox.type === "image"
+        ? `image:${sandbox.image}`
+        : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
 
 // Create platform bots
