@@ -145,6 +145,46 @@ describe("TelegramBot startup", () => {
   });
 });
 
+describe("TelegramBot HTML fallback", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-html-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("updateMessage retries with escaped HTML when Telegram rejects raw entities", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const editMessageText = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Call to 'editMessageText' failed! (400: Bad Request: can't parse entities: Unsupported start tag \"id\")",
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    (bot as any).client = { api: { editMessageText } };
+
+    await bot.updateMessage("123", "456", "Usage: gws +read --id <ID>");
+
+    expect(editMessageText).toHaveBeenNthCalledWith(1, 123, 456, "Usage: gws +read --id <ID>", {
+      parse_mode: "HTML",
+    });
+    expect(editMessageText).toHaveBeenNthCalledWith(
+      2,
+      123,
+      456,
+      "Usage: gws +read --id &lt;ID&gt;",
+      { parse_mode: "HTML" },
+    );
+  });
+});
+
 describe("TelegramBot attachments", () => {
   let workingDir: string;
   const originalFetch = globalThis.fetch;

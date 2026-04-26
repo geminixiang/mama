@@ -5,6 +5,7 @@ import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
+import { escapeTelegramHtml } from "./html.js";
 
 // ============================================================================
 // Types
@@ -63,6 +64,10 @@ class ChannelQueue {
 // ============================================================================
 // TelegramBot
 // ============================================================================
+
+function isTelegramHtmlParseError(message: string): boolean {
+  return message.includes("can't parse entities");
+}
 
 export class TelegramBot implements Bot {
   private client: GrammyBot;
@@ -125,9 +130,20 @@ export class TelegramBot implements Bot {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("message is not modified")) {
+      if (msg.includes("message is not modified")) {
+        return;
+      }
+      if (!isTelegramHtmlParseError(msg)) {
         throw err;
       }
+      await this.client.api.editMessageText(
+        parseInt(channel),
+        parseInt(ts),
+        escapeTelegramHtml(text),
+        {
+          parse_mode: "HTML",
+        },
+      );
     }
   }
 
@@ -163,8 +179,19 @@ export class TelegramBot implements Bot {
   // ==========================================================================
 
   async postMessageRaw(chatId: number, text: string): Promise<number> {
-    const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
-    return result.message_id;
+    try {
+      const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
+      return result.message_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isTelegramHtmlParseError(msg)) {
+        throw err;
+      }
+      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+        parse_mode: "HTML",
+      });
+      return result.message_id;
+    }
   }
 
   async postPlainMessage(chatId: number, text: string): Promise<void> {
@@ -172,11 +199,23 @@ export class TelegramBot implements Bot {
   }
 
   async postReply(chatId: number, replyToMessageId: number, text: string): Promise<number> {
-    const result = await this.client.api.sendMessage(chatId, text, {
-      parse_mode: "HTML",
-      reply_parameters: { message_id: replyToMessageId },
-    });
-    return result.message_id;
+    try {
+      const result = await this.client.api.sendMessage(chatId, text, {
+        parse_mode: "HTML",
+        reply_parameters: { message_id: replyToMessageId },
+      });
+      return result.message_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isTelegramHtmlParseError(msg)) {
+        throw err;
+      }
+      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+        parse_mode: "HTML",
+        reply_parameters: { message_id: replyToMessageId },
+      });
+      return result.message_id;
+    }
   }
 
   async deleteMessageRaw(chatId: number, messageId: number): Promise<void> {
