@@ -1,24 +1,30 @@
 {
-  "$comment": "Copy this file to vault.json. Entries are auto-created when a user's first tool call runs — this example is just a reference for hand-authored entries.",
+  "$comment": "Example only. Runtime credentials live under --state-dir/vaults (default ~/.mama/vaults), not the project workspace.",
   "vaults": {
+    "container-mama-tools": {
+      "displayName": "container:mama-tools",
+      "envFile": true
+    },
     "U12345": {
       "displayName": "Alice",
       "platform": "slack",
-      "mounts": [".gcloud", ".ssh", ".kube", ".gitconfig"],
       "envFile": true,
-      "sandbox": {
-        "type": "image",
-        "container": "mama-sandbox-alice"
-      }
+      "mounts": [
+        {
+          "source": "gws.json",
+          "target": "/root/.config/gws/credentials.json"
+        }
+      ]
     },
-    "U67890": {
-      "displayName": "Bob",
+    "alice": {
+      "displayName": "Alice shared identity",
       "platform": "slack",
-      "mounts": [".gcloud", ".ssh"],
       "envFile": true,
       "sandbox": {
-        "type": "image",
-        "container": "mama-sandbox-bob"
+        "type": "firecracker",
+        "vmId": "192.168.1.100",
+        "sshUser": "root",
+        "sshPort": 22
       }
     }
   }
