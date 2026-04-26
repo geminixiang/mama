@@ -40,13 +40,6 @@ import {
 import { createMamaTools } from "./tools/index.js";
 import * as Sentry from "@sentry/node";
 
-export interface PendingMessage {
-  userName: string;
-  text: string;
-  attachments: { local: string }[];
-  timestamp: number;
-}
-
 export interface AgentRunner {
   run(
     message: ChatMessage,
@@ -1022,7 +1015,7 @@ export async function createRunner(
       const nonImagePaths: string[] = [];
 
       for (const a of message.attachments || []) {
-        // a.localPath is the path relative to the workspace (same as old a.local)
+        // a.localPath is the path relative to the workspace.
         const fullPath = `${workspacePath}/${a.localPath}`;
         const mimeType = getImageMimeType(a.localPath);
 
