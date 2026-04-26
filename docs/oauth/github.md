@@ -39,6 +39,12 @@ export GITHUB_OAUTH_CLIENT_SECRET="<client-secret>"
 mama --sandbox=container:mama-tools /path/to/workspace
 ```
 
+或使用 managed per-user container：
+
+```bash
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
+```
+
 或：
 
 ```bash
@@ -62,7 +68,7 @@ GITHUB_OAUTH_ACCESS_TOKEN
 GH_TOKEN
 ```
 
-在 `container` / `firecracker` sandbox 中，後續工具執行會注入這些 env。
+在 `container` / `image` / `firecracker` sandbox 中，後續工具執行會注入這些 env。
 
 ## Scopes
 

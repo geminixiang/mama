@@ -38,6 +38,8 @@ export GOOGLE_WORKSPACE_CLI_CLIENT_ID="<client-id>"
 export GOOGLE_WORKSPACE_CLI_CLIENT_SECRET="<client-secret>"
 ```
 
+如果沒有設定 `MOM_LINK_PORT`，mama 會在 `MOM_LINK_URL` 存在時預設監聽 `8181`。
+
 可選：覆蓋預設 scopes：
 
 ```bash
@@ -45,6 +47,12 @@ export MOM_GOOGLE_WORKSPACE_CLI_OAUTH_SCOPES="https://www.googleapis.com/auth/dr
 ```
 
 ## 3. 使用 `/login`
+
+如果你希望後續 runtime 自動把這份 credential file 投影到 `/root/.config/gws/credentials.json`，建議用 `image` sandbox 啟動 mama：
+
+```bash
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
+```
 
 在與 bot 的私訊中輸入：
 
