@@ -16,12 +16,7 @@ import type {
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
-import {
-  PRODUCT_NAME,
-  formatAlreadyWorking,
-  formatForceStopped,
-  formatNothingRunning,
-} from "../../ui-copy.js";
+import { PRODUCT_NAME, formatForceStopped, formatNothingRunning } from "../../ui-copy.js";
 import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
@@ -838,23 +833,15 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // SYNC: Check if busy (per-thread)
-      if (this.handler.isRunning(sessionKey)) {
-        this.postMessage(
-          e.channel,
-          formatAlreadyWorking("slack", "@mama stop", { scope: "thread" }),
+      this.getQueue(sessionKey).enqueue(() => {
+        const adapters = createSlackAdapters(slackEvent, this, false);
+        return this.handler.handleEvent(
+          slackEvent as unknown as import("../../adapter.js").BotEvent,
+          this,
+          adapters,
+          false,
         );
-      } else {
-        this.getQueue(sessionKey).enqueue(() => {
-          const adapters = createSlackAdapters(slackEvent, this, false);
-          return this.handler.handleEvent(
-            slackEvent as unknown as import("../../adapter.js").BotEvent,
-            this,
-            adapters,
-            false,
-          );
-        });
-      }
+      });
 
       ack();
     });
@@ -950,19 +937,15 @@ export class SlackBot implements Bot {
           return;
         }
 
-        if (this.handler.isRunning(dmSessionKey)) {
-          this.postMessage(e.channel, formatAlreadyWorking("slack", "stop"));
-        } else {
-          this.getQueue(dmSessionKey).enqueue(() => {
-            const adapters = createSlackAdapters(slackEvent, this, false);
-            return this.handler.handleEvent(
-              slackEvent as unknown as import("../../adapter.js").BotEvent,
-              this,
-              adapters,
-              false,
-            );
-          });
-        }
+        this.getQueue(dmSessionKey).enqueue(() => {
+          const adapters = createSlackAdapters(slackEvent, this, false);
+          return this.handler.handleEvent(
+            slackEvent as unknown as import("../../adapter.js").BotEvent,
+            this,
+            adapters,
+            false,
+          );
+        });
       }
 
       ack();

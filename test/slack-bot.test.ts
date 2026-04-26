@@ -157,3 +157,149 @@ describe("SlackBot slash commands", () => {
     });
   });
 });
+
+describe("SlackBot queues follow-up messages", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-slack-queue-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("shared channel mentions are queued while the session is running", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "C123");
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let mentionHandler:
+      | ((payload: {
+          event: {
+            text: string;
+            channel: string;
+            user: string;
+            ts: string;
+            thread_ts?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).postMessage = vi.fn().mockResolvedValue("2000.0001");
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "app_mention") mentionHandler = fn as typeof mentionHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("C123");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    mentionHandler?.({
+      event: {
+        text: "<@B123> second request",
+        channel: "C123",
+        user: "U123",
+        ts: "1001.0001",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect((bot as any).postMessage).not.toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    queue.processing = false;
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C123",
+      sessionKey: "C123",
+      text: "second request",
+    });
+  });
+
+  test("DM follow-up messages are queued while the session is running", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "D123");
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let messageHandler:
+      | ((payload: {
+          event: {
+            text?: string;
+            channel: string;
+            user?: string;
+            ts: string;
+            channel_type?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).postMessage = vi.fn().mockResolvedValue("3000.0001");
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "message") messageHandler = fn as typeof messageHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("D123");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    messageHandler?.({
+      event: {
+        text: "second request",
+        channel: "D123",
+        user: "U123",
+        ts: "2001.0001",
+        channel_type: "im",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect((bot as any).postMessage).not.toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    queue.processing = false;
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "D123",
+      sessionKey: "D123",
+      text: "second request",
+    });
+  });
+});
