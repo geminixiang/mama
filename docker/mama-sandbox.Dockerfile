@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   jq \
   less \
   openssh-client \
+  python-is-python3 \
+  tini \
   unzip \
   xz-utils \
   zip \
@@ -56,4 +58,5 @@ RUN curl -fsSL https://sdk.cloud.google.com | bash -s -- --disable-prompts --ins
 
 WORKDIR /workspace
 
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["sleep", "infinity"]
