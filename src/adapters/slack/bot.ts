@@ -669,6 +669,23 @@ export class SlackBot implements Bot {
     };
   }
 
+  private createSlashCommandBot(conversationId: string, threadTs?: string): Bot {
+    return {
+      start: async () => {},
+      postMessage: async (_channel: string, text: string) => {
+        if (threadTs) {
+          return this.postInThread(conversationId, threadTs, text);
+        }
+        return this.postMessage(conversationId, text);
+      },
+      updateMessage: async (channel: string, ts: string, text: string) => {
+        await this.updateMessage(channel, ts, text);
+      },
+      enqueueEvent: (event: BotEvent) => this.enqueueEvent(event),
+      getPlatformInfo: () => this.getPlatformInfo(),
+    };
+  }
+
   private async routeSlashLoginCommand(payload: {
     command: string;
     text?: string;
@@ -725,6 +742,40 @@ export class SlackBot implements Bot {
     );
 
     await this.handler.handleEvent(event, this, adapters, false);
+  }
+
+  private async routeSlashNewCommand(payload: {
+    command: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const conversationId = payload.channel_id;
+    if (!conversationId.startsWith("D")) {
+      await this.postEphemeral(
+        conversationId,
+        payload.user_id,
+        `為了避免誤清除共享上下文，${payload.command} 目前只能在與 ${PRODUCT_NAME} 的私訊中使用。`,
+      );
+      return;
+    }
+
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+
+    this.logToFile(conversationId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: payload.command,
+      attachments: [],
+      isBot: false,
+    });
+
+    const commandBot = this.createSlashCommandBot(conversationId);
+    await this.handler.handleNew(conversationId, conversationId, commandBot);
   }
 
   private setupEventHandlers(): void {
@@ -928,17 +979,33 @@ export class SlackBot implements Bot {
 
       await ack();
 
-      if (payload.command !== "/pi-login" || !payload.channel_id || !payload.user_id) {
+      if (!payload.command || !payload.channel_id || !payload.user_id) {
         return;
       }
 
-      this.routeSlashLoginCommand({
-        command: payload.command,
-        text: payload.text,
-        channel_id: payload.channel_id,
-        user_id: payload.user_id,
-        user_name: payload.user_name,
-      }).catch((err) => {
+      const handlerPromise =
+        payload.command === "/pi-login"
+          ? this.routeSlashLoginCommand({
+              command: payload.command,
+              text: payload.text,
+              channel_id: payload.channel_id,
+              user_id: payload.user_id,
+              user_name: payload.user_name,
+            })
+          : payload.command === "/pi-new"
+            ? this.routeSlashNewCommand({
+                command: payload.command,
+                channel_id: payload.channel_id,
+                user_id: payload.user_id,
+                user_name: payload.user_name,
+              })
+            : null;
+
+      if (!handlerPromise) {
+        return;
+      }
+
+      handlerPromise.catch((err) => {
         log.logWarning(
           "Slack slash command error",
           err instanceof Error ? err.message : String(err),
