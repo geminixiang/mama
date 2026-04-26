@@ -3,7 +3,7 @@ import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
-import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import type { Bot, BotEvent, BotHandler, ConversationKind, PlatformInfo } from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
@@ -74,6 +74,7 @@ async function withRetry<T>(
 export interface SlackEvent {
   type: "mention" | "dm";
   conversationId: string;
+  conversationKind: ConversationKind;
   channel: string;
   ts: string;
   thread_ts?: string;
@@ -391,6 +392,7 @@ export class SlackBot implements Bot {
       const slackEvent: SlackEvent = {
         type: event.type as SlackEvent["type"],
         conversationId,
+        conversationKind: event.conversationKind,
         channel: conversationId,
         ts: event.ts,
         thread_ts: event.thread_ts,
@@ -542,11 +544,11 @@ export class SlackBot implements Bot {
         const channelLabel =
           ev.platform === "slack"
             ? (() => {
-                const channel = this.channels.get(ev.channelId);
-                const channelName = channel ? `#${channel.name}` : ev.channelId;
+                const channel = this.channels.get(ev.conversationId);
+                const channelName = channel ? `#${channel.name}` : ev.conversationId;
                 return `${ev.platform}:${channelName}`;
               })()
-            : `${ev.platform}:${ev.channelId}`;
+            : `${ev.platform}:${ev.conversationId}`;
         const nextStr = ev.nextRun
           ? new Date(ev.nextRun).toLocaleString("en-US", {
               month: "short",
@@ -621,6 +623,7 @@ export class SlackBot implements Bot {
       const slackEvent: SlackEvent = {
         type: "mention",
         conversationId: e.channel,
+        conversationKind: "shared",
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,
@@ -705,6 +708,7 @@ export class SlackBot implements Bot {
       }
 
       const isDM = e.channel_type === "im";
+      const conversationKind: ConversationKind = isDM ? "direct" : "shared";
       const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
 
       // Skip channel @mentions - already handled by app_mention event
@@ -716,6 +720,7 @@ export class SlackBot implements Bot {
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
         conversationId: e.channel,
+        conversationKind,
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,

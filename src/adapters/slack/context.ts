@@ -42,6 +42,7 @@ export function createSlackAdapters(
     sessionKey:
       event.sessionKey ??
       (event.thread_ts ? `${conversationId}:${event.thread_ts}` : conversationId),
+    conversationKind: event.conversationKind,
     userId: event.user,
     userName: user?.userName,
     text: event.text,

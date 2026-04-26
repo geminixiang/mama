@@ -33,6 +33,7 @@ function makeEvent(overrides: Partial<DiscordEvent> = {}): DiscordEvent {
   return {
     type: "mention",
     conversationId: "CH001",
+    conversationKind: "shared",
     ts: "MSG001",
     user: "U001",
     text: "hello",

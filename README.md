@@ -453,13 +453,13 @@ Drop JSON files into `<working-directory>/events/` to trigger the agent:
 
 ```json
 // Immediate — triggers as soon as mama sees the file
-{"type": "immediate", "channelId": "C0123456789", "text": "New deployment finished"}
+{"type": "immediate", "conversationId": "C0123456789", "conversationKind": "shared", "text": "New deployment finished"}
 
 // One-shot — triggers once at a specific time
-{"type": "one-shot", "channelId": "C0123456789", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
+{"type": "one-shot", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
 
 // Periodic — triggers on a cron schedule
-{"type": "periodic", "channelId": "C0123456789", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
+{"type": "periodic", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
 ```
 
 ## Skills

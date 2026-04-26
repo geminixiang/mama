@@ -33,7 +33,8 @@ const eventSchema = Type.Object({
 
 interface EventToolContext {
   platform: string;
-  channelId: string;
+  conversationId: string;
+  conversationKind: "direct" | "shared";
   userId: string;
 }
 
@@ -51,14 +52,16 @@ type EventPayload =
   | {
       type: "immediate";
       platform: string;
-      channelId: string;
+      conversationId: string;
+      conversationKind: "direct" | "shared";
       userId: string;
       text: string;
     }
   | {
       type: "one-shot";
       platform: string;
-      channelId: string;
+      conversationId: string;
+      conversationKind: "direct" | "shared";
       userId: string;
       text: string;
       at: string;
@@ -66,7 +69,8 @@ type EventPayload =
   | {
       type: "periodic";
       platform: string;
-      channelId: string;
+      conversationId: string;
+      conversationKind: "direct" | "shared";
       userId: string;
       text: string;
       schedule: string;
@@ -83,7 +87,7 @@ export function createEventTool(workspaceDir: string): {
     name: "event",
     label: "event",
     description:
-      "Schedule an immediate, one-shot, or periodic event for the current conversation. This automatically writes to the correct events directory and fills the current platform, channel, and requester userId.",
+      "Schedule an immediate, one-shot, or periodic event for the current conversation. This automatically writes to the correct events directory and fills the current platform, conversation, conversation kind, and requester userId.",
     parameters: eventSchema,
     execute: async (_toolCallId: string, params: EventToolParams, signal?: AbortSignal) => {
       if (signal?.aborted) {
@@ -109,10 +113,10 @@ export function createEventTool(workspaceDir: string): {
             type: "text",
             text:
               payload.type === "periodic"
-                ? `Scheduled periodic event ${filename} for ${payload.platform}/${payload.channelId} (${payload.schedule} ${payload.timezone})`
+                ? `Scheduled periodic event ${filename} for ${payload.platform}/${payload.conversationId} (${payload.schedule} ${payload.timezone})`
                 : payload.type === "one-shot"
-                  ? `Scheduled one-shot event ${filename} for ${payload.platform}/${payload.channelId} at ${payload.at}`
-                  : `Queued immediate event ${filename} for ${payload.platform}/${payload.channelId}`,
+                  ? `Scheduled one-shot event ${filename} for ${payload.platform}/${payload.conversationId} at ${payload.at}`
+                  : `Queued immediate event ${filename} for ${payload.platform}/${payload.conversationId}`,
           },
         ],
         details: undefined,
@@ -131,7 +135,8 @@ export function createEventTool(workspaceDir: string): {
 function buildEventPayload(params: EventToolParams, context: EventToolContext): EventPayload {
   const base = {
     platform: context.platform,
-    channelId: context.channelId,
+    conversationId: context.conversationId,
+    conversationKind: context.conversationKind,
     userId: context.userId,
     text: params.text,
   };

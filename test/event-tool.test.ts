@@ -27,7 +27,12 @@ describe("createEventTool", () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
-    setEventContext({ platform: "slack", channelId: "C123", userId: "U123" });
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+    });
 
     const result = await tool.execute("call-1", {
       label: "deploy",
@@ -42,7 +47,8 @@ describe("createEventTool", () => {
     expect(JSON.parse(readFileSync(join(eventsDir, files[0]), "utf-8"))).toEqual({
       type: "immediate",
       platform: "slack",
-      channelId: "C123",
+      conversationId: "C123",
+      conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
     });
@@ -68,7 +74,12 @@ describe("createEventTool", () => {
   test("one-shot events require at", async () => {
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
-    setEventContext({ platform: "slack", channelId: "C123", userId: "U123" });
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+    });
 
     await expect(
       tool.execute("call-1", {
@@ -82,7 +93,12 @@ describe("createEventTool", () => {
   test("periodic events require schedule and timezone", async () => {
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
-    setEventContext({ platform: "discord", channelId: "D123", userId: "U456" });
+    setEventContext({
+      platform: "discord",
+      conversationId: "D123",
+      conversationKind: "direct",
+      userId: "U456",
+    });
 
     await expect(
       tool.execute("call-1", {
@@ -107,7 +123,12 @@ describe("createEventTool", () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000100);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
-    setEventContext({ platform: "telegram", channelId: "999", userId: "U789" });
+    setEventContext({
+      platform: "telegram",
+      conversationId: "999",
+      conversationKind: "direct",
+      userId: "U789",
+    });
 
     const result = await tool.execute("call-1", {
       label: "inbox",
@@ -123,7 +144,8 @@ describe("createEventTool", () => {
     expect(JSON.parse(readFileSync(join(eventsDir, files[0]), "utf-8"))).toEqual({
       type: "periodic",
       platform: "telegram",
-      channelId: "999",
+      conversationId: "999",
+      conversationKind: "direct",
       userId: "U789",
       text: "Check inbox",
       schedule: "0 9 * * 1-5",

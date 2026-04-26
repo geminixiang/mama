@@ -1,6 +1,9 @@
+export type ConversationKind = "direct" | "shared";
+
 export interface ChatMessage {
   id: string;
   sessionKey: string;
+  conversationKind: ConversationKind;
   userId: string;
   userName?: string;
   text: string;
@@ -40,8 +43,10 @@ export interface ChatAdapter {
  */
 export interface BotEvent {
   type: string;
-  /** Platform-specific conversation/channel/chat identifier */
+  /** Platform-specific raw conversation/channel/chat identifier */
   conversationId: string;
+  /** Cross-platform conversation shape: direct message vs shared space */
+  conversationKind: ConversationKind;
   /** Message timestamp or ID as string */
   ts: string;
   /** Parent message ID for threaded replies (optional) */

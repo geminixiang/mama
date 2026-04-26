@@ -266,7 +266,11 @@ function normalizeLoginBaseUrl(): string | undefined {
 }
 
 function isPrivateConversation(event: BotEvent): boolean {
-  return event.type === "dm" || event.sessionKey === event.conversationId;
+  return (
+    event.conversationKind === "direct" ||
+    event.type === "dm" ||
+    event.sessionKey === event.conversationId
+  );
 }
 
 function ensureLoginVault(platform: string, platformUserId: string): string {
@@ -289,7 +293,7 @@ function ensureLoginVault(platform: string, platformUserId: string): string {
 async function handleLoginCommand(
   platform: string,
   platformUserId: string,
-  channelId: string,
+  conversationId: string,
   bot: Bot,
   commandText: string,
   privateConversation: boolean,
@@ -299,7 +303,7 @@ async function handleLoginCommand(
 
   if (!privateConversation) {
     await bot.postMessage(
-      channelId,
+      conversationId,
       "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
     );
     return true;
@@ -308,7 +312,7 @@ async function handleLoginCommand(
   const baseUrl = normalizeLoginBaseUrl();
   if (!baseUrl) {
     await bot.postMessage(
-      channelId,
+      conversationId,
       "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
     );
     return true;
@@ -319,11 +323,11 @@ async function handleLoginCommand(
     vaultId = ensureLoginVault(platform, platformUserId);
   } catch (error) {
     log.logWarning(
-      `[${channelId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+      `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
       error instanceof Error ? error.message : String(error),
     );
     await bot.postMessage(
-      channelId,
+      conversationId,
       "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
     );
     return true;
@@ -332,23 +336,23 @@ async function handleLoginCommand(
   const token = linkTokenStore.create(
     platform as "slack" | "discord" | "telegram",
     platformUserId,
-    channelId,
+    conversationId,
     vaultId,
     "",
   );
   const vaultLabel = sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
   await bot.postMessage(
-    channelId,
+    conversationId,
     `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${baseUrl}/link?token=${token.token}`,
   );
   return true;
 }
 
 // ============================================================================
-// State (per channel)
+// State (per conversation)
 // ============================================================================
 
-interface ChannelState {
+interface ConversationState {
   running: boolean;
   runner: AgentRunner;
   stopRequested: boolean;
@@ -358,7 +362,7 @@ interface ChannelState {
   lastActivityAt?: number;
 }
 
-const channelStates = new Map<string, ChannelState>();
+const conversationStates = new Map<string, ConversationState>();
 
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
@@ -379,18 +383,18 @@ if (provisioner) {
   setInterval(() => provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS), IMAGE_IDLE_TIMEOUT_MS).unref();
 }
 
-async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
-  const key = sessionKey ?? channelId;
-  let state = channelStates.get(key);
+async function getState(conversationId: string, sessionKey?: string): Promise<ConversationState> {
+  const key = sessionKey ?? conversationId;
+  let state = conversationStates.get(key);
   if (!state) {
-    const channelDir = join(workingDir, channelId);
+    const conversationDir = join(workingDir, conversationId);
     state = {
       running: false,
       runner: await createRunner(
         sandbox,
         key,
-        channelId,
-        channelDir,
+        conversationId,
+        conversationDir,
         workingDir,
         vaultManager,
         bindingStore,
@@ -399,7 +403,7 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
-    channelStates.set(key, state);
+    conversationStates.set(key, state);
   } else {
     state.lastAccessedAt = Date.now();
   }
@@ -407,21 +411,21 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
 }
 
 /**
- * Evict idle sessions from channelStates to bound memory usage.
+ * Evict idle sessions from conversationStates to bound memory usage.
  * Called after each handleEvent completes.
  */
 function evictIdleSessions(): void {
   const now = Date.now();
 
-  for (const [key, state] of channelStates) {
+  for (const [key, state] of conversationStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
-      channelStates.delete(key);
+      conversationStates.delete(key);
     }
   }
 
-  if (channelStates.size > MAX_SESSIONS) {
+  if (conversationStates.size > MAX_SESSIONS) {
     const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
-    for (const [key, state] of channelStates) {
+    for (const [key, state] of conversationStates) {
       if (!state.running) {
         idleSessions.push({ key, lastAccessedAt: state.lastAccessedAt });
       }
@@ -429,9 +433,9 @@ function evictIdleSessions(): void {
 
     idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
 
-    const toEvict = channelStates.size - MAX_SESSIONS;
+    const toEvict = conversationStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
-      channelStates.delete(idleSessions[i].key);
+      conversationStates.delete(idleSessions[i].key);
     }
   }
 }
@@ -442,13 +446,13 @@ function evictIdleSessions(): void {
 
 const handler: BotHandler = {
   isRunning(sessionKey: string): boolean {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     return !!state?.running;
   },
 
   getRunningSessions() {
     const sessions: import("./adapter.js").RunningSession[] = [];
-    for (const [sessionKey, state] of channelStates) {
+    for (const [sessionKey, state] of conversationStates) {
       if (state.running && state.startedAt) {
         // Get current step from runner
         const currentStep = state.runner.getCurrentStep();
@@ -464,7 +468,7 @@ const handler: BotHandler = {
   },
 
   async handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
@@ -476,7 +480,7 @@ const handler: BotHandler = {
   },
 
   forceStop(sessionKey: string): void {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
       state.stopRequested = true;
@@ -486,22 +490,25 @@ const handler: BotHandler = {
   },
 
   async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
     }
 
-    // Channel sessions rotate via current pointer. Thread sessions reset in place.
-    const channelDir = join(workingDir, conversationId);
+    // Conversation sessions rotate via current pointer. Thread sessions reset in place.
+    const conversationDir = join(workingDir, conversationId);
     if (sessionKey.includes(":")) {
-      createManagedSessionFileAtPath(getThreadSessionFile(channelDir, sessionKey), channelDir);
+      createManagedSessionFileAtPath(
+        getThreadSessionFile(conversationDir, sessionKey),
+        conversationDir,
+      );
     } else {
-      createManagedSessionFile(getChannelSessionDir(channelDir), channelDir);
+      createManagedSessionFile(getChannelSessionDir(conversationDir), conversationDir);
     }
 
     // Remove from in-memory cache
-    channelStates.delete(sessionKey);
+    conversationStates.delete(sessionKey);
 
     log.logInfo(`[${conversationId}] Session reset: ${sessionKey}`);
     await bot.postMessage(conversationId, "Conversation reset. Send a new message to start fresh.");
@@ -551,12 +558,12 @@ const handler: BotHandler = {
     Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size + 1);
 
     const runPromise = Sentry.startSpan(
-      { name: "agent.run", op: "agent", attributes: { channelId: conversationId, sessionKey } },
+      { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
       async () => {
         return Sentry.withScope(async (scope) => {
           const { message, responseCtx, platform } = adapters;
           applyRunScope(scope, {
-            channelId: conversationId,
+            conversationId,
             sessionKey,
             messageId: message.id,
             platform: platform.name,
@@ -610,7 +617,7 @@ const handler: BotHandler = {
             }
           } catch (err) {
             scope.setContext("agent_run_error", {
-              channelId: conversationId,
+              conversationId,
               sessionKey,
               platform: adapters.platform.name,
               messageId: adapters.message.id,
@@ -697,9 +704,9 @@ if (MOM_LINK_PORT) {
     MOM_LINK_PORT,
     linkTokenStore,
     vaultManager,
-    async (platform, channelId, message) => {
+    async (platform, conversationId, message) => {
       const bot = botsByPlatform[platform];
-      if (bot) await bot.postMessage(channelId, message);
+      if (bot) await bot.postMessage(conversationId, message);
     },
   );
 }

@@ -44,7 +44,7 @@ const TOKEN_PATTERNS = [
 ];
 
 export interface SentryRunScopeContext {
-  channelId: string;
+  conversationId: string;
   sessionKey: string;
   messageId: string;
   platform: string;
@@ -75,7 +75,8 @@ export function createSentryInitOptions(dsn?: string) {
 }
 
 export function applyRunScope(scope: Scope, context: SentryRunScopeContext): void {
-  scope.setTag("channel_id", context.channelId);
+  scope.setTag("conversation_id", context.conversationId);
+  scope.setTag("channel_id", context.conversationId);
   scope.setTag("session_key", context.sessionKey);
   scope.setTag("platform", context.platform);
   scope.setTag("is_event", String(Boolean(context.isEvent)));
@@ -88,7 +89,8 @@ export function applyRunScope(scope: Scope, context: SentryRunScopeContext): voi
     username: context.userName,
   });
   scope.setContext("agent_run", {
-    channelId: context.channelId,
+    conversationId: context.conversationId,
+    channelId: context.conversationId,
     sessionKey: context.sessionKey,
     messageId: context.messageId,
     threadTs: context.threadTs,

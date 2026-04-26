@@ -32,6 +32,7 @@ function makeEvent(overrides: Partial<SlackEvent> = {}): SlackEvent {
     type: "mention",
     channel,
     conversationId: overrideConversationId ?? channel,
+    conversationKind: channel.startsWith("D") ? "direct" : "shared",
     ts: "1000.0001",
     user: "U001",
     text: "hello",

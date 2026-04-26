@@ -30,6 +30,7 @@ function makeEvent(overrides: Partial<TelegramEvent> = {}): TelegramEvent {
   return {
     type: "message",
     conversationId: "123456",
+    conversationKind: "direct",
     ts: "1001",
     user: "U001",
     text: "hello",

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Bot, BotEvent } from "../src/adapter.js";
 import { EventsWatcher } from "../src/events.js";
 
@@ -45,7 +45,7 @@ describe("EventsWatcher platform routing", () => {
     const parsed = watcher.parseEvent(
       JSON.stringify({
         type: "immediate",
-        channelId: "123",
+        conversationId: "123",
         text: "Check inbox",
       }),
       "single-platform.json",
@@ -54,7 +54,31 @@ describe("EventsWatcher platform routing", () => {
     expect(parsed).toEqual({
       type: "immediate",
       platform: "telegram",
-      channelId: "123",
+      conversationId: "123",
+      conversationKind: "direct",
+      userId: undefined,
+      text: "Check inbox",
+    });
+  });
+
+  test("accepts legacy channelId field for backward compatibility", () => {
+    const { bot } = makeBot("slack");
+    const watcher = new EventsWatcher(eventsDir, { slack: bot }) as any;
+
+    const parsed = watcher.parseEvent(
+      JSON.stringify({
+        type: "immediate",
+        channelId: "D123",
+        text: "Check inbox",
+      }),
+      "legacy.json",
+    );
+
+    expect(parsed).toEqual({
+      type: "immediate",
+      platform: "slack",
+      conversationId: "D123",
+      conversationKind: "direct",
       userId: undefined,
       text: "Check inbox",
     });
@@ -72,7 +96,7 @@ describe("EventsWatcher platform routing", () => {
       watcher.parseEvent(
         JSON.stringify({
           type: "immediate",
-          channelId: "123",
+          conversationId: "123",
           text: "Check inbox",
         }),
         "ambiguous.json",
@@ -91,7 +115,8 @@ describe("EventsWatcher platform routing", () => {
     watcher.execute("deploy-reminder.json", {
       type: "immediate",
       platform: "discord",
-      channelId: "CH-42",
+      conversationId: "CH-42",
+      conversationKind: "shared",
       text: "Deploy in 10 minutes",
       userId: "U123",
     });
@@ -101,6 +126,7 @@ describe("EventsWatcher platform routing", () => {
     expect(enqueueDiscord).toHaveBeenCalledWith({
       type: "mention",
       conversationId: "CH-42",
+      conversationKind: "shared",
       user: "U123",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
       ts: "event:deploy-reminder.json",

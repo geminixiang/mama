@@ -21,6 +21,7 @@ interface MessageContext {
   text: string;
   chatId: string;
   chatType: string;
+  conversationKind: "direct" | "shared";
   userId: string;
   userName: string;
   msgId: string;
@@ -359,12 +360,24 @@ export class TelegramBot implements Bot {
     const msgId = String(msg.message_id);
     const replyToId = msg.reply_to_message?.message_id;
     const threadTs = replyToId ? String(replyToId) : undefined;
+    const conversationKind = chatType === "private" ? "direct" : "shared";
 
     // Private chats: single session per chat (no per-message splitting)
     // Groups: per-thread sessions (use reply chain or unique message id)
     const sessionKey = chatType === "private" ? chatId : `${chatId}:${threadTs ?? msgId}`;
 
-    return { msg, text, chatId, chatType, userId, userName, msgId, threadTs, sessionKey };
+    return {
+      msg,
+      text,
+      chatId,
+      chatType,
+      conversationKind,
+      userId,
+      userName,
+      msgId,
+      threadTs,
+      sessionKey,
+    };
   }
 
   private isAddressedToBot(text: string, chatType: string): boolean {
@@ -451,6 +464,7 @@ export class TelegramBot implements Bot {
       const event: TelegramEvent = {
         type: "message",
         conversationId: mc.chatId,
+        conversationKind: mc.conversationKind,
         ts: mc.msgId,
         thread_ts: mc.threadTs,
         sessionKey: mc.sessionKey,

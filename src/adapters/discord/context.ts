@@ -37,7 +37,8 @@ export function createDiscordAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${conversationId}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`,
+    conversationKind: event.conversationKind,
     userId: event.user,
     userName: event.userName,
     text: event.text,

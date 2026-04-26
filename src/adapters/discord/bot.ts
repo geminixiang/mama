@@ -365,6 +365,7 @@ export class DiscordBot implements Bot {
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
         conversationId: channelId,
+        conversationKind: isDM ? "direct" : "shared",
         ts: msgId,
         thread_ts: threadTs,
         user: userId,
