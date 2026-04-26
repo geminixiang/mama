@@ -110,6 +110,41 @@ describe("TelegramBot extractMessageContext", () => {
   });
 });
 
+describe("TelegramBot startup", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-start-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("start registers /login in Telegram slash commands", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const getMe = vi.fn().mockResolvedValue({ id: 99, username: "mama_bot" });
+    const setMyCommands = vi.fn().mockResolvedValue(undefined);
+    const command = vi.fn();
+    const on = vi.fn();
+    const start = vi.fn().mockResolvedValue(undefined);
+
+    (bot as any).client = {
+      api: { getMe, setMyCommands },
+      command,
+      on,
+      start,
+    };
+
+    await bot.start();
+
+    expect(setMyCommands).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ command: "login" })]),
+    );
+  });
+});
+
 describe("TelegramBot attachments", () => {
   let workingDir: string;
   const originalFetch = globalThis.fetch;

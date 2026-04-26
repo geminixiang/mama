@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "crypto";
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { resolveLinkBaseUrl } from "./config.js";
 import type { InMemoryLinkTokenStore } from "./link-token.js";
 import {
@@ -55,7 +55,7 @@ export function startLinkServer(
   linkTokenStore: InMemoryLinkTokenStore,
   vaultManager: VaultManager,
   notify: NotifyFn,
-): void {
+): Server {
   const oauthStates = new Map<string, PendingOAuthState>();
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -86,6 +86,7 @@ export function startLinkServer(
         : undefined;
       const oauthServices = getOAuthServices();
       const defaultMode: LoginCredentialKind = oauthServiceHint ? "oauth" : "api_key";
+      const existingSecrets = describeVaultSecrets(vaultManager, linkToken.vaultId);
 
       const title = oauthServiceHint ? `${oauthServiceHint.label} OAuth` : "Store Secret";
       const helpText = oauthServiceHint
@@ -107,6 +108,7 @@ export function startLinkServer(
           helpText,
           oauthServices,
           oauthServiceHint?.id,
+          existingSecrets,
         ),
       );
       return;
@@ -168,6 +170,8 @@ export function startLinkServer(
   server.on("error", (err) => {
     log.logWarning("Link server error", err.message);
   });
+
+  return server;
 }
 
 /**
@@ -485,6 +489,33 @@ const sharedPageStyles = `
     color: var(--err-text);
   }
 
+  .secrets-summary {
+    margin-top: 18px;
+    padding: 14px 16px;
+    border: 1px solid var(--panel-border);
+    border-radius: 14px;
+    background: rgba(255, 255, 255, 0.72);
+  }
+
+  .secrets-summary h2 {
+    margin: 0 0 8px;
+    font-size: 0.98rem;
+  }
+
+  .secrets-summary p {
+    font-size: 0.92rem;
+  }
+
+  .secrets-summary ul {
+    margin: 10px 0 0;
+    padding-left: 18px;
+    color: var(--text);
+  }
+
+  .secrets-summary li + li {
+    margin-top: 6px;
+  }
+
   .close-note {
     margin-top: 14px;
     font-size: 0.92rem;
@@ -539,6 +570,48 @@ function renderStatusPage(
   );
 }
 
+interface ExistingSecretsSummary {
+  envKeys: string[];
+  mountTargets: string[];
+}
+
+function describeVaultSecrets(vaultManager: VaultManager, vaultId: string): ExistingSecretsSummary {
+  const vault = vaultManager.resolve(vaultId);
+  if (!vault) {
+    return { envKeys: [], mountTargets: [] };
+  }
+
+  return {
+    envKeys: Object.keys(vault.env).sort((left, right) => left.localeCompare(right)),
+    mountTargets: [...new Set(vault.mounts.map((mount) => mount.target))].sort((left, right) =>
+      left.localeCompare(right),
+    ),
+  };
+}
+
+function renderSecretsSummary(summary: ExistingSecretsSummary): string {
+  if (summary.envKeys.length === 0 && summary.mountTargets.length === 0) {
+    return `
+  <section class="secrets-summary">
+    <h2>Currently stored</h2>
+    <p>No secrets are stored in this vault yet.</p>
+  </section>`;
+  }
+
+  const envItems = summary.envKeys.map((envKey) => `<li><code>${esc(envKey)}</code></li>`).join("");
+  const mountItems = summary.mountTargets
+    .map((target) => `<li><code>${esc(target)}</code></li>`)
+    .join("");
+
+  return `
+  <section class="secrets-summary">
+    <h2>Currently stored</h2>
+    <p>Only secret names and mounted paths are shown here. Secret values are never displayed.</p>
+    ${summary.envKeys.length > 0 ? `<p><strong>Environment keys</strong></p><ul>${envItems}</ul>` : ""}
+    ${summary.mountTargets.length > 0 ? `<p><strong>Mounted secret files</strong></p><ul>${mountItems}</ul>` : ""}
+  </section>`;
+}
+
 function renderCredentialPage(
   token: string,
   title: string,
@@ -548,7 +621,8 @@ function renderCredentialPage(
   placeholder: string,
   helpText: string,
   oauthServices: OAuthService[],
-  oauthServiceIdHint?: string,
+  oauthServiceIdHint: string | undefined,
+  existingSecrets: ExistingSecretsSummary,
 ): string {
   const oauthOptions = oauthServices
     .map((service) => {
@@ -564,6 +638,7 @@ function renderCredentialPage(
   <h1>${esc(title)}</h1>
   <p>Your personal sandbox is already provisioned automatically.</p>
   <p>${esc(helpText)}</p>
+  ${renderSecretsSummary(existingSecrets)}
   <div class="mode">
     <label><input type="radio" name="mode" value="api_key" ${defaultMode === "api_key" ? "checked" : ""}> API key</label>
     <label><input type="radio" name="mode" value="oauth" ${defaultMode === "oauth" ? "checked" : ""}> OAuth login</label>
