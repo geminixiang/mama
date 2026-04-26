@@ -436,12 +436,12 @@ export class EventsWatcher {
       return;
     }
 
-    // Create synthetic BotEvent. Keep a stable channel session key so recurring
+    // Create synthetic BotEvent. Keep a stable conversation session key so recurring
     // reminders share context, but use a unique synthetic message id because
     // some adapters treat ts/message id as a reply target.
     const syntheticEvent: BotEvent = {
       type: "mention",
-      channel: event.channelId,
+      conversationId: event.channelId,
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,

@@ -30,12 +30,14 @@ export function createDiscordAdapters(
     }
   }
 
+  const conversationId = event.conversationId;
+  const channelId = conversationId;
   const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
   const isThreaded = !!event.thread_ts;
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: `${conversationId}:${event.thread_ts ?? event.ts}`,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -73,18 +75,18 @@ export function createDiscordAdapters(
           );
 
           if (messageId !== null) {
-            await bot.updateMessageRaw(event.channel, messageId, displayText);
+            await bot.updateMessageRaw(channelId, messageId, displayText);
           } else {
             stopTyping();
             if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+              messageId = await bot.postInThread(channelId, event.thread_ts, displayText);
             } else {
-              messageId = await bot.postReply(event.channel, event.ts, displayText);
+              messageId = await bot.postReply(channelId, event.ts, displayText);
             }
           }
 
           if (messageId !== null) {
-            bot.logBotResponse(event.channel, text, messageId);
+            bot.logBotResponse(channelId, text, messageId);
           }
         } catch (err) {
           log.logWarning("Discord respond error", err instanceof Error ? err.message : String(err));
@@ -100,13 +102,13 @@ export function createDiscordAdapters(
           const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
           if (messageId !== null) {
-            await bot.updateMessageRaw(event.channel, messageId, displayText);
+            await bot.updateMessageRaw(channelId, messageId, displayText);
           } else {
             stopTyping();
             if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(event.channel, event.thread_ts, displayText);
+              messageId = await bot.postInThread(channelId, event.thread_ts, displayText);
             } else {
-              messageId = await bot.postReply(event.channel, event.ts, displayText);
+              messageId = await bot.postReply(channelId, event.ts, displayText);
             }
           }
         } catch (err) {
@@ -125,9 +127,9 @@ export function createDiscordAdapters(
     setTyping: async (isTyping: boolean) => {
       if (isTyping && typingInterval === null) {
         // Send immediately and repeat every 8s (Discord clears indicator after ~10s)
-        bot.sendTyping(event.channel).catch(() => {});
+        bot.sendTyping(channelId).catch(() => {});
         typingInterval = setInterval(() => {
-          bot.sendTyping(event.channel).catch(() => {});
+          bot.sendTyping(channelId).catch(() => {});
         }, 8000);
       } else if (!isTyping) {
         stopTyping();
@@ -141,7 +143,7 @@ export function createDiscordAdapters(
           if (!working) stopTyping();
           if (messageId !== null) {
             const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-            await bot.updateMessageRaw(event.channel, messageId, displayText);
+            await bot.updateMessageRaw(channelId, messageId, displayText);
           }
         } catch (err) {
           log.logWarning(
@@ -154,7 +156,7 @@ export function createDiscordAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await bot.uploadFile(event.channel, filePath, title);
+      await bot.uploadFile(channelId, filePath, title);
     },
 
     deleteResponse: async () => {
@@ -162,7 +164,7 @@ export function createDiscordAdapters(
         stopTyping();
         if (messageId !== null) {
           try {
-            await bot.deleteMessageRaw(event.channel, messageId);
+            await bot.deleteMessageRaw(channelId, messageId);
           } catch {
             // Ignore errors
           }
