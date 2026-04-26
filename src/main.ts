@@ -3,7 +3,8 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync, statSync } from "fs";
+import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
@@ -20,7 +21,9 @@ import {
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { FileUserBindingStore } from "./bindings.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileVaultManager } from "./vault.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
@@ -56,6 +59,7 @@ const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
 
 interface ParsedArgs {
   workingDir?: string;
+  stateDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
   showVersion?: boolean;
@@ -65,6 +69,7 @@ function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
   let sandbox: SandboxConfig = { type: "host" };
   let workingDir: string | undefined;
+  let stateDirArg: string | undefined;
   let downloadChannelId: string | undefined;
   let showVersion = false;
 
@@ -76,6 +81,10 @@ function parseArgs(): ParsedArgs {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
       sandbox = parseSandboxArg(args[++i] || "");
+    } else if (arg.startsWith("--state-dir=")) {
+      stateDirArg = arg.slice("--state-dir=".length);
+    } else if (arg === "--state-dir") {
+      stateDirArg = args[++i];
     } else if (arg.startsWith("--download=")) {
       downloadChannelId = arg.slice("--download=".length);
     } else if (arg === "--download") {
@@ -87,10 +96,51 @@ function parseArgs(): ParsedArgs {
 
   return {
     workingDir: workingDir ? resolve(workingDir) : undefined,
+    stateDir: stateDirArg ? resolve(stateDirArg) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
     showVersion,
   };
+}
+
+const WORLD_WRITABLE_MODE = 0o002;
+
+function ensureSecureStateDir(path: string): void {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      return;
+    }
+    console.error(`Error: cannot access --state-dir ${path}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  if (!stat.isDirectory()) {
+    console.error(`Error: --state-dir ${path} exists but is not a directory`);
+    process.exit(1);
+  }
+
+  if (stat.mode & WORLD_WRITABLE_MODE) {
+    console.error(
+      `Error: --state-dir ${path} is world-writable (mode ${(stat.mode & 0o777).toString(8)}). ` +
+        `Credentials stored there would be exposed to other local users. ` +
+        `Fix with: chmod 0700 ${path}`,
+    );
+    process.exit(1);
+  }
+
+  const euid = typeof process.geteuid === "function" ? process.geteuid() : undefined;
+  if (euid !== undefined && stat.uid !== euid) {
+    console.error(
+      `Error: --state-dir ${path} is owned by uid ${stat.uid} but mama is running as uid ${euid}. ` +
+        `Run mama as the directory owner or point --state-dir at a directory you own.`,
+    );
+    process.exit(1);
+  }
 }
 
 function handleStartupError(error: unknown): never {
@@ -129,13 +179,15 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|container:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+ensureSecureStateDir(stateDir);
 
 // Validate platform tokens
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
@@ -156,6 +208,24 @@ try {
   await validateSandbox(sandbox);
 } catch (error) {
   handleStartupError(error);
+}
+
+const vaultManager = new FileVaultManager(stateDir);
+if (vaultManager.isEnabled()) {
+  console.log(
+    sandbox.type === "container"
+      ? "  Vault system enabled. Shared container vault active."
+      : "  Vault system enabled. Per-user credential routing active.",
+  );
+}
+
+const bindingStore = new FileUserBindingStore(stateDir);
+if (bindingStore.isEnabled()) {
+  console.log(
+    sandbox.type === "container"
+      ? "  Binding store enabled. Shared container mode ignores per-user vault bindings."
+      : "  Binding store enabled. Platform user → vault routing active.",
+  );
 }
 
 // ============================================================================
@@ -192,7 +262,15 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
     const channelDir = join(workingDir, channelId);
     state = {
       running: false,
-      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir),
+      runner: await createRunner(
+        sandbox,
+        key,
+        channelId,
+        channelDir,
+        workingDir,
+        vaultManager,
+        bindingStore,
+      ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };

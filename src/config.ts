@@ -58,7 +58,7 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
-    if (arg === "--sandbox" || arg === "--download") {
+    if (arg === "--sandbox" || arg === "--download" || arg === "--state-dir") {
       i += 1;
       continue;
     }
@@ -67,7 +67,11 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
       continue;
     }
 
-    if (arg.startsWith("--sandbox=") || arg.startsWith("--download=")) {
+    if (
+      arg.startsWith("--sandbox=") ||
+      arg.startsWith("--download=") ||
+      arg.startsWith("--state-dir=")
+    ) {
       continue;
     }
 

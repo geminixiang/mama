@@ -20,6 +20,8 @@ export async function validateHostSandbox(_config: HostSandboxConfig): Promise<v
 }
 
 export class HostExecutor implements Executor {
+  constructor(private env?: Record<string, string>) {}
+
   async exec(command: string, options?: ExecOptions): Promise<ExecResult> {
     return new Promise((resolve, reject) => {
       const shell = process.platform === "win32" ? "cmd" : "sh";
@@ -28,6 +30,7 @@ export class HostExecutor implements Executor {
       const child = spawn(shell, [...shellArgs, command], {
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        ...(this.env && { env: { ...process.env, ...this.env } }),
       });
 
       let stdout = "";
@@ -96,11 +99,15 @@ export class HostExecutor implements Executor {
   getWorkspacePath(hostPath: string): string {
     return hostPath;
   }
+
+  getSandboxConfig(): HostSandboxConfig {
+    return { type: "host" };
+  }
 }
 
 export const hostSandboxAdapter: SandboxAdapter<HostSandboxConfig> = {
   type: "host",
   parse: parseHostSandboxArg,
   validate: validateHostSandbox,
-  createExecutor: () => new HostExecutor(),
+  createExecutor: (_config, env) => new HostExecutor(env),
 };

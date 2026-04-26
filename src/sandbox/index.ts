@@ -32,6 +32,7 @@ export type {
 export { ContainerExecutor, FirecrackerExecutor, HostExecutor };
 export { SandboxError } from "./errors.js";
 export {
+  buildContainerExecCommand,
   containerSandboxAdapter,
   parseContainerSandboxArg,
   validateContainerSandbox,
@@ -87,10 +88,14 @@ export async function validateSandbox(config: SandboxConfig): Promise<void> {
 /**
  * Create an executor that runs commands on host, in a Docker container, or in a Firecracker VM.
  */
-export function createExecutor(config: SandboxConfig): Executor {
+export function createExecutor(
+  config: SandboxConfig,
+  env?: Record<string, string>,
+  ensureReady?: () => Promise<void>,
+): Executor {
   const adapter = sandboxAdapterByType.get(config.type);
   if (!adapter) {
     throw new SandboxError(`Error: Unsupported sandbox type '${config.type}'`);
   }
-  return adapter.createExecutor(config);
+  return adapter.createExecutor(config, env, ensureReady);
 }
