@@ -96,6 +96,10 @@ export class HostExecutor implements Executor {
   getWorkspacePath(hostPath: string): string {
     return hostPath;
   }
+
+  getSandboxConfig(): HostSandboxConfig {
+    return { type: "host" };
+  }
 }
 
 export const hostSandboxAdapter: SandboxAdapter<HostSandboxConfig> = {

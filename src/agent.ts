@@ -19,9 +19,12 @@ import { join } from "path";
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
-import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import type { UserBindingStore } from "./bindings.js";
+import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
+import type { VaultManager } from "./vault.js";
 import {
   createManagedSessionFileAtPath,
   extractSessionSuffix,
@@ -418,6 +421,8 @@ export async function createRunner(
   channelId: string,
   channelDir: string,
   workspaceDir: string,
+  vaultManager?: VaultManager,
+  bindingStore?: UserBindingStore,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
 
@@ -427,8 +432,30 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executor = createExecutor(sandboxConfig);
-  const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+  const executionResolver =
+    vaultManager &&
+    sandboxConfig.type !== "host" &&
+    (vaultManager.isEnabled() || !!bindingStore || sandboxConfig.type === "container")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore)
+      : undefined;
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
+  };
+  const workspaceBase = channelDir.replace(`/${channelId}`, "");
+  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
   const { tools, setUploadFunction } = createMamaTools(executor);
@@ -845,6 +872,15 @@ export async function createRunner(
       // Ensure channel directory exists
       await mkdir(channelDir, { recursive: true });
 
+      if (executionResolver) {
+        executionResolver.refresh();
+        activeExecutor = await executionResolver.resolve({
+          platform: platform.name,
+          userId: message.userId,
+        });
+        workspacePath = getWorkspacePath();
+      }
+
       // Sync messages from log.jsonl that arrived while we were offline or busy
       // Exclude the current message (it will be added via prompt())
       // Default sync range is 10 days (handled by syncLogToSessionManager)
@@ -880,7 +916,7 @@ export async function createRunner(
         workspacePath,
         channelId,
         memory,
-        sandboxConfig,
+        executor.getSandboxConfig(),
         platform,
         skills,
       );
