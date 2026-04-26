@@ -391,6 +391,25 @@ export class TelegramBot implements Bot {
     return text.replace(new RegExp(`@${this.botUsername}`, "gi"), "").trim();
   }
 
+  private isStopText(text: string): boolean {
+    return /^\/?stop(?:@\w+)?$/i.test(text.trim());
+  }
+
+  private resolveStopTarget(mc: MessageContext): string | null {
+    if (this.handler.isRunning(mc.sessionKey)) return mc.sessionKey;
+
+    if (this.handler.isRunning(mc.chatId)) return mc.chatId;
+
+    if (mc.chatType === "private") return null;
+
+    const runningInChat = this.handler
+      .getRunningSessions()
+      .map((session) => session.sessionKey)
+      .filter((sessionKey) => sessionKey === mc.chatId || sessionKey.startsWith(`${mc.chatId}:`));
+
+    return runningInChat.length === 1 ? runningInChat[0] : null;
+  }
+
   private setupEventHandlers(): void {
     // --- Slash commands (registered before catch-all so grammY intercepts them) ---
 
@@ -434,8 +453,9 @@ export class TelegramBot implements Bot {
     this.client.command("stop", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      if (this.handler.isRunning(mc.sessionKey)) {
-        await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
+      const stopTarget = this.resolveStopTarget(mc);
+      if (stopTarget) {
+        await this.handler.handleStop(stopTarget, mc.chatId, this);
       } else {
         await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
       }
@@ -453,10 +473,31 @@ export class TelegramBot implements Bot {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
 
-      // In groups, only respond when addressed to bot
-      if (!this.isAddressedToBot(mc.text, mc.chatType)) return;
-
       const cleanedText = this.cleanText(mc.text);
+      const addressedToBot = this.isAddressedToBot(mc.text, mc.chatType);
+
+      if (this.isStopText(cleanedText)) {
+        this.logToFile(mc.chatId, {
+          date: new Date(mc.msg.date * 1000).toISOString(),
+          ts: mc.msgId,
+          user: mc.userId,
+          userName: mc.userName,
+          text: cleanedText,
+          attachments: [],
+          isBot: false,
+        });
+
+        const stopTarget = this.resolveStopTarget(mc);
+        if (stopTarget) {
+          await this.handler.handleStop(stopTarget, mc.chatId, this);
+        } else if (addressedToBot || mc.chatType === "private") {
+          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
+        }
+        return;
+      }
+
+      // In groups, only respond when addressed to bot
+      if (!addressedToBot) return;
 
       // Process attachments
       const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);
@@ -484,16 +525,6 @@ export class TelegramBot implements Bot {
         attachments: processedAttachments,
         isBot: false,
       });
-
-      // Handle bare "stop" text (backward compat)
-      if (cleanedText.toLowerCase() === "stop") {
-        if (this.handler.isRunning(mc.sessionKey)) {
-          await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
-        } else {
-          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
-        }
-        return;
-      }
 
       if (this.handler.isRunning(mc.sessionKey)) {
         await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));

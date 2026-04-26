@@ -16,6 +16,20 @@ function makeHandler(): BotHandler {
   };
 }
 
+function makeHandlerWithRunningKeys(runningKeys: string[]): BotHandler {
+  const running = new Set(runningKeys);
+  return {
+    isRunning: vi.fn((key: string) => running.has(key)),
+    getRunningSessions: vi
+      .fn()
+      .mockReturnValue(runningKeys.map((sessionKey) => ({ sessionKey, startedAt: Date.now() }))),
+    handleEvent: vi.fn(),
+    handleStop: vi.fn(),
+    forceStop: vi.fn(),
+    handleNew: vi.fn(),
+  };
+}
+
 // Helper: build a fake Telegram message object
 function makeMessage(overrides: Record<string, any> = {}) {
   return {
@@ -107,6 +121,66 @@ describe("TelegramBot extractMessageContext", () => {
     expect(extract(msg).sessionKey).toBe("123");
     // threadTs is still set for reply targeting
     expect(extract(msg).threadTs).toBe("50");
+  });
+});
+
+describe("TelegramBot stop handling", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-stop-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("resolveStopTarget falls back to the only running session in a shared chat", () => {
+    const handler = makeHandlerWithRunningKeys(["999:50"]);
+    const bot = new TelegramBot(handler, { token: "T", workingDir });
+
+    const target = (bot as any).resolveStopTarget({
+      chatId: "999",
+      chatType: "group",
+      sessionKey: "999:60",
+    });
+
+    expect(target).toBe("999:50");
+  });
+
+  test("bare stop in a group can stop the agent without an @mention", async () => {
+    const handler = makeHandlerWithRunningKeys(["999:50"]);
+    const bot = new TelegramBot(handler, { token: "T", workingDir });
+    let messageHandler: ((ctx: { message: any }) => Promise<void>) | undefined;
+    const processAttachments = vi.fn().mockResolvedValue([]);
+
+    (bot as any).startupTime = 0;
+    (bot as any).botUsername = "mama_bot";
+    (bot as any).processAttachments = processAttachments;
+    (bot as any).client = {
+      command: vi.fn(),
+      on: vi.fn((event: string, handlerFn: (ctx: { message: any }) => Promise<void>) => {
+        if (event === "message") messageHandler = handlerFn;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    await messageHandler?.({
+      message: makeMessage({
+        chat: { id: 999, type: "group" },
+        message_id: 70,
+        text: "stop",
+        reply_to_message: {
+          message_id: 60,
+          from: { id: 99, is_bot: true, username: "mama_bot" },
+        },
+      }),
+    });
+
+    expect(handler.handleStop).toHaveBeenCalledWith("999:50", "999", bot);
+    expect(processAttachments).not.toHaveBeenCalled();
   });
 });
 
