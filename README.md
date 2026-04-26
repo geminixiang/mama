@@ -222,14 +222,14 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 
 ## Options
 
-| Option                                 | Default   | Description                                              |
-| -------------------------------------- | --------- | -------------------------------------------------------- |
-| `--state-dir=<dir>`                    | `~/.mama` | Store credential vaults and bindings outside workspace   |
-| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected |
-| `--sandbox=container:<name>`           |           | Run commands in an existing shared container             |
-| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user    |
-| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                |
-| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only) |
+| Option                                 | Default   | Description                                                       |
+| -------------------------------------- | --------- | ----------------------------------------------------------------- |
+| `--state-dir=<dir>`                    | `~/.mama` | Store settings, credential vaults, and bindings outside workspace |
+| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected          |
+| `--sandbox=container:<name>`           |           | Run commands in an existing shared container                      |
+| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user             |
+| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                         |
+| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)          |
 
 ### Sandbox and Vault Semantics
 
@@ -249,7 +249,7 @@ mama --download C0123456789
 
 ## `/login` Credential Onboarding
 
-Set `MOM_LINK_URL` to enable the web credential onboarding flow:
+For normal deployments, set `MOM_LINK_URL` to the externally reachable base URL of the web credential onboarding flow:
 
 ```bash
 export MOM_LINK_URL="https://mama.example.com"
@@ -257,7 +257,9 @@ export MOM_LINK_URL="https://mama.example.com"
 export MOM_LINK_PORT=8181
 ```
 
-Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers.
+For local-only testing, you can set `MOM_LINK_PORT` without `MOM_LINK_URL`; mama will use `http://localhost:<port>` for the onboarding link.
+
+Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers. `/login` is rejected in shared channels to avoid leaking onboarding links.
 
 Built-in OAuth guides:
 
@@ -268,7 +270,7 @@ Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Ru
 
 ## Configuration
 
-Create `settings.json` in your working directory to override defaults:
+mama loads settings from `<state-dir>/settings.json` first, then falls back to `<working-directory>/settings.json` if the state-dir file is absent. For shared bot deployments, prefer the state-dir copy:
 
 ```json
 {
@@ -307,7 +309,7 @@ Set `logFormat: "json"` to send structured logs directly to Cloud Logging via AP
 GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
 ```
 
-`settings.json`:
+In `<state-dir>/settings.json` (or `<working-directory>/settings.json` as a fallback):
 
 ```json
 {
@@ -318,11 +320,24 @@ GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
 
 Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout) is unaffected and continues to work alongside Cloud Logging.
 
+## State Directory Layout
+
+```
+<state-dir>/
+├── settings.json          # Preferred provider/model/logging/Sentry config
+└── vaults/
+    ├── bindings.json      # Platform user -> vault mapping
+    ├── vault.json         # Vault metadata
+    └── <vault-id>/
+        ├── env            # Injected env vars
+        └── ...            # Credential files (e.g. gws.json, .ssh/)
+```
+
 ## Working Directory Layout
 
 ```
 <working-directory>/
-├── settings.json          # AI provider/model/Sentry config
+├── settings.json          # Optional fallback config if <state-dir>/settings.json is absent
 ├── MEMORY.md              # Global memory (all channels)
 ├── SYSTEM.md              # Installed packages / env changes log
 ├── skills/                # Global skills (CLI tools)
