@@ -604,9 +604,9 @@ export async function createRunner(
   const runState = {
     responseCtx: null as ChatResponseContext | null,
     logCtx: null as {
-      channelId: string;
+      conversationId: string;
       userName?: string;
-      channelName?: string;
+      conversationName?: string;
       sessionId?: string;
     } | null,
     queue: null as {
@@ -637,7 +637,7 @@ export async function createRunner(
     if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
 
     const { responseCtx, logCtx, queue, pendingTools } = runState;
-    const baseAttrs = { channel_id: logCtx.channelId, session_id: logCtx.sessionId };
+    const baseAttrs = { channel_id: logCtx.conversationId, session_id: logCtx.sessionId };
 
     if (event.type === "tool_execution_start") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
@@ -944,9 +944,9 @@ export async function createRunner(
       // Reset per-run state
       runState.responseCtx = responseCtx;
       runState.logCtx = {
-        channelId: sessionChannel,
+        conversationId: sessionChannel,
         userName: message.userName,
-        channelName: undefined,
+        conversationName: undefined,
         sessionId: sessionUuid,
       };
       runState.pendingTools.clear();
