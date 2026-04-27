@@ -320,7 +320,7 @@ ${memory}
 
 ## System Configuration Log
 Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
-- Installed packages (apk add, npm install, pip install)
+- Installed packages (apt install, npm install, uv pip install)
 - Environment variables set
 - Config files modified (~/.gitconfig, cron jobs, etc.)
 - Skill dependencies installed
@@ -330,7 +330,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
-${isContainer ? "Install jq: apk add jq" : ""}
+${isContainer ? "Install jq: apt-get install jq" : ""}
 ${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash

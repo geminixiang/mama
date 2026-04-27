@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   gnupg \
   jq \
   less \
+  ffmpeg \
   openssh-client \
   python-is-python3 \
   tini \
