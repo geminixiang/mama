@@ -192,6 +192,73 @@ describe("link server", () => {
     );
   });
 
+  test("/link shows Cloudflare preset guidance for API token onboarding", async () => {
+    const stateDir = join(tmpdir(), `mama-link-server-${Date.now()}-${Math.random()}`);
+    dirs.push(stateDir);
+
+    const vaultManager = new FileVaultManager(stateDir);
+    vaultManager.addEntry("vault-u777", { displayName: "Eve" });
+
+    const tokenStore = new InMemoryLinkTokenStore();
+    const token = tokenStore.create("telegram", "U777", "777", "vault-u777", "");
+    const server = startLinkServer(0, tokenStore, vaultManager, async () => {});
+    servers.push(server);
+    await waitForListening(server);
+
+    const response = await originalFetch(`${baseUrl(server)}/link?token=${token.token}`);
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(html).toContain("Cloudflare / Wrangler");
+    expect(html).toContain("CLOUDFLARE_API_TOKEN");
+    expect(html).toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(html).toContain("Do not use the Global API Key.");
+  });
+
+  test("/api/link/complete stores multiple environment values from a preset payload", async () => {
+    const stateDir = join(tmpdir(), `mama-link-server-${Date.now()}-${Math.random()}`);
+    dirs.push(stateDir);
+
+    const vaultManager = new FileVaultManager(stateDir);
+    vaultManager.addEntry("vault-u888", { displayName: "Frank" });
+
+    const tokenStore = new InMemoryLinkTokenStore();
+    const token = tokenStore.create("telegram", "U888", "888", "vault-u888", "");
+    const notify = vi.fn().mockResolvedValue(undefined);
+    const server = startLinkServer(0, tokenStore, vaultManager, notify);
+    servers.push(server);
+    await waitForListening(server);
+
+    const response = await originalFetch(`${baseUrl(server)}/api/link/complete`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: baseUrl(server),
+      },
+      body: JSON.stringify({
+        token: token.token,
+        mode: "api_key",
+        env: {
+          CLOUDFLARE_API_TOKEN: "v1.0-test-token",
+          CLOUDFLARE_ACCOUNT_ID: "b4ed92bb40d94816e882d9f39d4d236b",
+        },
+      }),
+    });
+    const body = (await response.json()) as { message: string };
+
+    expect(response.status).toBe(200);
+    expect(body.message).toContain("2 secrets stored successfully in vault");
+    expect(vaultManager.resolve("vault-u888")?.env).toMatchObject({
+      CLOUDFLARE_API_TOKEN: "v1.0-test-token",
+      CLOUDFLARE_ACCOUNT_ID: "b4ed92bb40d94816e882d9f39d4d236b",
+    });
+    expect(notify).toHaveBeenCalledWith(
+      "telegram",
+      "888",
+      expect.stringContaining("CLOUDFLARE_API_TOKEN"),
+    );
+  });
+
   test("/link shows an empty-state message when the vault has no secrets yet", async () => {
     const stateDir = join(tmpdir(), `mama-link-server-${Date.now()}-${Math.random()}`);
     dirs.push(stateDir);

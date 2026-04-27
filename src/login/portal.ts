@@ -22,6 +22,7 @@ interface LinkCompleteBody {
   mode?: LoginCredentialKind;
   envKey?: string;
   credential?: string;
+  env?: Record<string, string>;
 }
 
 interface OAuthStartBody {
@@ -36,7 +37,53 @@ interface PendingOAuthState {
   expiresAt: number;
 }
 
+interface SecretPresetField {
+  envKey: string;
+  label: string;
+  type: "text" | "password";
+  placeholder: string;
+  helpText: string;
+  pattern?: string;
+  patternMessage?: string;
+}
+
+interface SecretPreset {
+  id: string;
+  label: string;
+  description: string;
+  note?: string;
+  fields: SecretPresetField[];
+}
+
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_SECRET_CONFIG_ID = "manual";
+const SECRET_PRESETS: SecretPreset[] = [
+  {
+    id: "cloudflare_wrangler",
+    label: "Cloudflare / Wrangler",
+    description:
+      "Store a Cloudflare API token and account ID for Wrangler, Workers, Pages, D1, and KV.",
+    note: "Create a scoped API Token from Cloudflare Dashboard → My Profile → API Tokens. Do not use the Global API Key.",
+    fields: [
+      {
+        envKey: "CLOUDFLARE_API_TOKEN",
+        label: "Cloudflare API Token",
+        type: "password",
+        placeholder: "cfut_...",
+        helpText: "Recommended for Wrangler, CI, and sandbox use.",
+      },
+      {
+        envKey: "CLOUDFLARE_ACCOUNT_ID",
+        label: "Cloudflare Account ID",
+        type: "text",
+        placeholder: "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        helpText: "Find this via wrangler whoami or in the Cloudflare dashboard account page.",
+        pattern: "^[A-Fa-f0-9]{32}$",
+        patternMessage: "Account ID must be a 32-character hexadecimal string.",
+      },
+    ],
+  },
+];
 
 // ── startLinkServer ────────────────────────────────────────────────────────────
 
@@ -317,7 +364,9 @@ const sharedPageStyles = `
     min-height: 100vh;
     padding: 32px 20px;
     display: grid;
-    place-items: center;
+    grid-template-columns: minmax(0, 560px);
+    justify-content: center;
+    align-content: start;
     background:
       radial-gradient(circle at top, rgba(255, 255, 255, 0.7), transparent 45%),
       linear-gradient(180deg, #faf7f0 0%, var(--bg) 100%);
@@ -330,7 +379,11 @@ const sharedPageStyles = `
   }
 
   .shell {
-    width: min(100%, 560px);
+    width: 100%;
+    min-width: 0;
+    display: grid;
+    gap: 16px;
+    align-content: start;
   }
 
   .card {
@@ -369,14 +422,6 @@ const sharedPageStyles = `
     margin-top: 14px;
   }
 
-  .form {
-    margin-top: 24px;
-  }
-
-  .form > * + * {
-    margin-top: 18px;
-  }
-
   label {
     display: block;
     margin-bottom: 6px;
@@ -407,9 +452,14 @@ const sharedPageStyles = `
     outline-offset: 2px;
   }
 
-  button {
+  code {
+    font-family: "SFMono-Regular", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.92em;
+    overflow-wrap: anywhere;
+  }
+
+  .primary-button {
     width: 100%;
-    margin-top: 24px;
     padding: 13px 18px;
     border: none;
     border-radius: 12px;
@@ -419,13 +469,117 @@ const sharedPageStyles = `
     transition: background-color 160ms ease;
   }
 
-  button:hover {
+  .primary-button:hover {
     background: var(--button-hover);
   }
 
-  button:disabled {
+  .primary-button:disabled {
     background: var(--button-disabled);
     cursor: default;
+  }
+
+  .service-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    flex: 0 0 36px;
+    background: #1c1e21;
+    color: #fff;
+  }
+
+  .service-logo svg {
+    display: block;
+    width: 20px;
+    height: 20px;
+  }
+
+  .service-logo.cloudflare {
+    background: linear-gradient(180deg, #ffb66d 0%, #f48120 100%);
+  }
+
+  .service-logo.manual {
+    background: linear-gradient(180deg, #43474d 0%, #1c1e21 100%);
+  }
+
+  .provider-card > * + * {
+    margin-top: 14px;
+  }
+
+  .provider-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .provider-title {
+    flex: 1;
+    margin: 0;
+    font-size: 1rem;
+    font-weight: 650;
+    line-height: 1.3;
+  }
+
+  .provider-field label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .help {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .help-trigger {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--field-border);
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.9);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+  }
+
+  .help-trigger:hover {
+    color: var(--text);
+    border-color: var(--text);
+  }
+
+  .help-content {
+    display: none;
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 10;
+    width: max-content;
+    max-width: 280px;
+    padding: 10px 12px;
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    background: #fff;
+    color: var(--text);
+    font-size: 0.85rem;
+    font-weight: 400;
+    line-height: 1.45;
+    box-shadow: 0 8px 24px rgba(28, 30, 33, 0.12);
+    white-space: normal;
+  }
+
+  .help-trigger[aria-expanded="true"] + .help-content {
+    display: block;
+  }
+
+  .help-trigger[aria-expanded="true"] {
+    color: var(--text);
+    border-color: var(--text);
   }
 
   .mode {
@@ -458,6 +612,11 @@ const sharedPageStyles = `
 
   .panel.active {
     display: block;
+  }
+
+  #api-panel.active {
+    display: grid;
+    gap: 16px;
   }
 
   .panel-note {
@@ -523,17 +682,48 @@ const sharedPageStyles = `
 
   @media (max-width: 640px) {
     body {
-      padding: 20px 14px;
+      padding: 16px 12px;
+    }
+
+    .shell {
+      gap: 12px;
     }
 
     .card {
-      padding: 22px;
+      padding: 20px;
       border-radius: 16px;
+    }
+
+    /* Mode toggle pills fill the row evenly */
+    .mode label {
+      flex: 1;
+      justify-content: center;
+    }
+
+    /* Larger touch targets */
+    input,
+    select {
+      padding: 14px;
+    }
+
+    .primary-button {
+      padding: 15px 18px;
+    }
+
+    /* Prevent help popover from overflowing the viewport */
+    .help-content {
+      max-width: min(260px, calc(100vw - 40px));
+    }
+
+    /* Right-align popovers that sit near the right edge */
+    .provider-header .help-content {
+      left: auto;
+      right: 0;
     }
   }
 `;
 
-function renderPageDocument(title: string, body: string): string {
+function renderHtmlDocument(title: string, shellContent: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -544,12 +734,14 @@ function renderPageDocument(title: string, body: string): string {
 </head>
 <body>
   <main class="shell">
-    <section class="card">
-      ${body}
-    </section>
+    ${shellContent}
   </main>
 </body>
 </html>`;
+}
+
+function renderPageDocument(title: string, body: string): string {
+  return renderHtmlDocument(title, `<section class="card">${body}</section>`);
 }
 
 function renderStatusPage(
@@ -612,6 +804,91 @@ function renderSecretsSummary(summary: ExistingSecretsSummary): string {
   </section>`;
 }
 
+function renderServiceLogo(kind: string): string {
+  if (kind === "cloudflare_wrangler") {
+    return `<span class="service-logo cloudflare" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none">
+        <path d="M8.5 17.5h8.2a2.9 2.9 0 0 0 .4-5.78A4.45 4.45 0 0 0 8.9 10.4a3.7 3.7 0 0 0-.4 7.1Z" fill="white" fill-opacity="0.98"/>
+        <path d="M6.6 17.5h5.1a2.3 2.3 0 0 0 0-4.6 3.1 3.1 0 0 0-3-2.2 3.23 3.23 0 0 0-3.18 3.64A2.67 2.67 0 0 0 6.6 17.5Z" fill="white"/>
+      </svg>
+    </span>`;
+  }
+
+  return `<span class="service-logo manual" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none">
+      <path d="M6.5 8.5 10 12l-3.5 3.5" stroke="white" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M12 15.5h5.5" stroke="white" stroke-width="1.9" stroke-linecap="round"/>
+    </svg>
+  </span>`;
+}
+
+function renderHelpIcon(html: string): string {
+  return `<span class="help">
+    <button type="button" class="help-trigger" aria-label="More info" aria-expanded="false">?</button>
+    <span class="help-content" role="tooltip">${html}</span>
+  </span>`;
+}
+
+function renderPresetProviderCard(preset: SecretPreset): string {
+  const headerHelp = preset.note ? renderHelpIcon(esc(preset.note)) : "";
+  const fields = preset.fields
+    .map(
+      (field) => `<div class="provider-field">
+        <label for="preset-${esc(preset.id)}-${esc(field.envKey)}">
+          ${esc(field.label)}
+          ${renderHelpIcon(`${esc(field.helpText)} Stored as <code>${esc(field.envKey)}</code>.`)}
+        </label>
+        <input
+          id="preset-${esc(preset.id)}-${esc(field.envKey)}"
+          type="${field.type}"
+          autocomplete="off"
+          placeholder="${esc(field.placeholder)}"
+          data-env-key="${esc(field.envKey)}"
+          data-field-label="${esc(field.label)}"
+          ${field.pattern ? `data-pattern="${esc(field.pattern)}"` : ""}
+          ${field.patternMessage ? `data-pattern-message="${esc(field.patternMessage)}"` : ""}
+        >
+      </div>`,
+    )
+    .join("\n");
+
+  return `<section class="card provider-card" data-provider-kind="preset" data-provider-id="${esc(preset.id)}">
+    <div class="provider-header">
+      ${renderServiceLogo(preset.id)}
+      <h2 class="provider-title">${esc(preset.label)}</h2>
+      ${headerHelp}
+    </div>
+    ${fields}
+  </section>`;
+}
+
+function renderManualProviderCard(
+  initialEnvKey: string,
+  secretLabel: string,
+  placeholder: string,
+): string {
+  const headerHelp = renderHelpIcon(
+    esc(
+      "Set any environment variable key/value pair manually. Use this when no provider preset fits.",
+    ),
+  );
+  return `<section class="card provider-card" data-provider-kind="manual" data-provider-id="${esc(DEFAULT_SECRET_CONFIG_ID)}">
+    <div class="provider-header">
+      ${renderServiceLogo("manual")}
+      <h2 class="provider-title">Manual entry</h2>
+      ${headerHelp}
+    </div>
+    <div class="provider-field">
+      <label for="envKey">Environment key</label>
+      <input id="envKey" type="text" name="envKey" placeholder="OPENAI_API_KEY" value="${esc(initialEnvKey)}" autocomplete="off">
+    </div>
+    <div class="provider-field">
+      <label for="credential">${esc(secretLabel)}</label>
+      <input id="credential" type="password" name="credential" placeholder="${esc(placeholder)}" autocomplete="off">
+    </div>
+  </section>`;
+}
+
 function renderCredentialPage(
   token: string,
   title: string,
@@ -630,37 +907,37 @@ function renderCredentialPage(
       return `<option value="${esc(service.id)}"${selected}>${esc(service.label)}</option>`;
     })
     .join("\n");
+  const presetCards = SECRET_PRESETS.map(renderPresetProviderCard).join("\n");
 
-  return renderPageDocument(
+  return renderHtmlDocument(
     "Login",
-    `<div class="stack">
+    `<section class="card stack">
   <p class="eyebrow">${PRODUCT_NAME}</p>
   <h1>${esc(title)}</h1>
   <p>Your personal sandbox is already provisioned automatically.</p>
   <p>${esc(helpText)}</p>
   ${renderSecretsSummary(existingSecrets)}
   <div class="mode">
-    <label><input type="radio" name="mode" value="api_key" ${defaultMode === "api_key" ? "checked" : ""}> API key</label>
+    <label><input type="radio" name="mode" value="api_key" ${defaultMode === "api_key" ? "checked" : ""}> Secrets / API tokens</label>
     <label><input type="radio" name="mode" value="oauth" ${defaultMode === "oauth" ? "checked" : ""}> OAuth login</label>
   </div>
+</section>
 
-  <div class="form">
-  <div id="api-panel" class="panel">
-    <label for="envKey">Environment key</label>
-    <input id="envKey" type="text" name="envKey" placeholder="OPENAI_API_KEY" value="${esc(initialEnvKey)}" autocomplete="off">
-    <label for="credential">${esc(secretLabel)}</label>
-    <input id="credential" type="password" name="credential" placeholder="${esc(placeholder)}" autocomplete="off">
-  </div>
+<div id="api-panel" class="panel">
+  ${presetCards}
+  ${renderManualProviderCard(initialEnvKey, secretLabel, placeholder)}
+</div>
 
-  <div id="oauth-panel" class="panel">
-    <label for="oauthService">OAuth service</label>
-    <select id="oauthService" name="oauthService">${oauthOptions}</select>
-    <p class="panel-note">You'll be redirected to the selected service's authorization page.</p>
-  </div>
+<div id="oauth-panel" class="panel card stack">
+  <label for="oauthService">OAuth service</label>
+  <select id="oauthService" name="oauthService">${oauthOptions}</select>
+  <p class="panel-note">You'll be redirected to the selected service's authorization page.</p>
+</div>
 
-  <button id="btn" onclick="connect()">Continue</button>
+<div>
+  <button id="btn" class="primary-button" onclick="connect()">Continue</button>
   <div id="result" class="result" aria-live="polite"></div>
-  </div>
+</div>
   <script>
     const envKeyPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
@@ -675,13 +952,125 @@ function renderCredentialPage(
       result.textContent = message;
     }
 
-    function syncPanels() {
-      const api = document.getElementById('api-panel');
-      const oauth = document.getElementById('oauth-panel');
-      const mode = selectedMode();
-      api.className = mode === 'api_key' ? 'panel active' : 'panel';
-      oauth.className = mode === 'oauth' ? 'panel active' : 'panel';
+    function resetContinueButton() {
+      const btn = document.getElementById('btn');
+      btn.disabled = false;
+      btn.textContent = 'Continue';
     }
+
+    function syncPanels() {
+      const mode = selectedMode();
+      document.getElementById('api-panel').classList.toggle('active', mode === 'api_key');
+      document.getElementById('oauth-panel').classList.toggle('active', mode === 'oauth');
+    }
+
+    function collectManualCard(card) {
+      const envKey = card.querySelector('#envKey').value.trim();
+      const credential = card.querySelector('#credential').value.trim();
+      if (!envKey && !credential) return { skip: true };
+      if (!envKeyPattern.test(envKey)) return { error: 'Manual entry: please enter a valid environment key.' };
+      if (!credential) return { error: 'Manual entry: please enter a secret value.' };
+      return { env: { [envKey]: credential } };
+    }
+
+    function collectPresetCard(card) {
+      const inputs = card.querySelectorAll('input[data-env-key]');
+      const filled = Array.from(inputs).some((input) => input.value.trim() !== '');
+      if (!filled) return { skip: true };
+
+      const env = {};
+      for (const input of inputs) {
+        const value = input.value.trim();
+        const label = input.dataset.fieldLabel || input.dataset.envKey || 'a value';
+        if (!value) return { error: 'Please enter ' + label + '.' };
+        if (input.dataset.pattern && !(new RegExp(input.dataset.pattern).test(value))) {
+          return { error: input.dataset.patternMessage || ('Invalid ' + label + '.') };
+        }
+        env[input.dataset.envKey] = value;
+      }
+      return { env };
+    }
+
+    function collectApiEnv() {
+      const env = {};
+      let any = false;
+      for (const card of document.querySelectorAll('.provider-card')) {
+        const result = card.dataset.providerKind === 'manual'
+          ? collectManualCard(card)
+          : collectPresetCard(card);
+        if (result.skip) continue;
+        if (result.error) return { error: result.error };
+        Object.assign(env, result.env);
+        any = true;
+      }
+      if (!any) return { error: 'Fill in at least one provider before continuing.' };
+      return { env };
+    }
+
+    async function startOAuthFlow() {
+      const serviceId = document.getElementById('oauthService').value;
+      const r = await fetch('/api/oauth/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: '${esc(token)}', serviceId }),
+      });
+      const data = await r.json();
+      if (!r.ok) {
+        showResult('Error: ' + (data.error ?? r.status), false);
+        resetContinueButton();
+        return;
+      }
+      window.location.href = data.redirectUrl;
+    }
+
+    async function saveApiSecrets() {
+      const payload = collectApiEnv();
+      if (payload.error) {
+        showResult(payload.error, false);
+        resetContinueButton();
+        return;
+      }
+
+      const r = await fetch('/api/link/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: '${esc(token)}', mode: 'api_key', env: payload.env }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        showResult(data.message ?? 'Credential stored. You can close this tab.', true);
+        document.getElementById('btn').style.display = 'none';
+        for (const input of document.querySelectorAll('input,select,button')) input.disabled = true;
+      } else {
+        showResult('Error: ' + (data.error ?? r.status), false);
+        resetContinueButton();
+      }
+    }
+
+    let openHelp = null;
+    function closeOpenHelp() {
+      if (openHelp) {
+        openHelp.setAttribute('aria-expanded', 'false');
+        openHelp = null;
+      }
+    }
+
+    for (const trigger of document.querySelectorAll('.help-trigger')) {
+      trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const wasOpen = trigger.getAttribute('aria-expanded') === 'true';
+        closeOpenHelp();
+        if (!wasOpen) {
+          trigger.setAttribute('aria-expanded', 'true');
+          openHelp = trigger;
+        }
+      });
+    }
+
+    document.addEventListener('click', closeOpenHelp);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeOpenHelp();
+    });
 
     for (const radio of document.querySelectorAll('input[name="mode"]')) {
       radio.addEventListener('change', syncPanels);
@@ -697,61 +1086,16 @@ function renderCredentialPage(
 
       try {
         if (mode === 'oauth') {
-          const serviceId = document.getElementById('oauthService').value;
-          const r = await fetch('/api/oauth/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token: '${esc(token)}', serviceId }),
-          });
-          const data = await r.json();
-          if (!r.ok) {
-            showResult('Error: ' + (data.error ?? r.status), false);
-            btn.disabled = false;
-            btn.textContent = 'Continue';
-            return;
-          }
-          window.location.href = data.redirectUrl;
+          await startOAuthFlow();
           return;
         }
-
-        const envKey = document.getElementById('envKey').value.trim();
-        const credential = document.getElementById('credential').value.trim();
-        if (!envKeyPattern.test(envKey)) {
-          showResult('Please enter a valid environment key.', false);
-          btn.disabled = false;
-          btn.textContent = 'Continue';
-          return;
-        }
-        if (!credential) {
-          showResult('Please enter a value.', false);
-          btn.disabled = false;
-          btn.textContent = 'Continue';
-          return;
-        }
-
-        const r = await fetch('/api/link/complete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ token: '${esc(token)}', mode: 'api_key', envKey, credential }),
-        });
-        const data = await r.json();
-        if (r.ok) {
-          showResult(data.message ?? 'Credential stored. You can close this tab.', true);
-          btn.style.display = 'none';
-          for (const input of document.querySelectorAll('input,select')) input.disabled = true;
-        } else {
-          showResult('Error: ' + (data.error ?? r.status), false);
-          btn.disabled = false;
-          btn.textContent = 'Continue';
-        }
+        await saveApiSecrets();
       } catch (err) {
-        showResult('Network error: ' + err.message, false);
-        btn.disabled = false;
-        btn.textContent = 'Continue';
+        showResult('Network error: ' + (err?.message ?? err), false);
+        resetContinueButton();
       }
     }
-  </script>
-</div>`,
+  </script>`,
   );
 }
 
@@ -761,6 +1105,45 @@ function renderErrorPage(message: string): string {
 
 function renderSuccessPage(message: string): string {
   return renderStatusPage("Connected", message, "ok", { closeNote: true });
+}
+
+function isValidEnvKey(value: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function extractEnvUpdates(data: Partial<LinkCompleteBody>): {
+  updates?: Record<string, string>;
+  error?: string;
+} {
+  if (data.env && typeof data.env === "object" && !Array.isArray(data.env)) {
+    const rawEntries = Object.entries(data.env);
+    if (rawEntries.length === 0) return { error: "Missing required field: env" };
+
+    const updates: Record<string, string> = {};
+    for (const [rawKey, rawValue] of rawEntries) {
+      const envKey = rawKey.trim();
+      const credential = typeof rawValue === "string" ? rawValue.trim() : "";
+      if (!isValidEnvKey(envKey)) return { error: `Invalid envKey format: ${rawKey}` };
+      if (!credential) return { error: `Missing value for envKey: ${envKey}` };
+      updates[envKey] = credential;
+    }
+
+    return { updates };
+  }
+
+  const envKey = data.envKey?.trim() ?? "";
+  const credential = data.credential?.trim() ?? "";
+  if (!isValidEnvKey(envKey)) return { error: "Invalid envKey format" };
+  if (!credential) return { error: "Missing required field: credential" };
+  return { updates: { [envKey]: credential } };
+}
+
+function renderStoredEnvMessage(envKeys: string[]): string {
+  if (envKeys.length === 1) {
+    return `${envKeys[0]} stored successfully in vault.`;
+  }
+
+  return `${envKeys.length} secrets stored successfully in vault: ${envKeys.join(", ")}.`;
 }
 
 // ── API-key completion ────────────────────────────────────────────────────────
@@ -787,20 +1170,14 @@ async function handleLinkComplete(
     return;
   }
 
-  const envKey = data.envKey?.trim() ?? "";
-  const credential = data.credential?.trim() ?? "";
-
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(envKey)) {
+  const { updates, error } = extractEnvUpdates(data);
+  if (!updates || error) {
     res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Invalid envKey format" }));
+    res.end(JSON.stringify({ error: error ?? "Invalid env payload" }));
     return;
   }
 
-  if (!credential) {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Missing required field: credential" }));
-    return;
-  }
+  const envKeys = Object.keys(updates).sort((left, right) => left.localeCompare(right));
 
   // Atomic consume prevents two concurrent requests from both passing the
   // validity check before either deletes the token.
@@ -812,11 +1189,11 @@ async function handleLinkComplete(
   }
 
   try {
-    vaultManager.upsertEnv(linkToken.vaultId, { [envKey]: credential });
-  } catch (error) {
+    vaultManager.upsertEnv(linkToken.vaultId, updates);
+  } catch (persistError) {
     log.logWarning(
-      `Failed to persist ${envKey} for ${linkToken.platform}/${linkToken.platformUserId}`,
-      error instanceof Error ? error.message : String(error),
+      `Failed to persist [${envKeys.join(", ")}] for ${linkToken.platform}/${linkToken.platformUserId}`,
+      persistError instanceof Error ? persistError.message : String(persistError),
     );
     res.writeHead(500, { "Content-Type": "application/json" });
     res.end(
@@ -829,16 +1206,17 @@ async function handleLinkComplete(
   }
 
   log.logInfo(
-    `Stored ${envKey} for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
+    `Stored [${envKeys.join(", ")}] for ${linkToken.platform}/${linkToken.platformUserId} in vault:${linkToken.vaultId}`,
   );
 
+  const message = renderStoredEnvMessage(envKeys);
   res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ ok: true, message: `${envKey} stored successfully in vault.` }));
+  res.end(JSON.stringify({ ok: true, message }));
 
   notify(
     linkToken.platform,
     linkToken.conversationId,
-    `${envKey} stored successfully in vault \`${linkToken.vaultId}\`.`,
+    `${message} Vault: \`${linkToken.vaultId}\`.`,
   ).catch((err: Error) => {
     log.logWarning("Failed to notify user after credential login", err.message);
   });
