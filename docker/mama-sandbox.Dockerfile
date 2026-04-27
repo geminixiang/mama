@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   build-essential \
   ca-certificates \
   curl \
+  file \
   git \
   gnupg \
   jq \
