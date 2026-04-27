@@ -29,7 +29,8 @@ function makeTelegramBot(overrides: Partial<TelegramBot> = {}): TelegramBot {
 function makeEvent(overrides: Partial<TelegramEvent> = {}): TelegramEvent {
   return {
     type: "message",
-    channel: "123456",
+    conversationId: "123456",
+    conversationKind: "direct",
     ts: "1001",
     user: "U001",
     text: "hello",
@@ -116,6 +117,17 @@ describe("respond() — non-threaded", () => {
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("hello");
     expect(bot.logBotResponse).toHaveBeenCalledWith("123456", "hello", "2001");
+  });
+
+  test("escapes unsupported HTML-like tokens but keeps Telegram tags", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respond("Usage: gws +read --id <ID> with <b>bold</b>");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      "Usage: gws +read --id &lt;ID&gt; with <b>bold</b>",
+    );
   });
 });
 
@@ -284,6 +296,19 @@ describe("replaceResponse()", () => {
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
     expect(posted.length).toBeLessThanOrEqual(3800);
     expect(posted).toContain("truncated");
+  });
+
+  test("replaceResponse converts HTML tables into Telegram-safe pre blocks", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.replaceResponse(
+      "<table><tr><th>Name</th></tr><tr><td>Alice</td></tr></table>",
+    );
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, expect.stringContaining("<pre>"));
+    const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
+    expect(posted).toContain("| Name  |");
+    expect(posted).toContain("| Alice |");
   });
 });
 

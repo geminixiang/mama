@@ -1,5 +1,6 @@
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { sanitizeTelegramHtml } from "./html.js";
 import type { TelegramBot, TelegramEvent } from "./bot.js";
 
 export const TELEGRAM_FORMATTING_GUIDE = `## Telegram Formatting (HTML mode)
@@ -7,45 +8,6 @@ Bold: <b>text</b>, Italic: <i>text</i>, Code: <code>code</code>, Pre: <pre>code<
 Links: <a href="url">text</a>
 Do NOT use Markdown asterisks or backtick syntax.
 Do NOT use <table> tags — they are unsupported. Use <pre> with ASCII art for tables instead.`;
-
-function htmlTableToText(tableHtml: string): string {
-  const rows: string[][] = [];
-  for (const rowMatch of tableHtml.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)) {
-    const cells: string[] = [];
-    for (const cellMatch of rowMatch[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)) {
-      cells.push(cellMatch[1].replace(/<[^>]+>/g, "").trim());
-    }
-    if (cells.length > 0) rows.push(cells);
-  }
-
-  if (rows.length === 0) return "";
-
-  const numCols = Math.max(...rows.map((r) => r.length));
-  const colWidths: number[] = Array(numCols).fill(0);
-  for (const row of rows) {
-    for (let i = 0; i < row.length; i++) {
-      colWidths[i] = Math.max(colWidths[i], (row[i] ?? "").length);
-    }
-  }
-
-  const sep = "+" + colWidths.map((w) => "-".repeat(w + 2)).join("+") + "+";
-  const lines: string[] = [sep];
-  for (let i = 0; i < rows.length; i++) {
-    const cells = colWidths.map((w, j) => ` ${(rows[i][j] ?? "").padEnd(w)} `);
-    lines.push("|" + cells.join("|") + "|");
-    if (i === 0) lines.push(sep);
-  }
-  lines.push(sep);
-  return lines.join("\n");
-}
-
-function sanitizeTelegramHtml(text: string): string {
-  if (!text.includes("<table")) return text;
-  return text.replace(/<table[\s\S]*?<\/table>/gi, (tableHtml) => {
-    const ascii = htmlTableToText(tableHtml);
-    return ascii ? `<pre>${ascii}</pre>` : "";
-  });
-}
 
 async function notifyError(
   bot: TelegramBot,
@@ -83,12 +45,14 @@ export function createTelegramAdapters(
     }
   }
 
-  const chatId = parseInt(event.channel);
+  const conversationId = event.conversationId;
+  const chatId = parseInt(conversationId);
   const replyToId = event.thread_ts ? parseInt(event.thread_ts) : null;
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`,
+    conversationKind: event.conversationKind,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -116,7 +80,7 @@ export function createTelegramAdapters(
 
   async function sendOrUpdate(displayText: string): Promise<void> {
     if (messageId !== null) {
-      await bot.updateMessage(event.channel, String(messageId), displayText);
+      await bot.updateMessage(conversationId, String(messageId), displayText);
     } else if (replyToId !== null) {
       messageId = await bot.postReply(chatId, replyToId, displayText);
     } else {
@@ -133,7 +97,7 @@ export function createTelegramAdapters(
           const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
           await sendOrUpdate(displayText);
           if (messageId !== null) {
-            bot.logBotResponse(event.channel, text, String(messageId));
+            bot.logBotResponse(conversationId, text, String(messageId));
           }
         } catch (err) {
           await notifyError(bot, chatId, "respond", err);
@@ -174,7 +138,7 @@ export function createTelegramAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await bot.uploadFile(event.channel, filePath, title);
+      await bot.uploadFile(conversationId, filePath, title);
     },
 
     deleteResponse: async () => {

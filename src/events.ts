@@ -11,7 +11,7 @@ import {
 } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
-import type { Bot, BotEvent } from "./adapter.js";
+import type { Bot, BotEvent, ConversationKind } from "./adapter.js";
 import * as log from "./log.js";
 
 // ============================================================================
@@ -21,14 +21,19 @@ import * as log from "./log.js";
 export interface ImmediateEvent {
   type: "immediate";
   platform: string;
-  channelId: string;
+  conversationId: string;
+  conversationKind: ConversationKind;
+  /** Creator userId — routes tool execution to that user's vault selection when fired. */
+  userId?: string;
   text: string;
 }
 
 export interface OneShotEvent {
   type: "one-shot";
   platform: string;
-  channelId: string;
+  conversationId: string;
+  conversationKind: ConversationKind;
+  userId?: string;
   text: string;
   at: string; // ISO 8601 with timezone offset
 }
@@ -36,7 +41,9 @@ export interface OneShotEvent {
 export interface PeriodicEvent {
   type: "periodic";
   platform: string;
-  channelId: string;
+  conversationId: string;
+  conversationKind: ConversationKind;
+  userId?: string;
   text: string;
   schedule: string; // cron syntax
   timezone: string; // IANA timezone
@@ -47,7 +54,8 @@ export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
 export interface PeriodicEventInfo {
   filename: string;
   platform: string;
-  channelId: string;
+  conversationId: string;
+  conversationKind: ConversationKind;
   text: string;
   schedule: string;
   timezone: string;
@@ -149,7 +157,8 @@ export class EventsWatcher {
         results.push({
           filename,
           platform: data.platform,
-          channelId: data.channelId,
+          conversationId: data.conversationId,
+          conversationKind: data.conversationKind,
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
@@ -275,16 +284,35 @@ export class EventsWatcher {
 
   private parseEvent(content: string, filename: string): MamaEvent | null {
     const data = JSON.parse(content);
+    const conversationId =
+      typeof data.conversationId === "string"
+        ? data.conversationId
+        : typeof data.channelId === "string"
+          ? data.channelId
+          : undefined;
 
-    if (!data.type || !data.channelId || !data.text) {
-      throw new Error(`Missing required fields (type, channelId, text) in ${filename}`);
+    if (!data.type || !conversationId || !data.text) {
+      throw new Error(`Missing required fields (type, conversationId, text) in ${filename}`);
     }
 
     const platform = this.resolvePlatform(data.platform, filename);
+    const conversationKind = this.resolveConversationKind(
+      platform,
+      conversationId,
+      data.conversationKind,
+    );
+    const userId = typeof data.userId === "string" ? data.userId : undefined;
 
     switch (data.type) {
       case "immediate":
-        return { type: "immediate", platform, channelId: data.channelId, text: data.text };
+        return {
+          type: "immediate",
+          platform,
+          conversationId,
+          conversationKind,
+          userId,
+          text: data.text,
+        };
 
       case "one-shot":
         if (!data.at) {
@@ -293,7 +321,9 @@ export class EventsWatcher {
         return {
           type: "one-shot",
           platform,
-          channelId: data.channelId,
+          conversationId,
+          conversationKind,
+          userId,
           text: data.text,
           at: data.at,
         };
@@ -308,7 +338,9 @@ export class EventsWatcher {
         return {
           type: "periodic",
           platform,
-          channelId: data.channelId,
+          conversationId,
+          conversationKind,
+          userId,
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
@@ -339,6 +371,26 @@ export class EventsWatcher {
     throw new Error(
       `Missing required field 'platform' in ${filename}. Available platforms: ${availablePlatforms.join(", ")}`,
     );
+  }
+
+  private resolveConversationKind(
+    platform: string,
+    conversationId: string,
+    conversationKindValue: unknown,
+  ): ConversationKind {
+    if (conversationKindValue === "direct" || conversationKindValue === "shared") {
+      return conversationKindValue;
+    }
+
+    if (platform === "slack") {
+      return conversationId.startsWith("D") ? "direct" : "shared";
+    }
+
+    if (platform === "telegram") {
+      return conversationId.startsWith("-") ? "shared" : "direct";
+    }
+
+    return "shared";
   }
 
   private handleImmediate(filename: string, event: ImmediateEvent): void {
@@ -429,13 +481,17 @@ export class EventsWatcher {
       return;
     }
 
-    // Create synthetic BotEvent - use channelId as ts for stable session key
+    // Create synthetic BotEvent. Keep a stable conversation session key so recurring
+    // reminders share context, but use a unique synthetic message id because
+    // some adapters treat ts/message id as a reply target.
     const syntheticEvent: BotEvent = {
       type: "mention",
-      channel: event.channelId,
-      user: "EVENT",
+      conversationId: event.conversationId,
+      conversationKind: event.conversationKind,
+      user: event.userId ?? "EVENT",
       text: message,
-      ts: event.channelId, // Stable key: same channel uses same ts for all events
+      ts: `event:${filename}`,
+      sessionKey: event.conversationId,
     };
 
     // Enqueue for processing

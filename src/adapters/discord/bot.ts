@@ -27,6 +27,7 @@ import { spawn } from "child_process";
 
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -166,14 +167,15 @@ export class DiscordBot implements Bot {
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const conversationId = event.conversationId;
+    const queue = this.getQueue(conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
       const adapters = createDiscordAdapters(event as DiscordEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
@@ -307,16 +309,15 @@ export class DiscordBot implements Bot {
   }
 
   /**
-   * Process attachments from a Discord message
-   * Downloads files in background and returns metadata
-   * Returns format compatible with ChatMessage: { name: string, localPath: string }[]
+   * Process attachments from a Discord message.
+   * Downloads files before returning so the agent can read them immediately.
    */
-  processAttachments(
+  async processAttachments(
     channelId: string,
     attachments: Collection<string, Attachment>,
     _messageId: string,
-  ): { name: string; localPath: string }[] {
-    const result: { name: string; localPath: string }[] = [];
+  ): Promise<{ name: string; localPath: string }[]> {
+    const downloads: Array<Promise<{ name: string; localPath: string } | null>> = [];
 
     // Discord attachments Collection - iterate over values
     for (const attachment of attachments.values()) {
@@ -325,25 +326,30 @@ export class DiscordBot implements Bot {
         continue;
       }
 
-      // Generate local filename
       const ts = Date.now();
       const sanitizedName = attachment.name.replace(/[^a-zA-Z0-9._-]/g, "_");
       const filename = `${ts}_${sanitizedName}`;
       const localPath = `${channelId}/attachments/${filename}`;
       const fullDir = join(this.workingDir, channelId, "attachments");
-
-      result.push({
+      const result = {
         name: attachment.name,
-        localPath: localPath,
-      });
+        localPath,
+      };
 
-      // Download in background (fire and forget)
-      this.downloadAttachment(fullDir, filename, attachment.url).catch((err) => {
-        log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
-      });
+      downloads.push(
+        this.downloadAttachment(fullDir, filename, attachment.url)
+          .then(() => result)
+          .catch((err) => {
+            log.logWarning(`Failed to download Discord attachment`, `${filename}: ${err}`);
+            return null;
+          }),
+      );
     }
 
-    return result;
+    const results = await Promise.all(downloads);
+    return results.filter(
+      (attachment): attachment is { name: string; localPath: string } => attachment !== null,
+    );
   }
 
   /**
@@ -531,14 +537,15 @@ export class DiscordBot implements Bot {
 
       const cleanedText = this.stripBotMention(msg.content);
 
-      // Process attachments (download in background)
-      const processedAttachments = this.processAttachments(channelId, msg.attachments, msgId);
+      const processedAttachments = await this.processAttachments(channelId, msg.attachments, msgId);
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
-        channel: channelId,
+        conversationId: channelId,
+        conversationKind: isDM ? "direct" : "shared",
         ts: msgId,
         thread_ts: threadTs,
+        sessionKey,
         user: userId,
         userName,
         text: cleanedText,
@@ -561,13 +568,13 @@ export class DiscordBot implements Bot {
         if (this.handler.isRunning(sessionKey)) {
           this.handler.handleStop(sessionKey, channelId, this);
         } else {
-          await this.postMessage(channelId, "_Nothing running_");
+          await this.postMessage(channelId, formatNothingRunning("discord"));
         }
         return;
       }
 
       if (this.handler.isRunning(sessionKey)) {
-        await this.postMessage(channelId, "_Already working. Say `stop` to cancel._");
+        await this.postMessage(channelId, formatAlreadyWorking("discord", "stop"));
       } else {
         this.getQueue(sessionKey).enqueue(() => {
           const adapters = createDiscordAdapters(event, this, false);

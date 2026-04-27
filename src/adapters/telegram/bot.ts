@@ -3,7 +3,9 @@ import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
+import { escapeTelegramHtml } from "./html.js";
 
 // ============================================================================
 // Types
@@ -19,6 +21,7 @@ interface MessageContext {
   text: string;
   chatId: string;
   chatType: string;
+  conversationKind: "direct" | "shared";
   userId: string;
   userName: string;
   msgId: string;
@@ -63,6 +66,10 @@ class ChannelQueue {
 // TelegramBot
 // ============================================================================
 
+function isTelegramHtmlParseError(message: string): boolean {
+  return message.includes("can't parse entities");
+}
+
 export class TelegramBot implements Bot {
   private client: GrammyBot;
   private handler: BotHandler;
@@ -96,6 +103,7 @@ export class TelegramBot implements Bot {
     await this.client.api.setMyCommands([
       { command: "start", description: "Welcome message" },
       { command: "help", description: "Show available commands" },
+      { command: "login", description: "Store credentials in your private vault" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
     ]);
@@ -123,21 +131,33 @@ export class TelegramBot implements Bot {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes("message is not modified")) {
+      if (msg.includes("message is not modified")) {
+        return;
+      }
+      if (!isTelegramHtmlParseError(msg)) {
         throw err;
       }
+      await this.client.api.editMessageText(
+        parseInt(channel),
+        parseInt(ts),
+        escapeTelegramHtml(text),
+        {
+          parse_mode: "HTML",
+        },
+      );
     }
   }
 
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const conversationId = event.conversationId;
+    const queue = this.getQueue(conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
       const adapters = createTelegramAdapters(event as TelegramEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
@@ -160,8 +180,19 @@ export class TelegramBot implements Bot {
   // ==========================================================================
 
   async postMessageRaw(chatId: number, text: string): Promise<number> {
-    const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
-    return result.message_id;
+    try {
+      const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
+      return result.message_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isTelegramHtmlParseError(msg)) {
+        throw err;
+      }
+      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+        parse_mode: "HTML",
+      });
+      return result.message_id;
+    }
   }
 
   async postPlainMessage(chatId: number, text: string): Promise<void> {
@@ -169,11 +200,23 @@ export class TelegramBot implements Bot {
   }
 
   async postReply(chatId: number, replyToMessageId: number, text: string): Promise<number> {
-    const result = await this.client.api.sendMessage(chatId, text, {
-      parse_mode: "HTML",
-      reply_parameters: { message_id: replyToMessageId },
-    });
-    return result.message_id;
+    try {
+      const result = await this.client.api.sendMessage(chatId, text, {
+        parse_mode: "HTML",
+        reply_parameters: { message_id: replyToMessageId },
+      });
+      return result.message_id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!isTelegramHtmlParseError(msg)) {
+        throw err;
+      }
+      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+        parse_mode: "HTML",
+        reply_parameters: { message_id: replyToMessageId },
+      });
+      return result.message_id;
+    }
   }
 
   async deleteMessageRaw(chatId: number, messageId: number): Promise<void> {
@@ -317,12 +360,24 @@ export class TelegramBot implements Bot {
     const msgId = String(msg.message_id);
     const replyToId = msg.reply_to_message?.message_id;
     const threadTs = replyToId ? String(replyToId) : undefined;
+    const conversationKind = chatType === "private" ? "direct" : "shared";
 
     // Private chats: single session per chat (no per-message splitting)
     // Groups: per-thread sessions (use reply chain or unique message id)
     const sessionKey = chatType === "private" ? chatId : `${chatId}:${threadTs ?? msgId}`;
 
-    return { msg, text, chatId, chatType, userId, userName, msgId, threadTs, sessionKey };
+    return {
+      msg,
+      text,
+      chatId,
+      chatType,
+      conversationKind,
+      userId,
+      userName,
+      msgId,
+      threadTs,
+      sessionKey,
+    };
   }
 
   private isAddressedToBot(text: string, chatType: string): boolean {
@@ -334,6 +389,25 @@ export class TelegramBot implements Bot {
   private cleanText(text: string): string {
     if (!this.botUsername) return text.trim();
     return text.replace(new RegExp(`@${this.botUsername}`, "gi"), "").trim();
+  }
+
+  private isStopText(text: string): boolean {
+    return /^\/?stop(?:@\w+)?$/i.test(text.trim());
+  }
+
+  private resolveStopTarget(mc: MessageContext): string | null {
+    if (this.handler.isRunning(mc.sessionKey)) return mc.sessionKey;
+
+    if (this.handler.isRunning(mc.chatId)) return mc.chatId;
+
+    if (mc.chatType === "private") return null;
+
+    const runningInChat = this.handler
+      .getRunningSessions()
+      .map((session) => session.sessionKey)
+      .filter((sessionKey) => sessionKey === mc.chatId || sessionKey.startsWith(`${mc.chatId}:`));
+
+    return runningInChat.length === 1 ? runningInChat[0] : null;
   }
 
   private setupEventHandlers(): void {
@@ -352,6 +426,7 @@ export class TelegramBot implements Bot {
           "/new — Reset conversation history and start fresh",
           "/stop — Stop the current conversation",
           "/help — Show available commands",
+          "/login — Store credentials in your private vault",
         ].join("\n"),
       );
     });
@@ -366,6 +441,7 @@ export class TelegramBot implements Bot {
           "",
           "/start — Welcome message",
           "/help — Show this help",
+          "/login — Store credentials in your private vault",
           "/stop — Stop ongoing conversation",
           "/new — Reset conversation history and start fresh",
           "",
@@ -377,10 +453,11 @@ export class TelegramBot implements Bot {
     this.client.command("stop", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      if (this.handler.isRunning(mc.sessionKey)) {
-        await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
+      const stopTarget = this.resolveStopTarget(mc);
+      if (stopTarget) {
+        await this.handler.handleStop(stopTarget, mc.chatId, this);
       } else {
-        await this.postMessage(mc.chatId, "Nothing running.");
+        await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
       }
     });
 
@@ -396,17 +473,39 @@ export class TelegramBot implements Bot {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
 
-      // In groups, only respond when addressed to bot
-      if (!this.isAddressedToBot(mc.text, mc.chatType)) return;
-
       const cleanedText = this.cleanText(mc.text);
+      const addressedToBot = this.isAddressedToBot(mc.text, mc.chatType);
+
+      if (this.isStopText(cleanedText)) {
+        this.logToFile(mc.chatId, {
+          date: new Date(mc.msg.date * 1000).toISOString(),
+          ts: mc.msgId,
+          user: mc.userId,
+          userName: mc.userName,
+          text: cleanedText,
+          attachments: [],
+          isBot: false,
+        });
+
+        const stopTarget = this.resolveStopTarget(mc);
+        if (stopTarget) {
+          await this.handler.handleStop(stopTarget, mc.chatId, this);
+        } else if (addressedToBot || mc.chatType === "private") {
+          await this.postMessage(mc.chatId, formatNothingRunning("telegram"));
+        }
+        return;
+      }
+
+      // In groups, only respond when addressed to bot
+      if (!addressedToBot) return;
 
       // Process attachments
       const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);
 
       const event: TelegramEvent = {
         type: "message",
-        channel: mc.chatId,
+        conversationId: mc.chatId,
+        conversationKind: mc.conversationKind,
         ts: mc.msgId,
         thread_ts: mc.threadTs,
         sessionKey: mc.sessionKey,
@@ -427,18 +526,8 @@ export class TelegramBot implements Bot {
         isBot: false,
       });
 
-      // Handle bare "stop" text (backward compat)
-      if (cleanedText.toLowerCase() === "stop") {
-        if (this.handler.isRunning(mc.sessionKey)) {
-          await this.handler.handleStop(mc.sessionKey, mc.chatId, this);
-        } else {
-          await this.postMessage(mc.chatId, "Nothing running.");
-        }
-        return;
-      }
-
       if (this.handler.isRunning(mc.sessionKey)) {
-        await this.postMessage(mc.chatId, "Already working. Say <code>/stop</code> to cancel.");
+        await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));
       } else {
         this.getQueue(mc.sessionKey).enqueue(() => {
           const adapters = createTelegramAdapters(event, this, false);

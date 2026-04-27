@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { homedir } from "os";
+import { dirname, join, resolve } from "path";
 
 export interface AgentConfig {
   provider: string;
@@ -9,6 +10,8 @@ export interface AgentConfig {
   logFormat?: "console" | "json";
   logLevel?: "trace" | "debug" | "info" | "warn" | "error";
   sentryDsn?: string;
+  sandboxCpus?: string;
+  sandboxMemory?: string;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -20,11 +23,9 @@ const DEFAULTS: AgentConfig = {
   logLevel: "info",
 };
 
-function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
-  const settingsPath = join(workspaceDir, "settings.json");
-
+function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined {
   if (!existsSync(settingsPath)) {
-    return {};
+    return undefined;
   }
 
   try {
@@ -34,7 +35,29 @@ function loadRawAgentConfig(workspaceDir: string): Partial<AgentConfig> {
       return parsed as Partial<AgentConfig>;
     }
   } catch {
-    // Ignore parse errors, fall through to env/defaults
+    // Ignore parse errors, fall through to next candidate
+  }
+
+  return undefined;
+}
+
+function getConfiguredStateDir(): string | undefined {
+  const raw = process.env.MAMA_STATE_DIR?.trim();
+  return raw ? resolve(raw) : undefined;
+}
+
+function loadRawAgentConfig(workspaceDir?: string): Partial<AgentConfig> {
+  const stateDir = getConfiguredStateDir();
+  const candidates = [
+    ...(stateDir ? [join(stateDir, "settings.json")] : []),
+    ...(workspaceDir ? [join(workspaceDir, "settings.json")] : []),
+  ];
+
+  for (const settingsPath of candidates) {
+    const config = loadConfigFile(settingsPath);
+    if (config) {
+      return config;
+    }
   }
 
   return {};
@@ -50,15 +73,27 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
   const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
+  const sandboxCpus = fromFile.sandboxCpus;
+  const sandboxMemory = fromFile.sandboxMemory;
 
-  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel, sentryDsn };
+  return {
+    provider,
+    model,
+    thinkingLevel,
+    sessionScope,
+    logFormat,
+    logLevel,
+    sentryDsn,
+    sandboxCpus,
+    sandboxMemory,
+  };
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
 
-    if (arg === "--sandbox" || arg === "--download") {
+    if (arg === "--sandbox" || arg === "--download" || arg === "--state-dir") {
       i += 1;
       continue;
     }
@@ -67,7 +102,11 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
       continue;
     }
 
-    if (arg.startsWith("--sandbox=") || arg.startsWith("--download=")) {
+    if (
+      arg.startsWith("--sandbox=") ||
+      arg.startsWith("--download=") ||
+      arg.startsWith("--state-dir=")
+    ) {
       continue;
     }
 
@@ -79,15 +118,38 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
   return undefined;
 }
 
-export function resolveSentryDsn(workspaceDir?: string): string | undefined {
-  if (workspaceDir) {
-    const fromFile = loadRawAgentConfig(workspaceDir);
-    if (fromFile.sentryDsn) {
-      return fromFile.sentryDsn;
+export function resolveStateDirFromArgv(args = process.argv.slice(2)): string {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--state-dir=")) {
+      return resolve(arg.slice("--state-dir=".length));
+    }
+    if (arg === "--state-dir") {
+      return resolve(args[++i] || "");
     }
   }
 
+  return join(homedir(), ".mama");
+}
+
+export function resolveSentryDsn(workspaceDir?: string): string | undefined {
+  const fromFile = loadRawAgentConfig(workspaceDir);
+  if (fromFile.sentryDsn) {
+    return fromFile.sentryDsn;
+  }
+
   return process.env.SENTRY_DSN;
+}
+
+/**
+ * Externally-visible base URL of the link/OAuth server, e.g.
+ * `https://mama.example.com` (no trailing slash). Read from `MOM_LINK_URL`,
+ * the same env var the bot uses to build credential onboarding links.
+ */
+export function resolveLinkBaseUrl(): string | undefined {
+  const raw = process.env.MOM_LINK_URL?.trim();
+  if (!raw) return undefined;
+  return raw.replace(/\/+$/, "");
 }
 
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {

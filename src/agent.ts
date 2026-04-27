@@ -6,6 +6,7 @@ import {
   convertToLlm,
   DefaultResourceLoader,
   formatSkillsForPrompt,
+  getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
   SessionManager,
@@ -15,18 +16,27 @@ import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
-import type { ChatMessage, ChatResponseContext, PlatformInfo } from "./adapter.js";
+import type {
+  ChatMessage,
+  ChatResponseContext,
+  ConversationKind,
+  PlatformInfo,
+} from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
-import { createExecutor, type SandboxConfig } from "./sandbox.js";
+import type { UserBindingStore } from "./bindings.js";
+import type { DockerContainerManager } from "./provisioner.js";
+import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
+import type { VaultManager } from "./vault.js";
 import {
   createManagedSessionFileAtPath,
   extractSessionSuffix,
   extractSessionUuid,
   forkThreadSessionFile,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
   resolveChannelSessionFile,
@@ -35,13 +45,6 @@ import {
 } from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
 import * as Sentry from "@sentry/node";
-
-export interface PendingMessage {
-  userName: string;
-  text: string;
-  attachments: { local: string }[];
-  timestamp: number;
-}
 
 export interface AgentRunner {
   run(
@@ -66,11 +69,11 @@ function getImageMimeType(filename: string): string | undefined {
   return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-async function getMemory(channelDir: string): Promise<string> {
+async function getMemory(conversationDir: string): Promise<string> {
   const parts: string[] = [];
 
-  // Read workspace-level memory (shared across all channels)
-  const workspaceMemoryPath = join(channelDir, "..", "MEMORY.md");
+  // Read workspace-level memory (shared across all conversations)
+  const workspaceMemoryPath = join(conversationDir, "..", "MEMORY.md");
   if (existsSync(workspaceMemoryPath)) {
     try {
       const content = (await readFile(workspaceMemoryPath, "utf-8")).trim();
@@ -82,16 +85,16 @@ async function getMemory(channelDir: string): Promise<string> {
     }
   }
 
-  // Read channel-specific memory
-  const channelMemoryPath = join(channelDir, "MEMORY.md");
-  if (existsSync(channelMemoryPath)) {
+  // Read conversation-specific memory
+  const conversationMemoryPath = join(conversationDir, "MEMORY.md");
+  if (existsSync(conversationMemoryPath)) {
     try {
-      const content = (await readFile(channelMemoryPath, "utf-8")).trim();
+      const content = (await readFile(conversationMemoryPath, "utf-8")).trim();
       if (content) {
-        parts.push(`### Channel-Specific Memory\n${content}`);
+        parts.push(`### Conversation-Specific Memory\n${content}`);
       }
     } catch (error) {
-      log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
+      log.logWarning("Failed to read conversation memory", `${conversationMemoryPath}: ${error}`);
     }
   }
 
@@ -102,13 +105,13 @@ async function getMemory(channelDir: string): Promise<string> {
   return parts.join("\n\n");
 }
 
-function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
+function loadMamaSkills(conversationDir: string, workspacePath: string): Skill[] {
   const skillMap = new Map<string, Skill>();
 
-  // channelDir is the host path (e.g., /Users/.../data/C0A34FL8PMH)
+  // conversationDir is the host path (e.g., /Users/.../data/C0A34FL8PMH)
   // hostWorkspacePath is the parent directory on host
   // workspacePath is the container path (e.g., /workspace)
-  const hostWorkspacePath = join(channelDir, "..");
+  const hostWorkspacePath = join(conversationDir, "..");
 
   // Helper to translate host paths to container paths
   const translatePath = (hostPath: string): string => {
@@ -127,9 +130,9 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
     skillMap.set(skill.name, skill);
   }
 
-  // Load channel-specific skills (override workspace skills on collision)
-  const channelSkillsDir = join(channelDir, "skills");
-  for (const skill of loadSkillsFromDir({ dir: channelSkillsDir, source: "channel" }).skills) {
+  // Load conversation-specific skills (override workspace skills on collision)
+  const conversationSkillsDir = join(conversationDir, "skills");
+  for (const skill of loadSkillsFromDir({ dir: conversationSkillsDir, source: "channel" }).skills) {
     skill.filePath = translatePath(skill.filePath);
     skill.baseDir = translatePath(skill.baseDir);
     skillMap.set(skill.name, skill);
@@ -140,14 +143,17 @@ function loadMamaSkills(channelDir: string, workspacePath: string): Skill[] {
 
 function buildSystemPrompt(
   workspacePath: string,
-  channelId: string,
+  conversationId: string,
+  conversationKind: ConversationKind,
+  currentUserId: string | undefined,
   memory: string,
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
 ): string {
-  const channelPath = `${workspacePath}/${channelId}`;
-  const isDocker = sandboxConfig.type === "docker";
+  const conversationPath = `${workspacePath}/${conversationId}`;
+  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
+  const isImageSandbox = sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
 
   // Format channel mappings
@@ -162,17 +168,22 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isDocker
-    ? `You are running inside a Docker container (Alpine Linux).
+  const envDescription = isImageSandbox
+    ? `You are running inside a managed per-user container.
 - Bash working directory: / (use cd or absolute paths)
-- Install tools with: apk add <package>
+- Install tools with the image's package manager
+- Your changes persist for this user's container until it is recreated`
+    : isContainer
+      ? `You are running inside a shared container.
+- Bash working directory: / (use cd or absolute paths)
+- Install tools with the container's package manager
 - Your changes persist across sessions`
-    : isFirecracker
-      ? `You are running inside a Firecracker microVM.
+      : isFirecracker
+        ? `You are running inside a Firecracker microVM.
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apt-get install <package> (Debian-based)
 - Your changes persist across sessions`
-      : `You are running directly on the host machine.
+        : `You are running directly on the host machine.
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
@@ -198,20 +209,20 @@ ${envDescription}
 
 ## Workspace Layout
 ${workspacePath}/
-├── MEMORY.md                    # Global memory (all channels)
+├── MEMORY.md                    # Global memory (all conversations)
 ├── skills/                      # Global CLI tools you create
-└── ${channelId}/                # This channel
-    ├── MEMORY.md                # Channel-specific memory
+└── ${conversationId}/           # This conversation
+    ├── MEMORY.md                # Conversation-specific memory
     ├── log.jsonl                # Message history (no tool results)
     ├── attachments/             # User-shared files
     ├── scratch/                 # Your working directory
-    └── skills/                  # Channel-specific tools
+    └── skills/                  # Conversation-specific tools
 
 ## Skills (Custom CLI Tools)
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
 
 ### Creating Skills
-Store in \`${workspacePath}/skills/<name>/\` (global) or \`${channelPath}/skills/<name>/\` (channel-specific).
+Store in \`${workspacePath}/skills/<name>/\` (global) or \`${conversationPath}/skills/<name>/\` (conversation-specific).
 Each skill directory needs a \`SKILL.md\` with YAML frontmatter:
 
 \`\`\`markdown
@@ -238,17 +249,17 @@ You can schedule events that wake you up at specific times or when external thin
 
 **Immediate** - Triggers as soon as harness sees the file. Use in scripts/webhooks to signal external events.
 \`\`\`json
-{"type": "immediate", "platform": "${platform.name}", "channelId": "${channelId}", "text": "New GitHub issue opened"}
+{"type": "immediate", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "New GitHub issue opened"}
 \`\`\`
 
 **One-shot** - Triggers once at a specific time. Use for reminders.
 \`\`\`json
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Remind Mario about dentist", "at": "2025-12-15T09:00:00+01:00"}
 \`\`\`
 
 **Periodic** - Triggers on a cron schedule. Use for recurring tasks.
 \`\`\`json
-{"type": "periodic", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
+{"type": "periodic", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Check inbox and summarize", "schedule": "0 9 * * 1-5", "timezone": "${Intl.DateTimeFormat().resolvedOptions().timeZone}"}
 \`\`\`
 
 ### Cron Format
@@ -261,14 +272,18 @@ You can schedule events that wake you up at specific times or when external thin
 ### Timezones
 All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events use IANA timezone names. The harness runs in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. When users mention times without timezone, assume ${Intl.DateTimeFormat().resolvedOptions().timeZone}.
 
-### Platform Routing
+### Platform and Credential Routing
 Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
+
+Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single shared vault.
+
+Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`conversationId\`, \`conversationKind\`, and \`userId\` for the current conversation automatically.
 
 ### Creating Events
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
 cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "platform": "${platform.name}", "channelId": "${channelId}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+{"type": "one-shot", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
@@ -297,7 +312,7 @@ Maximum 5 events can be queued. Don't create excessive immediate or periodic eve
 ## Memory
 Write to MEMORY.md files to persist context across conversations.
 - Global (${workspacePath}/MEMORY.md): skills, preferences, project info
-- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work
+- Conversation (${conversationPath}/MEMORY.md): conversation-specific decisions, ongoing work
 Update when you learn something important or when asked to remember something.
 
 ### Current Memory
@@ -305,7 +320,7 @@ ${memory}
 
 ## System Configuration Log
 Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
-- Installed packages (apk add, npm install, pip install)
+- Installed packages (apt install, npm install, uv pip install)
 - Environment variables set
 - Config files modified (~/.gitconfig, cron jobs, etc.)
 - Skill dependencies installed
@@ -315,7 +330,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
-${isDocker ? "Install jq: apk add jq" : ""}
+${isContainer ? "Install jq: apt-get install jq" : ""}
 ${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
@@ -414,9 +429,12 @@ function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>
 export async function createRunner(
   sandboxConfig: SandboxConfig,
   sessionKey: string,
-  channelId: string,
-  channelDir: string,
+  conversationId: string,
+  conversationDir: string,
   workspaceDir: string,
+  vaultManager?: VaultManager,
+  bindingStore?: UserBindingStore,
+  provisioner?: DockerContainerManager,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
 
@@ -426,11 +444,36 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executor = createExecutor(sandboxConfig);
-  const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
+  const executionResolver =
+    vaultManager &&
+    sandboxConfig.type !== "host" &&
+    (vaultManager.isEnabled() ||
+      !!bindingStore ||
+      sandboxConfig.type === "container" ||
+      sandboxConfig.type === "image")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
+      : undefined;
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
+  };
+  const workspaceBase = conversationDir.replace(`/${conversationId}`, "");
+  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  let workspacePath = getWorkspacePath();
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction } = createMamaTools(executor);
+  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -439,8 +482,8 @@ export async function createRunner(
   const model = (getModel as any)(agentConfig.provider, agentConfig.model);
 
   // Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
-  const memory = await getMemory(channelDir);
-  const skills = loadMamaSkills(channelDir, workspacePath);
+  const memory = await getMemory(conversationDir);
+  const skills = loadMamaSkills(conversationDir, workspacePath);
   const emptyPlatform: PlatformInfo = {
     name: "slack",
     formattingGuide: "",
@@ -449,7 +492,9 @@ export async function createRunner(
   };
   const systemPrompt = buildSystemPrompt(
     workspacePath,
-    channelId,
+    conversationId,
+    "shared",
+    undefined,
     memory,
     sandboxConfig,
     emptyPlatform,
@@ -457,49 +502,49 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager
-  // Channel sessions use {channelDir}/sessions/current.
-  // Thread sessions use fixed files: {channelDir}/sessions/{threadTs}.jsonl
-  const sessionDir = getSessionDir(channelDir, sessionKey);
+  // Conversation sessions use {conversationDir}/sessions/current.
+  // Thread sessions use fixed files: {conversationDir}/sessions/{threadTs}.jsonl
+  const sessionDir = getChannelSessionDir(conversationDir);
   const isThread = sessionKey.includes(":");
 
   let sessionManager!: SessionManager;
   let contextFile!: string;
 
   if (isThread) {
-    const threadFile = getThreadSessionFile(channelDir, sessionKey);
+    const threadFile = getThreadSessionFile(conversationDir, sessionKey);
     const existing = tryResolveThreadSession(threadFile);
     if (existing) {
       contextFile = existing;
-      sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+      sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
     } else {
-      const channelSource = resolveChannelSessionFile(channelDir);
-      if (channelSource) {
+      const conversationSource = resolveChannelSessionFile(conversationDir);
+      if (conversationSource) {
         try {
-          contextFile = forkThreadSessionFile(channelSource, threadFile, channelDir);
-          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+          contextFile = forkThreadSessionFile(conversationSource, threadFile, conversationDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
         } catch {
-          contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
-          sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+          contextFile = createManagedSessionFileAtPath(threadFile, conversationDir);
+          sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
         }
       } else {
-        contextFile = createManagedSessionFileAtPath(threadFile, channelDir);
-        sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+        contextFile = createManagedSessionFileAtPath(threadFile, conversationDir);
+        sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
       }
     }
   } else {
-    // Channel/DM session: normal resolve
-    contextFile = resolveManagedSessionFile(sessionDir, channelDir);
-    sessionManager = openManagedSession(contextFile, sessionDir, channelDir);
+    // Direct/shared session: normal resolve
+    contextFile = resolveManagedSessionFile(sessionDir, conversationDir);
+    sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
   }
   const sessionUuid = extractSessionUuid(contextFile);
   // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
   const rootTs = extractSessionSuffix(sessionKey);
-  const settingsManager = createMamaSettingsManager(join(channelDir, ".."));
+  const settingsManager = createMamaSettingsManager(join(conversationDir, ".."));
 
   // Create AuthStorage and ModelRegistry
   // Auth stored outside workspace so agent can't access it
   const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
-  const modelRegistry = new ModelRegistry(authStorage);
+  const modelRegistry = ModelRegistry.create(authStorage);
 
   // Create agent
   const agent = new Agent({
@@ -524,9 +569,9 @@ export async function createRunner(
   // Load existing messages
   const loadedSession = sessionManager.buildSessionContext();
   if (loadedSession.messages.length > 0) {
-    agent.replaceMessages(loadedSession.messages);
+    agent.state.messages = loadedSession.messages;
     log.logInfo(
-      `[${channelId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
+      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
     );
   }
 
@@ -535,6 +580,7 @@ export async function createRunner(
   // and discovers resources from standard locations + npm/git packages.
   const resourceLoader = new DefaultResourceLoader({
     cwd: workspaceDir,
+    agentDir: getAgentDir(),
     systemPrompt,
   });
   try {
@@ -542,14 +588,14 @@ export async function createRunner(
     const extResult = resourceLoader.getExtensions();
     if (extResult.errors.length > 0) {
       for (const err of extResult.errors) {
-        log.logWarning(`[${channelId}] Extension load error: ${err.path}`, err.error);
+        log.logWarning(`[${conversationId}] Extension load error: ${err.path}`, err.error);
       }
     }
     log.logInfo(
-      `[${channelId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
+      `[${conversationId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
     );
   } catch (error) {
-    log.logWarning(`[${channelId}] Failed to load resources`, String(error));
+    log.logWarning(`[${conversationId}] Failed to load resources`, String(error));
   }
 
   const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
@@ -569,9 +615,9 @@ export async function createRunner(
   const runState = {
     responseCtx: null as ChatResponseContext | null,
     logCtx: null as {
-      channelId: string;
+      conversationId: string;
       userName?: string;
-      channelName?: string;
+      conversationName?: string;
       sessionId?: string;
     } | null,
     queue: null as {
@@ -606,7 +652,7 @@ export async function createRunner(
     if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
 
     const { responseCtx, logCtx, queue, pendingTools } = runState;
-    const baseAttrs = { channel_id: logCtx.channelId, session_id: logCtx.sessionId };
+    const baseAttrs = { channel_id: logCtx.conversationId, session_id: logCtx.sessionId };
 
     if (event.type === "tool_execution_start") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
@@ -852,11 +898,20 @@ export async function createRunner(
       responseCtx: ChatResponseContext,
       platform: PlatformInfo,
     ): Promise<{ stopReason: string; errorMessage?: string }> {
-      // Extract channelId from sessionKey (format: "channelId:rootTs" or just "channelId")
-      const sessionChannel = message.sessionKey.split(":")[0];
+      // Extract conversationId from sessionKey (format: "conversationId:rootTs" or just "conversationId")
+      const sessionConversation = message.sessionKey.split(":")[0];
 
-      // Ensure channel directory exists
-      await mkdir(channelDir, { recursive: true });
+      // Ensure conversation directory exists
+      await mkdir(conversationDir, { recursive: true });
+
+      if (executionResolver) {
+        executionResolver.refresh();
+        activeExecutor = await executionResolver.resolve({
+          platform: platform.name,
+          userId: message.userId,
+        });
+        workspacePath = getWorkspacePath();
+      }
 
       // Sync messages from log.jsonl that arrived while we were offline or busy
       // Exclude the current message (it will be added via prompt())
@@ -867,50 +922,64 @@ export async function createRunner(
         : { scope: "top-level" as const, rootTs };
       const syncedCount = await syncLogToSessionManager(
         sessionManager,
-        channelDir,
+        conversationDir,
         message.id,
         undefined,
         threadFilter,
       );
       if (syncedCount > 0) {
-        log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
+        log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
       }
 
       // Reload messages from context.jsonl
       // This picks up any messages synced above
       const reloadedSession = sessionManager.buildSessionContext();
       if (reloadedSession.messages.length > 0) {
-        agent.replaceMessages(reloadedSession.messages);
+        agent.state.messages = reloadedSession.messages;
         log.logInfo(
-          `[${channelId}] Reloaded ${reloadedSession.messages.length} messages from context`,
+          `[${conversationId}] Reloaded ${reloadedSession.messages.length} messages from context`,
         );
       }
 
       // Update system prompt with fresh memory, channel/user info, and skills
-      const memory = await getMemory(channelDir);
-      const skills = loadMamaSkills(channelDir, workspacePath);
+      const memory = await getMemory(conversationDir);
+      const skills = loadMamaSkills(conversationDir, workspacePath);
       const systemPrompt = buildSystemPrompt(
         workspacePath,
-        channelId,
+        conversationId,
+        message.conversationKind,
+        message.userId,
         memory,
-        sandboxConfig,
+        executor.getSandboxConfig(),
         platform,
         skills,
       );
-      session.agent.setSystemPrompt(systemPrompt);
+      session.agent.state.systemPrompt = systemPrompt;
+
+      setEventContext({
+        platform: platform.name,
+        conversationId,
+        conversationKind: message.conversationKind,
+        userId: message.userId,
+      });
 
       // Set up file upload function
       setUploadFunction(async (filePath: string, title?: string) => {
-        const hostPath = translateToHostPath(filePath, channelDir, workspacePath, channelId);
+        const hostPath = translateToHostPath(
+          filePath,
+          conversationDir,
+          workspacePath,
+          conversationId,
+        );
         await responseCtx.uploadFile(hostPath, title);
       });
 
       // Reset per-run state
       runState.responseCtx = responseCtx;
       runState.logCtx = {
-        channelId: sessionChannel,
+        conversationId: sessionConversation,
         userName: message.userName,
-        channelName: undefined,
+        conversationName: undefined,
         sessionId: sessionUuid,
       };
       runState.pendingTools.clear();
@@ -1004,7 +1073,7 @@ export async function createRunner(
       const nonImagePaths: string[] = [];
 
       for (const a of message.attachments || []) {
-        // a.localPath is the path relative to the workspace (same as old a.local)
+        // a.localPath is the path relative to the workspace.
         const fullPath = `${workspacePath}/${a.localPath}`;
         const mimeType = getImageMimeType(a.localPath);
 
@@ -1034,11 +1103,14 @@ export async function createRunner(
         newUserMessage: userMessage,
         imageAttachmentCount: imageAttachments.length,
       };
-      await writeFile(join(channelDir, "last_prompt.jsonl"), JSON.stringify(debugContext, null, 2));
+      await writeFile(
+        join(conversationDir, "last_prompt.jsonl"),
+        JSON.stringify(debugContext, null, 2),
+      );
       addLifecycleBreadcrumb("agent.prompt.sent", {
         provider: model.provider,
         model: agentConfig.model,
-        channel_id: sessionChannel,
+        channel_id: sessionConversation,
         session_id: sessionUuid,
         attachment_count: message.attachments?.length ?? 0,
         image_attachment_count: imageAttachments.length,
@@ -1120,7 +1192,7 @@ export async function createRunner(
         const runMetricAttributes = metricAttributes({
           provider: model.provider,
           model: agentConfig.model,
-          channel_id: sessionChannel,
+          channel_id: sessionConversation,
           session_id: sessionUuid,
           stop_reason: runState.stopReason,
           llm_calls: runState.llmCallCount,
@@ -1160,8 +1232,7 @@ export async function createRunner(
           `**Cost:**    $${runState.totalUsage.cost.total.toFixed(4)}`,
           `**Duration:** ${durationSecs}s`,
         ];
-        const footerText = footerLines.join("
-");
+        const footerText = footerLines.join("\n");
         runState.queue!.enqueue(
           () => responseCtx.respondInThread(footerText, { style: "muted" }),
           "usage summary",
@@ -1200,17 +1271,17 @@ export async function createRunner(
  */
 function translateToHostPath(
   containerPath: string,
-  channelDir: string,
+  conversationDir: string,
   workspacePath: string,
-  channelId: string,
+  conversationId: string,
 ): string {
   if (workspacePath === "/workspace") {
-    const prefix = `/workspace/${channelId}/`;
+    const prefix = `/workspace/${conversationId}/`;
     if (containerPath.startsWith(prefix)) {
-      return join(channelDir, containerPath.slice(prefix.length));
+      return join(conversationDir, containerPath.slice(prefix.length));
     }
     if (containerPath.startsWith("/workspace/")) {
-      return join(channelDir, "..", containerPath.slice("/workspace/".length));
+      return join(conversationDir, "..", containerPath.slice("/workspace/".length));
     }
   }
   return containerPath;

@@ -34,18 +34,21 @@ export function createDiscordAdapters(
     }
   }
 
+  const conversationId = event.conversationId;
+  const channelId = conversationId;
   const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
   const isThreaded = !!event.thread_ts;
 
   // If already in a thread, reuse it for respondInThread() calls (CoT, tool logs, summary)
   // instead of trying to create a nested thread (which Discord doesn't support)
   if (isThreaded) {
-    threadChannelId = event.channel;
+    threadChannelId = channelId;
   }
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: `${event.channel}:${event.thread_ts ?? event.ts}`,
+    sessionKey: event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`,
+    conversationKind: event.conversationKind,
     userId: event.user,
     userName: event.userName,
     text: event.text,
@@ -204,7 +207,7 @@ export function createDiscordAdapters(
    */
   async function tryCreateThread(msgId: string): Promise<void> {
     try {
-      threadChannelId = await bot.createThreadOnMessage(event.channel, msgId, buildThreadName());
+      threadChannelId = await bot.createThreadOnMessage(channelId, msgId, buildThreadName());
       // Register alias so replies in this thread resolve to the original session
       const threadSessionKey = `${threadChannelId}:${threadChannelId}`;
       bot.registerThreadAlias(threadSessionKey, message.sessionKey);
@@ -237,37 +240,35 @@ export function createDiscordAdapters(
 
           if (messageId !== null) {
             if (isWorking) {
-              await bot.updateMessageWithComponents(event.channel, messageId, firstPart, [
+              await bot.updateMessageWithComponents(channelId, messageId, firstPart, [
                 buildStopRow(),
               ]);
             } else {
-              await bot.updateMessageRaw(event.channel, messageId, firstPart);
+              await bot.updateMessageRaw(channelId, messageId, firstPart);
             }
           } else {
             stopTyping();
             if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(event.channel, event.thread_ts, firstPart);
+              messageId = await bot.postInThread(channelId, event.thread_ts, firstPart);
             } else if (isEvent) {
-              messageId = await bot.postMessage(event.channel, firstPart);
+              messageId = await bot.postMessage(channelId, firstPart);
             } else {
-              messageId = await bot.postReply(event.channel, event.ts, firstPart);
+              messageId = await bot.postReply(channelId, event.ts, firstPart);
             }
 
-            // Attach stop button to the just-posted message
             if (isWorking && messageId !== null) {
               await bot
-                .updateMessageWithComponents(event.channel, messageId, firstPart, [buildStopRow()])
+                .updateMessageWithComponents(channelId, messageId, firstPart, [buildStopRow()])
                 .catch(() => {});
             }
 
-            // Auto-create thread on the main reply (skip if already in a thread)
             if (!isThreaded) {
               await tryCreateThread(messageId);
             }
           }
 
           if (messageId !== null) {
-            bot.logBotResponse(event.channel, text, messageId);
+            bot.logBotResponse(channelId, text, messageId);
           }
 
           // Post overflow parts in thread
@@ -293,15 +294,15 @@ export function createDiscordAdapters(
           accumulatedText = firstPart;
 
           if (messageId !== null) {
-            await bot.updateMessageRaw(event.channel, messageId, firstPart);
+            await bot.updateMessageRaw(channelId, messageId, firstPart);
           } else {
             stopTyping();
             if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(event.channel, event.thread_ts, firstPart);
+              messageId = await bot.postInThread(channelId, event.thread_ts, firstPart);
             } else if (isEvent) {
-              messageId = await bot.postMessage(event.channel, firstPart);
+              messageId = await bot.postMessage(channelId, firstPart);
             } else {
-              messageId = await bot.postReply(event.channel, event.ts, firstPart);
+              messageId = await bot.postReply(channelId, event.ts, firstPart);
             }
 
             if (!isThreaded) {
@@ -309,7 +310,6 @@ export function createDiscordAdapters(
             }
           }
 
-          // Post overflow parts in thread
           if (overflowParts.length > 0 && threadChannelId !== null) {
             for (const part of overflowParts) {
               await bot.postInThread(threadChannelId, threadChannelId, part);
@@ -347,9 +347,9 @@ export function createDiscordAdapters(
     setTyping: async (isTyping: boolean) => {
       if (isTyping && typingInterval === null) {
         // Send immediately and repeat every 8s (Discord clears indicator after ~10s)
-        bot.sendTyping(event.channel).catch(() => {});
+        bot.sendTyping(channelId).catch(() => {});
         typingInterval = setInterval(() => {
-          bot.sendTyping(event.channel).catch(() => {});
+          bot.sendTyping(channelId).catch(() => {});
         }, 8000);
       } else if (!isTyping) {
         stopTyping();
@@ -364,12 +364,11 @@ export function createDiscordAdapters(
           if (messageId !== null) {
             const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
             if (isWorking) {
-              await bot.updateMessageWithComponents(event.channel, messageId, displayText, [
+              await bot.updateMessageWithComponents(channelId, messageId, displayText, [
                 buildStopRow(),
               ]);
             } else {
-              // Remove buttons when done
-              await bot.updateMessageWithComponents(event.channel, messageId, displayText, []);
+              await bot.updateMessageWithComponents(channelId, messageId, displayText, []);
             }
           }
         } catch (err) {
@@ -383,7 +382,7 @@ export function createDiscordAdapters(
     },
 
     uploadFile: async (filePath: string, title?: string) => {
-      await bot.uploadFile(event.channel, filePath, title);
+      await bot.uploadFile(channelId, filePath, title);
     },
 
     deleteResponse: async () => {
@@ -391,7 +390,7 @@ export function createDiscordAdapters(
         stopTyping();
         if (messageId !== null) {
           try {
-            await bot.deleteMessageRaw(event.channel, messageId);
+            await bot.deleteMessageRaw(channelId, messageId);
           } catch {
             // Ignore errors
           }

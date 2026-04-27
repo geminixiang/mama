@@ -47,7 +47,8 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host or inside a Docker container
+- **Sandbox execution** — run agent commands on host, in a shared container, in a managed per-user container, or in a Firecracker VM
+- **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/image/Firecracker runs
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
@@ -99,7 +100,8 @@ npm run build
    - `assistant_thread_context_changed`, `assistant_thread_started`
    - `message.channels`, `message.groups`, `message.im`
 5. Enable **Interactivity** (Settings → Interactivity & Shortcuts → toggle on).
-6. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
+6. (Optional) Add **Slash Commands** such as `/pi-login` and `/pi-new` in the Slack app settings if you want dedicated commands with less naming conflict. `/pi-new` is intended for DM use only.
+7. Copy the **App-Level Token** (`xapp-…`) and **Bot Token** (`xoxb-…`).
 
 Or import this **App Manifest** directly (Settings → App Manifest → paste JSON):
 
@@ -169,7 +171,7 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 The bot responds when `@mentioned` in any channel or via DM.
@@ -188,7 +190,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Private chats** — every message is forwarded to the bot automatically.
@@ -208,7 +210,7 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 ```bash
 export MOM_DISCORD_BOT_TOKEN=MTI...
 
-mama [--sandbox=host|docker:<container>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
 ```
 
 - **Server channels** — the bot responds when `@mentioned`.
@@ -221,12 +223,24 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 
 ## Options
 
-| Option                                 | Default | Description                                              |
-| -------------------------------------- | ------- | -------------------------------------------------------- |
-| `--sandbox=host`                       | ✓       | Run commands directly on host                            |
-| `--sandbox=docker:<name>`              |         | Run commands inside a Docker container                   |
-| `--sandbox=firecracker:<vm-id>:<path>` |         | Run commands inside a Firecracker microVM                |
-| `--download <channel-id>`              |         | Download channel history to stdout and exit (Slack only) |
+| Option                                 | Default   | Description                                                       |
+| -------------------------------------- | --------- | ----------------------------------------------------------------- |
+| `--state-dir=<dir>`                    | `~/.mama` | Store settings, credential vaults, and bindings outside workspace |
+| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected          |
+| `--sandbox=container:<name>`           |           | Run commands in an existing shared container                      |
+| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user             |
+| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                         |
+| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)          |
+
+### Sandbox and Vault Semantics
+
+- `host`: no vault env injection.
+- `container:<name>`: one container maps to one shared vault key: `container-<name>`.
+- `image:<image>`: mama creates one container per resolved vault/user and injects that vault's env and file mounts.
+- `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault.
+- `docker:*` is not supported; use `container:*` or `image:*`.
+
+See [docs/sandbox.md](docs/sandbox.md) for the full sandbox/vault behavior matrix.
 
 ### Download channel history (Slack)
 
@@ -234,9 +248,35 @@ mama [--sandbox=host|docker:<container>] <working-directory>
 mama --download C0123456789
 ```
 
+## `/login` Credential Onboarding
+
+For normal deployments, set `MOM_LINK_URL` to the externally reachable base URL of the web credential onboarding flow:
+
+```bash
+export MOM_LINK_URL="https://mama.example.com"
+# optional; defaults to 8181 when MOM_LINK_URL is set
+export MOM_LINK_PORT=8181
+```
+
+For local-only testing, you can set `MOM_LINK_PORT` without `MOM_LINK_URL`; mama will use `http://localhost:<port>` for the onboarding link.
+
+Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers. `/login` is rejected in shared channels to avoid leaking onboarding links.
+
+On Slack, you can also register native slash commands such as `/pi-login` and `/pi-new`.
+
+- `/pi-login` in a shared channel opens a DM and continues the credential flow there.
+- `/pi-new` only works in a Slack DM and resets that DM session context.
+
+Built-in OAuth guides:
+
+- [GitHub OAuth](docs/oauth/github.md)
+- [Google Workspace CLI OAuth](docs/oauth/google-workspace.md)
+
+Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Runtime env injection only happens in `container`, `image`, and `firecracker` modes.
+
 ## Configuration
 
-Create `settings.json` in your working directory to override defaults:
+mama loads settings from `<state-dir>/settings.json` first, then falls back to `<working-directory>/settings.json` if the state-dir file is absent. For shared bot deployments, prefer the state-dir copy:
 
 ```json
 {
@@ -275,7 +315,7 @@ Set `logFormat: "json"` to send structured logs directly to Cloud Logging via AP
 GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
 ```
 
-`settings.json`:
+In `<state-dir>/settings.json` (or `<working-directory>/settings.json` as a fallback):
 
 ```json
 {
@@ -286,11 +326,24 @@ GOOGLE_CLOUD_PROJECT=<your-project-id> mama <working-directory>
 
 Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout) is unaffected and continues to work alongside Cloud Logging.
 
+## State Directory Layout
+
+```
+<state-dir>/
+├── settings.json          # Preferred provider/model/logging/Sentry config
+└── vaults/
+    ├── bindings.json      # Platform user -> vault mapping
+    ├── vault.json         # Vault metadata
+    └── <vault-id>/
+        ├── env            # Injected env vars
+        └── ...            # Credential files (e.g. gws.json, .ssh/)
+```
+
 ## Working Directory Layout
 
 ```
 <working-directory>/
-├── settings.json          # AI provider/model/Sentry config
+├── settings.json          # Optional fallback config if <state-dir>/settings.json is absent
 ├── MEMORY.md              # Global memory (all channels)
 ├── SYSTEM.md              # Installed packages / env changes log
 ├── skills/                # Global skills (CLI tools)
@@ -307,17 +360,40 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
         └── <thread-ts>.jsonl            # Fixed-path thread session
 ```
 
-## Docker Sandbox
+## Container Sandbox
 
 ```bash
 # Create a container (mount your working directory to /workspace)
-docker run -d --name mama-sandbox \
+docker run -d --name mama-tools \
   -v /path/to/workspace:/workspace \
   alpine:latest sleep infinity
 
-# Start mama with Docker sandbox
-mama --sandbox=docker:mama-sandbox /path/to/workspace
+# Start mama with container sandbox
+mama --sandbox=container:mama-tools /path/to/workspace
 ```
+
+`container:mama-tools` uses vault key `container-mama-tools`. If multiple users share the same container, they share that container vault.
+
+## Managed Per-User Container Sandbox
+
+```bash
+# Pull the prebuilt image from GHCR
+# Release builds publish :tools, :<version>, and :latest / :beta
+# Pushes to main also publish :edge
+docker pull ghcr.io/geminixiang/mama-sandbox:tools
+
+# Start mama with managed image sandboxes
+mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:tools /path/to/workspace
+```
+
+Or build the bundled image locally:
+
+```bash
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+mama --sandbox=image:mama-sandbox:tools /path/to/workspace
+```
+
+In this mode mama creates one Docker container per resolved vault/user, attaches each container to its own Docker bridge network for per-user network isolation, mounts the workspace at `/workspace`, injects vault env on execution, mounts any credential files declared in the vault, and stops idle containers automatically.
 
 ## Firecracker Sandbox
 
@@ -392,13 +468,13 @@ Drop JSON files into `<working-directory>/events/` to trigger the agent:
 
 ```json
 // Immediate — triggers as soon as mama sees the file
-{"type": "immediate", "channelId": "C0123456789", "text": "New deployment finished"}
+{"type": "immediate", "conversationId": "C0123456789", "conversationKind": "shared", "text": "New deployment finished"}
 
 // One-shot — triggers once at a specific time
-{"type": "one-shot", "channelId": "C0123456789", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
+{"type": "one-shot", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
 
 // Periodic — triggers on a cron schedule
-{"type": "periodic", "channelId": "C0123456789", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
+{"type": "periodic", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
 ```
 
 ## Skills
@@ -433,12 +509,12 @@ npm run build   # production build
 
 ## 📦 Dependencies & Versions
 
-| Package                         | mama Version | pi-mom Synced Version         |
-| ------------------------------- | ------------ | ----------------------------- |
-| `@mariozechner/pi-agent-core`   | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-ai`           | `^0.57.1`    | ✅ Synchronized               |
-| `@mariozechner/pi-coding-agent` | `^0.57.1`    | ✅ Synchronized               |
-| `@anthropic-ai/sandbox-runtime` | `^0.0.40`    | ⚠️ Newer (pi-mom uses 0.0.16) |
+| Package                         | mama Version | pi-mom Synced Version            |
+| ------------------------------- | ------------ | -------------------------------- |
+| `@mariozechner/pi-agent-core`   | `^0.69.0`    | ✅ Synchronized                  |
+| `@mariozechner/pi-ai`           | `^0.69.0`    | ✅ Synchronized                  |
+| `@mariozechner/pi-coding-agent` | `^0.69.0`    | ✅ Synchronized                  |
+| `@anthropic-ai/sandbox-runtime` | `^0.0.49`    | ⚠️ Newer than original fork base |
 
 ## License
 

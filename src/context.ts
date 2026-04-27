@@ -1,13 +1,13 @@
 /**
  * Context management for mama.
  *
- * Mama uses two files per channel:
- * - context.jsonl: Structured API messages for LLM context (same format as coding-agent sessions)
- * - log.jsonl: Human-readable channel history for grep (no tool results)
+ * Mama uses two data sources per conversation:
+ * - sessions/*.jsonl: Structured session history for agent context
+ * - log.jsonl: Human-readable conversation history for grep (no tool results)
  *
  * This module provides:
  * - syncLogToSessionManager: Syncs messages from log.jsonl to SessionManager
- * - createMamaSettingsManager: Creates a SettingsManager backed by workspace settings.json
+ * - createMamaSettingsManager: Creates an in-memory SettingsManager for AgentSession
  */
 
 import type { UserMessage } from "@mariozechner/pi-ai";
@@ -64,11 +64,11 @@ export interface ThreadFilter {
 /**
  * Sync user messages from log.jsonl to SessionManager.
  *
- * This ensures that messages logged while mama wasn't running (channel chatter,
+ * This ensures that messages logged while mama wasn't running (conversation chatter,
  * backfilled messages, messages while busy) are added to the LLM context.
  *
  * @param sessionManager - The SessionManager to sync to
- * @param channelDir - Path to channel directory containing log.jsonl
+ * @param conversationDir - Path to the conversation directory containing log.jsonl
  * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
  * @param timeRange - Optional time range to filter log entries (defaults to last 10 days)
  * @param threadFilter - Optional thread filter to scope sync to a specific thread
@@ -76,7 +76,7 @@ export interface ThreadFilter {
  */
 export async function syncLogToSessionManager(
   sessionManager: SessionManager,
-  channelDir: string,
+  conversationDir: string,
   excludeSlackTs?: string,
   timeRange?: TimeRange,
   threadFilter?: ThreadFilter,
@@ -85,7 +85,7 @@ export async function syncLogToSessionManager(
   const now = Date.now();
   const defaultStart = now - DEFAULT_SYNC_DAYS * 24 * 60 * 60 * 1000;
   const range = timeRange ?? { start: defaultStart, end: now };
-  const logFile = join(channelDir, "log.jsonl");
+  const logFile = join(conversationDir, "log.jsonl");
 
   if (!existsSync(logFile)) return 0;
 
@@ -125,7 +125,7 @@ export async function syncLogToSessionManager(
       // Thread filtering: only sync messages belonging to this session's thread
       if (threadFilter) {
         if (threadFilter.scope === "top-level") {
-          // Persistent channel/chat sessions should only ingest top-level messages.
+          // Persistent top-level sessions should only ingest top-level messages.
           // This avoids pulling in unrelated replies from other threads.
           if (logMsg.threadTs) {
             continue;

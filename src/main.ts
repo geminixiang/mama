@@ -3,7 +3,8 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
-import { readFileSync } from "fs";
+import { mkdirSync, readFileSync, statSync } from "fs";
+import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
 import type { Bot, BotAdapters, BotEvent, BotHandler } from "./adapter.js";
@@ -14,15 +15,28 @@ import { type AgentRunner, createRunner } from "./agent.js";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
-  getSessionDir,
+  getChannelSessionDir,
   getThreadSessionFile,
 } from "./session-store.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
-import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileUserBindingStore } from "./bindings.js";
+import { startLinkServer } from "./link-server.js";
+import { parseLoginCommand } from "./login.js";
+import { InMemoryLinkTokenStore } from "./link-token.js";
+import { DockerContainerManager } from "./provisioner.js";
+import { loadAgentConfig } from "./config.js";
+import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
+import { FileVaultManager } from "./vault.js";
+import {
+  createManagedVaultEntry,
+  ensureSandboxVaultEntry,
+  resolveActorVaultKey,
+} from "./vault-routing.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
+import { formatNothingRunning, formatStopped, formatStopping } from "./ui-copy.js";
 import * as Sentry from "@sentry/node";
 
 // ============================================================================
@@ -53,9 +67,16 @@ const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
 const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
+const MOM_LINK_URL = process.env.MOM_LINK_URL;
+const MOM_LINK_PORT = process.env.MOM_LINK_PORT
+  ? parseInt(process.env.MOM_LINK_PORT, 10)
+  : MOM_LINK_URL
+    ? 8181
+    : undefined;
 
 interface ParsedArgs {
   workingDir?: string;
+  stateDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
   showVersion?: boolean;
@@ -65,6 +86,7 @@ function parseArgs(): ParsedArgs {
   const args = process.argv.slice(2);
   let sandbox: SandboxConfig = { type: "host" };
   let workingDir: string | undefined;
+  let stateDirArg: string | undefined;
   let downloadChannelId: string | undefined;
   let showVersion = false;
 
@@ -76,6 +98,10 @@ function parseArgs(): ParsedArgs {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
       sandbox = parseSandboxArg(args[++i] || "");
+    } else if (arg.startsWith("--state-dir=")) {
+      stateDirArg = arg.slice("--state-dir=".length);
+    } else if (arg === "--state-dir") {
+      stateDirArg = args[++i];
     } else if (arg.startsWith("--download=")) {
       downloadChannelId = arg.slice("--download=".length);
     } else if (arg === "--download") {
@@ -87,13 +113,69 @@ function parseArgs(): ParsedArgs {
 
   return {
     workingDir: workingDir ? resolve(workingDir) : undefined,
+    stateDir: stateDirArg ? resolve(stateDirArg) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
     showVersion,
   };
 }
 
-const parsedArgs = parseArgs();
+const WORLD_WRITABLE_MODE = 0o002;
+
+function ensureSecureStateDir(path: string): void {
+  let stat;
+  try {
+    stat = statSync(path);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") {
+      mkdirSync(path, { recursive: true, mode: 0o700 });
+      return;
+    }
+    console.error(`Error: cannot access --state-dir ${path}: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
+  if (!stat.isDirectory()) {
+    console.error(`Error: --state-dir ${path} exists but is not a directory`);
+    process.exit(1);
+  }
+
+  if (stat.mode & WORLD_WRITABLE_MODE) {
+    console.error(
+      `Error: --state-dir ${path} is world-writable (mode ${(stat.mode & 0o777).toString(8)}). ` +
+        `Credentials stored there would be exposed to other local users. ` +
+        `Fix with: chmod 0700 ${path}`,
+    );
+    process.exit(1);
+  }
+
+  const euid = typeof process.geteuid === "function" ? process.geteuid() : undefined;
+  if (euid !== undefined && stat.uid !== euid) {
+    console.error(
+      `Error: --state-dir ${path} is owned by uid ${stat.uid} but mama is running as uid ${euid}. ` +
+        `Run mama as the directory owner or point --state-dir at a directory you own.`,
+    );
+    process.exit(1);
+  }
+}
+
+function handleStartupError(error: unknown): never {
+  if (error instanceof SandboxError) {
+    for (const line of error.formatForCli()) {
+      console.error(line);
+    }
+    process.exit(1);
+  }
+  throw error;
+}
+
+let parsedArgs: ParsedArgs;
+try {
+  parsedArgs = parseArgs();
+} catch (error) {
+  handleStartupError(error);
+}
 
 // Handle --version
 if (parsedArgs.showVersion) {
@@ -114,13 +196,16 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--sandbox=host|docker:<name>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
+const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+process.env.MAMA_STATE_DIR = stateDir;
+ensureSecureStateDir(stateDir);
 
 // Validate platform tokens
 const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
@@ -137,13 +222,155 @@ if (!hasSlack && !hasTelegram && !hasDiscord) {
   process.exit(1);
 }
 
-await validateSandbox(sandbox);
+try {
+  await validateSandbox(sandbox);
+} catch (error) {
+  handleStartupError(error);
+}
+
+const vaultManager = new FileVaultManager(stateDir);
+if (vaultManager.isEnabled()) {
+  console.log(
+    sandbox.type === "container"
+      ? "  Vault system enabled. Container vault active."
+      : sandbox.type === "image" || sandbox.type === "firecracker"
+        ? "  Vault system enabled. Per-user credential routing active."
+        : "  Vault system enabled. Host mode will not inject vault env.",
+  );
+}
+
+const bindingStore = new FileUserBindingStore(stateDir);
+if (bindingStore.isEnabled()) {
+  console.log(
+    sandbox.type === "container"
+      ? "  Binding store enabled. Container mode uses the container vault."
+      : sandbox.type === "image" || sandbox.type === "firecracker"
+        ? "  Binding store enabled. Platform user → vault routing active."
+        : "  Binding store enabled. Host mode will not inject vault env.",
+  );
+}
+
+const startupConfig = loadAgentConfig(workingDir);
+const sandboxLimits =
+  startupConfig.sandboxCpus || startupConfig.sandboxMemory
+    ? { cpus: startupConfig.sandboxCpus, memory: startupConfig.sandboxMemory }
+    : undefined;
+
+const provisioner =
+  sandbox.type === "image"
+    ? new DockerContainerManager(sandbox.image, workingDir, { limits: sandboxLimits })
+    : undefined;
+
+const linkTokenStore = new InMemoryLinkTokenStore();
+setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
+
+function normalizeLoginBaseUrl(): string | undefined {
+  if (MOM_LINK_URL) {
+    return MOM_LINK_URL.replace(/\/+$/, "");
+  }
+  if (MOM_LINK_PORT) {
+    return `http://localhost:${MOM_LINK_PORT}`;
+  }
+  return undefined;
+}
+
+function isPrivateConversation(event: BotEvent): boolean {
+  return (
+    event.conversationKind === "direct" ||
+    event.type === "dm" ||
+    event.sessionKey === event.conversationId
+  );
+}
+
+function ensureLoginVault(platform: string, platformUserId: string): string {
+  const vaultId = resolveActorVaultKey(
+    sandbox,
+    vaultManager,
+    bindingStore,
+    platform,
+    platformUserId,
+  );
+
+  ensureSandboxVaultEntry(sandbox, vaultManager, platform, platformUserId, vaultId);
+  if (sandbox.type !== "container" && sandbox.type !== "image") {
+    vaultManager.addEntry(vaultId, createManagedVaultEntry(platform, platformUserId, vaultId));
+  }
+
+  return vaultId;
+}
+
+async function replyWithContext(
+  responseCtx: BotAdapters["responseCtx"],
+  text: string,
+): Promise<void> {
+  await responseCtx.setTyping(false);
+  await responseCtx.setWorking(false);
+  await responseCtx.respond(text);
+}
+
+async function handleLoginCommand(
+  platform: string,
+  platformUserId: string,
+  conversationId: string,
+  responseCtx: BotAdapters["responseCtx"],
+  commandText: string,
+  privateConversation: boolean,
+): Promise<boolean> {
+  const parsed = parseLoginCommand(commandText);
+  if (!parsed) return false;
+
+  if (!privateConversation) {
+    await replyWithContext(
+      responseCtx,
+      "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
+    );
+    return true;
+  }
+
+  const baseUrl = normalizeLoginBaseUrl();
+  if (!baseUrl) {
+    await replyWithContext(
+      responseCtx,
+      "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+    );
+    return true;
+  }
+
+  let vaultId: string;
+  try {
+    vaultId = ensureLoginVault(platform, platformUserId);
+  } catch (error) {
+    log.logWarning(
+      `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    await replyWithContext(
+      responseCtx,
+      "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
+    );
+    return true;
+  }
+
+  const token = linkTokenStore.create(
+    platform as "slack" | "discord" | "telegram",
+    platformUserId,
+    conversationId,
+    vaultId,
+    "",
+  );
+  const vaultLabel = sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
+  await replyWithContext(
+    responseCtx,
+    `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${baseUrl}/link?token=${token.token}`,
+  );
+  return true;
+}
 
 // ============================================================================
-// State (per channel)
+// State (per conversation)
 // ============================================================================
 
-interface ChannelState {
+interface ConversationState {
   running: boolean;
   runner: AgentRunner;
   stopRequested: boolean;
@@ -153,7 +380,8 @@ interface ChannelState {
   lastActivityAt?: number;
 }
 
-const channelStates = new Map<string, ChannelState>();
+const conversationStates = new Map<string, ConversationState>();
+const sessionAliases = new Map<string, string>();
 
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
@@ -165,19 +393,36 @@ let isShuttingDown = false;
 const MAX_SESSIONS = 500;
 /** Idle timeout before a non-running session can be evicted (1 hour) */
 const IDLE_TIMEOUT_MS = 3600000;
+/** Idle timeout for managed image containers (10 minutes) */
+const IMAGE_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 
-async function getState(channelId: string, sessionKey?: string): Promise<ChannelState> {
-  const key = sessionKey ?? channelId;
-  let state = channelStates.get(key);
+if (provisioner) {
+  await provisioner.reconcile();
+  await provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS);
+  setInterval(() => provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS), IMAGE_IDLE_TIMEOUT_MS).unref();
+}
+
+async function getState(conversationId: string, sessionKey?: string): Promise<ConversationState> {
+  const key = sessionKey ?? conversationId;
+  let state = conversationStates.get(key);
   if (!state) {
-    const channelDir = join(workingDir, channelId);
+    const conversationDir = join(workingDir, conversationId);
     state = {
       running: false,
-      runner: await createRunner(sandbox, key, channelId, channelDir, workingDir),
+      runner: await createRunner(
+        sandbox,
+        key,
+        conversationId,
+        conversationDir,
+        workingDir,
+        vaultManager,
+        bindingStore,
+        provisioner,
+      ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
     };
-    channelStates.set(key, state);
+    conversationStates.set(key, state);
   } else {
     state.lastAccessedAt = Date.now();
   }
@@ -185,21 +430,30 @@ async function getState(channelId: string, sessionKey?: string): Promise<Channel
 }
 
 /**
- * Evict idle sessions from channelStates to bound memory usage.
+ * Evict idle sessions from conversationStates to bound memory usage.
  * Called after each handleEvent completes.
  */
+function clearSessionAliases(sessionKey: string): void {
+  for (const [aliasKey, targetSessionKey] of sessionAliases) {
+    if (aliasKey === sessionKey || targetSessionKey === sessionKey) {
+      sessionAliases.delete(aliasKey);
+    }
+  }
+}
+
 function evictIdleSessions(): void {
   const now = Date.now();
 
-  for (const [key, state] of channelStates) {
+  for (const [key, state] of conversationStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
-      channelStates.delete(key);
+      conversationStates.delete(key);
+      clearSessionAliases(key);
     }
   }
 
-  if (channelStates.size > MAX_SESSIONS) {
+  if (conversationStates.size > MAX_SESSIONS) {
     const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
-    for (const [key, state] of channelStates) {
+    for (const [key, state] of conversationStates) {
       if (!state.running) {
         idleSessions.push({ key, lastAccessedAt: state.lastAccessedAt });
       }
@@ -207,9 +461,10 @@ function evictIdleSessions(): void {
 
     idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
 
-    const toEvict = channelStates.size - MAX_SESSIONS;
+    const toEvict = conversationStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
-      channelStates.delete(idleSessions[i].key);
+      conversationStates.delete(idleSessions[i].key);
+      clearSessionAliases(idleSessions[i].key);
     }
   }
 }
@@ -220,13 +475,13 @@ function evictIdleSessions(): void {
 
 const handler: BotHandler = {
   isRunning(sessionKey: string): boolean {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     return !!state?.running;
   },
 
   getRunningSessions() {
     const sessions: import("./adapter.js").RunningSession[] = [];
-    for (const [sessionKey, state] of channelStates) {
+    for (const [sessionKey, state] of conversationStates) {
       if (state.running && state.startedAt) {
         // Get current step from runner
         const currentStep = state.runner.getCurrentStep();
@@ -241,48 +496,61 @@ const handler: BotHandler = {
     return sessions;
   },
 
-  async handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+  resolveSessionKey(sessionKey: string): string {
+    return sessionAliases.get(sessionKey) ?? sessionKey;
+  },
+
+  registerThreadAlias(aliasKey: string, sessionKey: string): void {
+    sessionAliases.set(aliasKey, sessionKey);
+  },
+
+  async handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
-      const ts = await bot.postMessage(channelId, "_Stopping..._");
+      const ts = await bot.postMessage(conversationId, formatStopping(bot));
       state.stopMessageTs = ts;
     } else {
-      await bot.postMessage(channelId, "_Nothing running_");
+      await bot.postMessage(conversationId, formatNothingRunning(bot));
     }
   },
 
   forceStop(sessionKey: string): void {
-    const state = channelStates.get(sessionKey);
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
       state.stopRequested = true;
       state.runner.abort();
       state.running = false;
+      clearSessionAliases(sessionKey);
     }
   },
 
-  async handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void> {
-    const state = channelStates.get(sessionKey);
+  async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
       state.runner.abort();
     }
 
-    // Channel sessions rotate via current pointer. Thread sessions reset in place.
-    const channelDir = join(workingDir, channelId);
+    // Conversation sessions rotate via current pointer. Thread sessions reset in place.
+    const conversationDir = join(workingDir, conversationId);
     if (sessionKey.includes(":")) {
-      createManagedSessionFileAtPath(getThreadSessionFile(channelDir, sessionKey), channelDir);
+      createManagedSessionFileAtPath(
+        getThreadSessionFile(conversationDir, sessionKey),
+        conversationDir,
+      );
     } else {
-      createManagedSessionFile(getSessionDir(channelDir, sessionKey), channelDir);
+      createManagedSessionFile(getChannelSessionDir(conversationDir), conversationDir);
     }
 
     // Remove from in-memory cache
-    channelStates.delete(sessionKey);
+    conversationStates.delete(sessionKey);
+    clearSessionAliases(sessionKey);
 
-    log.logInfo(`[${channelId}] Session reset: ${sessionKey}`);
-    await bot.postMessage(channelId, "Conversation reset. Send a new message to start fresh.");
+    log.logInfo(`[${conversationId}] Session reset: ${sessionKey}`);
+    await bot.postMessage(conversationId, "Conversation reset. Send a new message to start fresh.");
   },
 
   async handleEvent(
@@ -291,16 +559,28 @@ const handler: BotHandler = {
     adapters: BotAdapters,
     _isEvent?: boolean,
   ): Promise<void> {
+    const conversationId = event.conversationId;
+
     // Don't accept new events during shutdown
     if (isShuttingDown) {
       log.logInfo(
-        `[${event.channel}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
+        `[${conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
       );
       return;
     }
 
-    const sessionKey = event.sessionKey ?? `${event.channel}:${event.thread_ts ?? event.ts}`;
-    const state = await getState(event.channel, sessionKey);
+    const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
+    const handledLogin = await handleLoginCommand(
+      adapters.platform.name,
+      event.user,
+      conversationId,
+      adapters.responseCtx,
+      event.text,
+      isPrivateConversation(event),
+    );
+    if (handledLogin) return;
+
+    const state = await getState(conversationId, sessionKey);
 
     // Start run
     state.running = true;
@@ -308,21 +588,21 @@ const handler: BotHandler = {
     state.startedAt = Date.now();
     state.lastActivityAt = Date.now();
 
-    log.logInfo(`[${event.channel}] Starting run: ${event.text.substring(0, 50)}`);
+    log.logInfo(`[${conversationId}] Starting run: ${event.text.substring(0, 50)}`);
 
     // Wrap in-flight run tracking
     Sentry.metrics.count("agent.run.started", 1, {
-      attributes: { channel: event.channel },
+      attributes: { channel: conversationId },
     });
     Sentry.metrics.gauge("agent.sessions.active", inFlightRuns.size + 1);
 
     const runPromise = Sentry.startSpan(
-      { name: "agent.run", op: "agent", attributes: { channelId: event.channel, sessionKey } },
+      { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
       async () => {
         return Sentry.withScope(async (scope) => {
           const { message, responseCtx, platform } = adapters;
           applyRunScope(scope, {
-            channelId: event.channel,
+            conversationId,
             sessionKey,
             messageId: message.id,
             platform: platform.name,
@@ -332,7 +612,7 @@ const handler: BotHandler = {
             isEvent: _isEvent,
           });
           addLifecycleBreadcrumb("agent.run.started", {
-            channel_id: event.channel,
+            channel_id: conversationId,
             platform: platform.name,
             has_attachments: (message.attachments?.length ?? 0) > 0,
           });
@@ -347,20 +627,20 @@ const handler: BotHandler = {
             Sentry.metrics.distribution("agent.run.duration", durationMs, {
               unit: "millisecond",
               attributes: {
-                channel: event.channel,
+                channel: conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             Sentry.metrics.count("agent.run.completed", 1, {
               attributes: {
-                channel: event.channel,
+                channel: conversationId,
                 platform: platform.name,
                 stop_reason: result.stopReason,
               },
             });
             addLifecycleBreadcrumb("agent.run.completed", {
-              channel_id: event.channel,
+              channel_id: conversationId,
               platform: platform.name,
               stop_reason: result.stopReason,
               duration_ms: durationMs,
@@ -368,15 +648,15 @@ const handler: BotHandler = {
 
             if (result.stopReason === "aborted" && state.stopRequested) {
               if (state.stopMessageTs) {
-                await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+                await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
                 state.stopMessageTs = undefined;
               } else {
-                await bot.postMessage(event.channel, "_Stopped_");
+                await bot.postMessage(conversationId, formatStopped(bot));
               }
             }
           } catch (err) {
             scope.setContext("agent_run_error", {
-              channelId: event.channel,
+              conversationId,
               sessionKey,
               platform: adapters.platform.name,
               messageId: adapters.message.id,
@@ -384,10 +664,10 @@ const handler: BotHandler = {
             });
             Sentry.captureException(err);
             Sentry.metrics.count("agent.run.errors", 1, {
-              attributes: { channel: event.channel, platform: adapters.platform.name },
+              attributes: { channel: conversationId, platform: adapters.platform.name },
             });
             log.logWarning(
-              `[${event.channel}] Run error`,
+              `[${conversationId}] Run error`,
               err instanceof Error ? err.message : String(err),
             );
           } finally {
@@ -416,9 +696,11 @@ const handler: BotHandler = {
 const sandboxDesc =
   sandbox.type === "host"
     ? "host"
-    : sandbox.type === "docker"
-      ? `docker:${sandbox.container}`
-      : `firecracker:${sandbox.vmId}`;
+    : sandbox.type === "container"
+      ? `container:${sandbox.container}`
+      : sandbox.type === "image"
+        ? `image:${sandbox.image}`
+        : `firecracker:${sandbox.vmId}`;
 log.logStartup(workingDir, sandboxDesc);
 
 // Create platform bots
@@ -454,6 +736,18 @@ if (hasDiscord) {
   bots.push(discordBot);
   botsByPlatform.discord = discordBot;
   log.logInfo("Platform: Discord");
+}
+
+if (MOM_LINK_PORT) {
+  startLinkServer(
+    MOM_LINK_PORT,
+    linkTokenStore,
+    vaultManager,
+    async (platform, conversationId, message) => {
+      const bot = botsByPlatform[platform];
+      if (bot) await bot.postMessage(conversationId, message);
+    },
+  );
 }
 
 // Start events watcher with explicit platform routing

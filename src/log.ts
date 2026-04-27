@@ -35,9 +35,9 @@ function createGcpStream(): Writable {
 }
 
 export interface LogContext {
-  channelId: string;
+  conversationId: string;
   userName?: string;
-  channelName?: string; // For display like #dev-team vs C16HET4EQ
+  conversationName?: string; // For display like #dev-team vs C16HET4EQ
   sessionId?: string;
 }
 
@@ -70,9 +70,9 @@ export function __resetLoggerForTest(): void {
 }
 
 function ctxFields(ctx: LogContext): Record<string, string> {
-  const out: Record<string, string> = { channel: ctx.channelId };
+  const out: Record<string, string> = { channel: ctx.conversationId };
   if (ctx.userName) out.user = ctx.userName;
-  if (ctx.channelName) out.channelName = ctx.channelName;
+  if (ctx.conversationName) out.channelName = ctx.conversationName;
   if (ctx.sessionId) out.sessionId = ctx.sessionId;
   return out;
 }
@@ -87,12 +87,12 @@ function timestamp(): string {
 
 function formatContext(ctx: LogContext): string {
   const session = ctx.sessionId ? `:${ctx.sessionId}` : "";
-  if (ctx.channelId.startsWith("D")) {
-    return `[DM:${ctx.userName || ctx.channelId}${session}]`;
+  if (ctx.conversationId.startsWith("D")) {
+    return `[DM:${ctx.userName || ctx.conversationId}${session}]`;
   }
-  const channel = ctx.channelName || ctx.channelId;
+  const conversation = ctx.conversationName || ctx.conversationId;
   const user = ctx.userName || "unknown";
-  return `[${channel.startsWith("#") ? channel : `#${channel}`}:${user}${session}]`;
+  return `[${conversation.startsWith("#") ? conversation : `#${conversation}`}:${user}${session}]`;
 }
 
 function truncate(text: string, maxLen: number): string {

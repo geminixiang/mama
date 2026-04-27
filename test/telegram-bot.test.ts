@@ -13,6 +13,24 @@ function makeHandler(): BotHandler {
     handleStop: vi.fn(),
     forceStop: vi.fn(),
     handleNew: vi.fn(),
+    resolveSessionKey: vi.fn((sessionKey: string) => sessionKey),
+    registerThreadAlias: vi.fn(),
+  };
+}
+
+function makeHandlerWithRunningKeys(runningKeys: string[]): BotHandler {
+  const running = new Set(runningKeys);
+  return {
+    isRunning: vi.fn((key: string) => running.has(key)),
+    getRunningSessions: vi
+      .fn()
+      .mockReturnValue(runningKeys.map((sessionKey) => ({ sessionKey, startedAt: Date.now() }))),
+    handleEvent: vi.fn(),
+    handleStop: vi.fn(),
+    forceStop: vi.fn(),
+    handleNew: vi.fn(),
+    resolveSessionKey: vi.fn((sessionKey: string) => sessionKey),
+    registerThreadAlias: vi.fn(),
   };
 }
 
@@ -107,6 +125,141 @@ describe("TelegramBot extractMessageContext", () => {
     expect(extract(msg).sessionKey).toBe("123");
     // threadTs is still set for reply targeting
     expect(extract(msg).threadTs).toBe("50");
+  });
+});
+
+describe("TelegramBot stop handling", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-stop-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("resolveStopTarget falls back to the only running session in a shared chat", () => {
+    const handler = makeHandlerWithRunningKeys(["999:50"]);
+    const bot = new TelegramBot(handler, { token: "T", workingDir });
+
+    const target = (bot as any).resolveStopTarget({
+      chatId: "999",
+      chatType: "group",
+      sessionKey: "999:60",
+    });
+
+    expect(target).toBe("999:50");
+  });
+
+  test("bare stop in a group can stop the agent without an @mention", async () => {
+    const handler = makeHandlerWithRunningKeys(["999:50"]);
+    const bot = new TelegramBot(handler, { token: "T", workingDir });
+    let messageHandler: ((ctx: { message: any }) => Promise<void>) | undefined;
+    const processAttachments = vi.fn().mockResolvedValue([]);
+
+    (bot as any).startupTime = 0;
+    (bot as any).botUsername = "mama_bot";
+    (bot as any).processAttachments = processAttachments;
+    (bot as any).client = {
+      command: vi.fn(),
+      on: vi.fn((event: string, handlerFn: (ctx: { message: any }) => Promise<void>) => {
+        if (event === "message") messageHandler = handlerFn;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    await messageHandler?.({
+      message: makeMessage({
+        chat: { id: 999, type: "group" },
+        message_id: 70,
+        text: "stop",
+        reply_to_message: {
+          message_id: 60,
+          from: { id: 99, is_bot: true, username: "mama_bot" },
+        },
+      }),
+    });
+
+    expect(handler.handleStop).toHaveBeenCalledWith("999:50", "999", bot);
+    expect(processAttachments).not.toHaveBeenCalled();
+  });
+});
+
+describe("TelegramBot startup", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-start-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("start registers /login in Telegram slash commands", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const getMe = vi.fn().mockResolvedValue({ id: 99, username: "mama_bot" });
+    const setMyCommands = vi.fn().mockResolvedValue(undefined);
+    const command = vi.fn();
+    const on = vi.fn();
+    const start = vi.fn().mockResolvedValue(undefined);
+
+    (bot as any).client = {
+      api: { getMe, setMyCommands },
+      command,
+      on,
+      start,
+    };
+
+    await bot.start();
+
+    expect(setMyCommands).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ command: "login" })]),
+    );
+  });
+});
+
+describe("TelegramBot HTML fallback", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-html-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("updateMessage retries with escaped HTML when Telegram rejects raw entities", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const editMessageText = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error(
+          "Call to 'editMessageText' failed! (400: Bad Request: can't parse entities: Unsupported start tag \"id\")",
+        ),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    (bot as any).client = { api: { editMessageText } };
+
+    await bot.updateMessage("123", "456", "Usage: gws +read --id <ID>");
+
+    expect(editMessageText).toHaveBeenNthCalledWith(1, 123, 456, "Usage: gws +read --id <ID>", {
+      parse_mode: "HTML",
+    });
+    expect(editMessageText).toHaveBeenNthCalledWith(
+      2,
+      123,
+      456,
+      "Usage: gws +read --id &lt;ID&gt;",
+      { parse_mode: "HTML" },
+    );
   });
 });
 

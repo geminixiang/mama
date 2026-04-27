@@ -7,3 +7,9 @@ bin/
 *.env
 .env*
 
+# Local mama state / credential vaults
+.mama/
+vaults/vault.json
+vaults/bindings.json
+vaults/*/
+

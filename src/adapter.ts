@@ -1,6 +1,9 @@
+export type ConversationKind = "direct" | "shared";
+
 export interface ChatMessage {
   id: string;
   sessionKey: string;
+  conversationKind: ConversationKind;
   userId: string;
   userName?: string;
   text: string;
@@ -40,8 +43,10 @@ export interface ChatAdapter {
  */
 export interface BotEvent {
   type: string;
-  /** Platform-specific channel/chat identifier */
-  channel: string;
+  /** Platform-specific raw conversation/channel/chat identifier */
+  conversationId: string;
+  /** Cross-platform conversation shape: direct message vs shared space */
+  conversationKind: ConversationKind;
   /** Message timestamp or ID as string */
   ts: string;
   /** Parent message ID for threaded replies (optional) */
@@ -52,7 +57,7 @@ export interface BotEvent {
   text: string;
   /** Downloaded attachments */
   attachments?: { name: string; localPath: string }[];
-  /** Platform-computed session key; overrides default channel:thread_ts computation */
+  /** Platform-computed session key; overrides default conversationId:thread_ts computation */
   sessionKey?: string;
 }
 
@@ -92,11 +97,15 @@ export interface BotHandler {
   isRunning(sessionKey: string): boolean;
   getRunningSessions(): RunningSession[];
   handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
-  handleStop(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
   /** Force stop a running session (bypass normal stop mechanism) */
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
-  handleNew(sessionKey: string, channelId: string, bot: Bot): Promise<void>;
+  handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
+  /** Resolve a platform-specific alias (for example, bot-created Discord threads) to its canonical session key. */
+  resolveSessionKey(sessionKey: string): string;
+  /** Register an alias that should route follow-up messages back to an existing session. */
+  registerThreadAlias(aliasKey: string, sessionKey: string): void;
 }
 
 /** @deprecated Use BotHandler */

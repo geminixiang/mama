@@ -26,13 +26,17 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
 }
 
 function makeEvent(overrides: Partial<SlackEvent> = {}): SlackEvent {
+  const { channel: overrideChannel, conversationId: overrideConversationId, ...rest } = overrides;
+  const channel = overrideChannel ?? "C001";
   return {
     type: "mention",
-    channel: "C001",
+    channel,
+    conversationId: overrideConversationId ?? channel,
+    conversationKind: channel.startsWith("D") ? "direct" : "shared",
     ts: "1000.0001",
     user: "U001",
     text: "hello",
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -228,6 +232,24 @@ describe("setTyping()", () => {
     await responseCtx.setTyping(true); // creates message
     vi.clearAllMocks();
     await responseCtx.setTyping(true); // should be no-op
+    expect(bot.postMessage).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Text accumulation and truncation
+// ============================================================================
+
+describe("setWorking()", () => {
+  test("setWorking(false) before first respond omits indicator and still replies in thread", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot);
+
+    await responseCtx.setWorking(false);
+    await responseCtx.respond("login link");
+
+    expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", "login link");
     expect(bot.postMessage).not.toHaveBeenCalled();
   });
 });

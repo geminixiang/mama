@@ -5,7 +5,7 @@ import * as log from "./log.js";
 
 export interface Attachment {
   original: string; // original filename from uploader
-  local: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
+  localPath: string; // path relative to working dir (e.g., "C12345/attachments/1732531234567_file.png")
 }
 
 export interface LoggedMessage {
@@ -25,17 +25,9 @@ export interface ChannelStoreConfig {
   botToken: string; // needed for authenticated file downloads
 }
 
-interface PendingDownload {
-  channelId: string;
-  localPath: string; // relative path
-  url: string;
-}
-
 export class ChannelStore {
   private workingDir: string;
   private botToken: string;
-  private pendingDownloads: PendingDownload[] = [];
-  private isDownloading = false;
   // Track recently logged message timestamps to prevent duplicates
   // Key: "channelId:ts", automatically cleaned up after 60 seconds
   private recentlyLogged = new Map<string, number>();
@@ -54,11 +46,11 @@ export class ChannelStore {
    * Get or create the directory for a channel/DM
    */
   getChannelDir(channelId: string): string {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const channelDir = join(this.workingDir, channelId);
+    if (!existsSync(channelDir)) {
+      mkdirSync(channelDir, { recursive: true });
     }
-    return dir;
+    return channelDir;
   }
 
   /**
@@ -73,15 +65,15 @@ export class ChannelStore {
   }
 
   /**
-   * Process attachments from a Slack message event
-   * Returns attachment metadata and queues downloads
+   * Process attachments from a Slack message event.
+   * Downloads files before returning so callers only receive readable paths.
    */
-  processAttachments(
+  async processAttachments(
     channelId: string,
     files: Array<{ name?: string; url_private_download?: string; url_private?: string }>,
     timestamp: string,
-  ): Attachment[] {
-    const attachments: Attachment[] = [];
+  ): Promise<Attachment[]> {
+    const downloads: Array<Promise<Attachment | null>> = [];
 
     for (const file of files) {
       const url = file.url_private_download || file.url_private;
@@ -93,20 +85,24 @@ export class ChannelStore {
 
       const filename = this.generateLocalFilename(file.name, timestamp);
       const localPath = `${channelId}/attachments/${filename}`;
-
-      attachments.push({
+      const attachment: Attachment = {
         original: file.name,
-        local: localPath,
-      });
+        localPath,
+      };
 
-      // Queue for background download
-      this.pendingDownloads.push({ channelId, localPath, url });
+      downloads.push(
+        this.downloadAttachment(localPath, url)
+          .then(() => attachment)
+          .catch((error) => {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            log.logWarning(`Failed to download attachment`, `${localPath}: ${errorMsg}`);
+            return null;
+          }),
+      );
     }
 
-    // Trigger background download
-    this.processDownloadQueue();
-
-    return attachments;
+    const attachments = await Promise.all(downloads);
+    return attachments.filter((attachment): attachment is Attachment => attachment !== null);
   }
 
   /**
@@ -184,39 +180,15 @@ export class ChannelStore {
   }
 
   /**
-   * Process the download queue in the background
-   */
-  private async processDownloadQueue(): Promise<void> {
-    if (this.isDownloading || this.pendingDownloads.length === 0) return;
-
-    this.isDownloading = true;
-
-    while (this.pendingDownloads.length > 0) {
-      const item = this.pendingDownloads.shift();
-      if (!item) break;
-
-      try {
-        await this.downloadAttachment(item.localPath, item.url);
-        // Success - could add success logging here if we have context
-      } catch (error) {
-        const errorMsg = error instanceof Error ? error.message : String(error);
-        log.logWarning(`Failed to download attachment`, `${item.localPath}: ${errorMsg}`);
-      }
-    }
-
-    this.isDownloading = false;
-  }
-
-  /**
    * Download a single attachment
    */
   private async downloadAttachment(localPath: string, url: string): Promise<void> {
     const filePath = join(this.workingDir, localPath);
 
     // Ensure directory exists
-    const dir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true });
+    const parentDir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
+    if (!existsSync(parentDir)) {
+      mkdirSync(parentDir, { recursive: true });
     }
 
     const response = await fetch(url, {

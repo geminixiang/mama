@@ -3,10 +3,20 @@ import { WebClient } from "@slack/web-api";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
-import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import type {
+  Bot,
+  BotAdapters,
+  BotEvent,
+  BotHandler,
+  ChatMessage,
+  ChatResponseContext,
+  ConversationKind,
+  PlatformInfo,
+} from "../../adapter.js";
 import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
+import { PRODUCT_NAME, formatForceStopped, formatNothingRunning } from "../../ui-copy.js";
 import { createSlackAdapters } from "./context.js";
 
 // ============================================================================
@@ -67,6 +77,8 @@ async function withRetry<T>(
 
 export interface SlackEvent {
   type: "mention" | "dm";
+  conversationId: string;
+  conversationKind: ConversationKind;
   channel: string;
   ts: string;
   thread_ts?: string;
@@ -110,7 +122,7 @@ export interface SlackContext {
     userName?: string;
     channel: string;
     ts: string;
-    attachments: Array<{ local: string }>;
+    attachments: Array<{ localPath: string }>;
   };
   channelName?: string;
   channels: ChannelInfo[];
@@ -235,6 +247,23 @@ export class SlackBot implements Bot {
     return withRetry(async () => {
       const result = await this.webClient.chat.postMessage({ channel, text });
       return result.ts as string;
+    });
+  }
+
+  async postEphemeral(channel: string, user: string, text: string): Promise<void> {
+    return withRetry(async () => {
+      await this.webClient.chat.postEphemeral({ channel, user, text });
+    });
+  }
+
+  async openDirectMessage(userId: string): Promise<string> {
+    return withRetry(async () => {
+      const result = await this.webClient.conversations.open({ users: userId });
+      const channelId = result.channel?.id;
+      if (!channelId) {
+        throw new Error(`Failed to open DM for user ${userId}`);
+      }
+      return channelId;
     });
   }
 
@@ -371,16 +400,32 @@ export class SlackBot implements Bot {
    * Returns true if enqueued, false if queue is full (max 5).
    */
   enqueueEvent(event: BotEvent): boolean {
-    const queue = this.getQueue(event.channel);
+    const conversationId = event.conversationId;
+    const queue = this.getQueue(conversationId);
     if (queue.size() >= 5) {
       log.logWarning(
-        `Event queue full for ${event.channel}, discarding: ${event.text.substring(0, 50)}`,
+        `Event queue full for ${conversationId}, discarding: ${event.text.substring(0, 50)}`,
       );
       return false;
     }
-    log.logInfo(`Enqueueing event for ${event.channel}: ${event.text.substring(0, 50)}`);
+    log.logInfo(`Enqueueing event for ${conversationId}: ${event.text.substring(0, 50)}`);
     queue.enqueue(() => {
-      const adapters = createSlackAdapters(event as unknown as SlackEvent, this, true);
+      const slackEvent: SlackEvent = {
+        type: event.type as SlackEvent["type"],
+        conversationId,
+        conversationKind: event.conversationKind,
+        channel: conversationId,
+        ts: event.ts,
+        thread_ts: event.thread_ts,
+        user: event.user,
+        text: event.text,
+        attachments: event.attachments?.map((attachment) => ({
+          original: attachment.name,
+          localPath: attachment.localPath,
+        })),
+        sessionKey: event.sessionKey,
+      };
+      const adapters = createSlackAdapters(slackEvent, this, true);
       return this.handler.handleEvent(event, this, adapters, true);
     });
     return true;
@@ -407,12 +452,12 @@ export class SlackBot implements Bot {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "*Pi Agent*\nWelcome back! Start a new task or check on running work.",
+          text: `*${PRODUCT_NAME}*\nStart a new task or check on running work.`,
         },
         accessory: {
           type: "image",
           image_url: "https://media1.tenor.com/m/lfDATg4Bhc0AAAAC/happy-cat.gif",
-          alt_text: "Pi Agent",
+          alt_text: PRODUCT_NAME,
         },
       },
     ];
@@ -520,11 +565,11 @@ export class SlackBot implements Bot {
         const channelLabel =
           ev.platform === "slack"
             ? (() => {
-                const channel = this.channels.get(ev.channelId);
-                const channelName = channel ? `#${channel.name}` : ev.channelId;
+                const channel = this.channels.get(ev.conversationId);
+                const channelName = channel ? `#${channel.name}` : ev.conversationId;
                 return `${ev.platform}:${channelName}`;
               })()
-            : `${ev.platform}:${ev.channelId}`;
+            : `${ev.platform}:${ev.conversationId}`;
         const nextStr = ev.nextRun
           ? new Date(ev.nextRun).toLocaleString("en-US", {
               month: "short",
@@ -574,6 +619,160 @@ export class SlackBot implements Bot {
     return this.handler.isRunning(channelId) ? channelId : null;
   }
 
+  private createDirectCommandAdapters(
+    conversationId: string,
+    userId: string,
+    userName: string | undefined,
+    text: string,
+    ts: string,
+  ): BotAdapters {
+    const message: ChatMessage = {
+      id: ts,
+      sessionKey: conversationId,
+      conversationKind: "direct",
+      userId,
+      userName,
+      text,
+      attachments: [],
+    };
+
+    const responseCtx: ChatResponseContext = {
+      respond: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      replaceResponse: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      respondInThread: async (responseText: string) => {
+        const messageTs = await this.postMessage(conversationId, responseText);
+        this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      setTyping: async () => {},
+      setWorking: async () => {},
+      uploadFile: async (filePath: string, title?: string) => {
+        await this.uploadFile(conversationId, filePath, title);
+      },
+      deleteResponse: async () => {},
+    };
+
+    return {
+      message,
+      responseCtx,
+      platform: this.getPlatformInfo(),
+    };
+  }
+
+  private createSlashCommandBot(conversationId: string, threadTs?: string): Bot {
+    return {
+      start: async () => {},
+      postMessage: async (_channel: string, text: string) => {
+        if (threadTs) {
+          return this.postInThread(conversationId, threadTs, text);
+        }
+        return this.postMessage(conversationId, text);
+      },
+      updateMessage: async (channel: string, ts: string, text: string) => {
+        await this.updateMessage(channel, ts, text);
+      },
+      enqueueEvent: (event: BotEvent) => this.enqueueEvent(event),
+      getPlatformInfo: () => this.getPlatformInfo(),
+    };
+  }
+
+  private async routeSlashLoginCommand(payload: {
+    command: string;
+    text?: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const commandSuffix = payload.text?.trim();
+    const commandText = commandSuffix ? `${payload.command} ${commandSuffix}` : payload.command;
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const sourceChannelId = payload.channel_id;
+    const isDirectMessage = sourceChannelId.startsWith("D");
+    const targetChannelId = isDirectMessage
+      ? sourceChannelId
+      : await this.openDirectMessage(payload.user_id);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+
+    this.logToFile(targetChannelId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: commandText,
+      attachments: [],
+      isBot: false,
+    });
+
+    if (!isDirectMessage) {
+      await this.postEphemeral(
+        sourceChannelId,
+        payload.user_id,
+        `我已私訊你 ${PRODUCT_NAME} 的登入連結，請到私訊完成設定。`,
+      );
+    }
+
+    const event: BotEvent = {
+      type: "dm",
+      conversationId: targetChannelId,
+      conversationKind: "direct",
+      ts: eventTs,
+      user: payload.user_id,
+      text: commandText,
+      attachments: [],
+      sessionKey: targetChannelId,
+    };
+
+    const adapters = this.createDirectCommandAdapters(
+      targetChannelId,
+      payload.user_id,
+      userName,
+      commandText,
+      eventTs,
+    );
+
+    await this.handler.handleEvent(event, this, adapters, false);
+  }
+
+  private async routeSlashNewCommand(payload: {
+    command: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const conversationId = payload.channel_id;
+    if (!conversationId.startsWith("D")) {
+      await this.postEphemeral(
+        conversationId,
+        payload.user_id,
+        `為了避免誤清除共享上下文，${payload.command} 目前只能在與 ${PRODUCT_NAME} 的私訊中使用。`,
+      );
+      return;
+    }
+
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+
+    this.logToFile(conversationId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: payload.command,
+      attachments: [],
+      isBot: false,
+    });
+
+    const commandBot = this.createSlashCommandBot(conversationId);
+    await this.handler.handleNew(conversationId, conversationId, commandBot);
+  }
+
   private setupEventHandlers(): void {
     // Channel @mentions
     this.socketClient.on("app_mention", ({ event, ack }) => {
@@ -598,6 +797,8 @@ export class SlackBot implements Bot {
 
       const slackEvent: SlackEvent = {
         type: "mention",
+        conversationId: e.channel,
+        conversationKind: "shared",
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,
@@ -607,15 +808,16 @@ export class SlackBot implements Bot {
         sessionKey,
       };
 
-      // SYNC: Log to log.jsonl (ALWAYS, even for old messages)
-      // Also downloads attachments in background and stores local paths
-      slackEvent.attachments = this.logUserMessage(slackEvent);
+      const attachmentsPromise = this.logUserMessage(slackEvent);
 
       // Only trigger processing for messages AFTER startup (not replayed old messages)
       if (this.startupTs && e.ts < this.startupTs) {
         log.logInfo(
           `[${e.channel}] Logged old message (pre-startup), not triggering: ${slackEvent.text.substring(0, 30)}`,
         );
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -626,29 +828,25 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
 
-      // SYNC: Check if busy (per-thread)
-      if (this.handler.isRunning(sessionKey)) {
-        this.postMessage(
-          e.channel,
-          "_Already working in this thread. Say `@mama stop` to cancel._",
+      this.getQueue(sessionKey).enqueue(async () => {
+        slackEvent.attachments = await attachmentsPromise;
+        const adapters = createSlackAdapters(slackEvent, this, false);
+        return this.handler.handleEvent(
+          slackEvent as unknown as import("../../adapter.js").BotEvent,
+          this,
+          adapters,
+          false,
         );
-      } else {
-        this.getQueue(sessionKey).enqueue(() => {
-          const adapters = createSlackAdapters(slackEvent, this, false);
-          return this.handler.handleEvent(
-            slackEvent as unknown as import("../../adapter.js").BotEvent,
-            this,
-            adapters,
-            false,
-          );
-        });
-      }
+      });
 
       ack();
     });
@@ -682,6 +880,7 @@ export class SlackBot implements Bot {
       }
 
       const isDM = e.channel_type === "im";
+      const conversationKind: ConversationKind = isDM ? "direct" : "shared";
       const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
 
       // Skip channel @mentions - already handled by app_mention event
@@ -692,6 +891,8 @@ export class SlackBot implements Bot {
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
+        conversationId: e.channel,
+        conversationKind,
         channel: e.channel,
         ts: e.ts,
         thread_ts: e.thread_ts,
@@ -701,15 +902,16 @@ export class SlackBot implements Bot {
         sessionKey: isDM ? e.channel : undefined,
       };
 
-      // SYNC: Log to log.jsonl (ALL messages - channel chatter and DMs)
-      // Also downloads attachments in background and stores local paths
-      slackEvent.attachments = this.logUserMessage(slackEvent);
+      const attachmentsPromise = this.logUserMessage(slackEvent);
 
       // Only trigger processing for messages AFTER startup (not replayed old messages)
       if (this.startupTs && e.ts < this.startupTs) {
         log.logInfo(
           `[${e.channel}] Skipping old message (pre-startup): ${slackEvent.text.substring(0, 30)}`,
         );
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -721,8 +923,11 @@ export class SlackBot implements Bot {
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
         } else {
-          this.postMessage(e.channel, "_Nothing running_");
+          this.postMessage(e.channel, formatNothingRunning("slack"));
         }
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -735,28 +940,77 @@ export class SlackBot implements Bot {
           if (this.handler.isRunning(dmSessionKey)) {
             this.handler.handleStop(dmSessionKey, e.channel, this); // Don't await, don't queue
           } else {
-            this.postMessage(e.channel, "_Nothing running_");
+            this.postMessage(e.channel, formatNothingRunning("slack"));
           }
+          void attachmentsPromise.catch((err) => {
+            log.logWarning("Failed to log Slack message", String(err));
+          });
           ack();
           return;
         }
 
-        if (this.handler.isRunning(dmSessionKey)) {
-          this.postMessage(e.channel, "_Already working. Say `stop` to cancel._");
-        } else {
-          this.getQueue(dmSessionKey).enqueue(() => {
-            const adapters = createSlackAdapters(slackEvent, this, false);
-            return this.handler.handleEvent(
-              slackEvent as unknown as import("../../adapter.js").BotEvent,
-              this,
-              adapters,
-              false,
-            );
-          });
-        }
+        this.getQueue(dmSessionKey).enqueue(async () => {
+          slackEvent.attachments = await attachmentsPromise;
+          const adapters = createSlackAdapters(slackEvent, this, false);
+          return this.handler.handleEvent(
+            slackEvent as unknown as import("../../adapter.js").BotEvent,
+            this,
+            adapters,
+            false,
+          );
+        });
+      } else {
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
       }
 
       ack();
+    });
+
+    this.socketClient.on("slash_commands", async ({ body, ack }) => {
+      const payload = body as {
+        command?: string;
+        text?: string;
+        channel_id?: string;
+        user_id?: string;
+        user_name?: string;
+      };
+
+      await ack();
+
+      if (!payload.command || !payload.channel_id || !payload.user_id) {
+        return;
+      }
+
+      const handlerPromise =
+        payload.command === "/pi-login"
+          ? this.routeSlashLoginCommand({
+              command: payload.command,
+              text: payload.text,
+              channel_id: payload.channel_id,
+              user_id: payload.user_id,
+              user_name: payload.user_name,
+            })
+          : payload.command === "/pi-new"
+            ? this.routeSlashNewCommand({
+                command: payload.command,
+                channel_id: payload.channel_id,
+                user_id: payload.user_id,
+                user_name: payload.user_name,
+              })
+            : null;
+
+      if (!handlerPromise) {
+        return;
+      }
+
+      handlerPromise.catch((err) => {
+        log.logWarning(
+          "Slack slash command error",
+          err instanceof Error ? err.message : String(err),
+        );
+      });
     });
 
     // App Home tab
@@ -794,7 +1048,7 @@ export class SlackBot implements Bot {
       this.handler.forceStop(sessionKey);
 
       // Notify in channel
-      await this.postMessage(channelId, `_🔴 Force stopped by ${userId}_`);
+      await this.postMessage(channelId, formatForceStopped("slack", userId ?? "unknown"));
 
       // Refresh home tab
       if (userId) {
@@ -811,14 +1065,12 @@ export class SlackBot implements Bot {
   }
 
   /**
-   * Log a user message to log.jsonl (SYNC)
-   * Downloads attachments in background via store
+   * Log a user message to log.jsonl after attachments are ready.
    */
-  private logUserMessage(event: SlackEvent): Attachment[] {
+  private async logUserMessage(event: SlackEvent): Promise<Attachment[]> {
     const user = this.users.get(event.user);
-    // Process attachments - queues downloads in background
     const attachments = event.files
-      ? this.store.processAttachments(event.channel, event.files, event.ts)
+      ? await this.store.processAttachments(event.channel, event.files, event.ts)
       : [];
     this.logToFile(event.channel, {
       date: new Date(parseFloat(event.ts) * 1000).toISOString(),
@@ -912,9 +1164,8 @@ export class SlackBot implements Bot {
       const user = this.users.get(msg.user!);
       // Strip @mentions from text (same as live messages)
       const text = (msg.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim();
-      // Process attachments - queues downloads in background
       const attachments = msg.files
-        ? this.store.processAttachments(channelId, msg.files, msg.ts!)
+        ? await this.store.processAttachments(channelId, msg.files, msg.ts!)
         : [];
 
       this.logToFile(channelId, {

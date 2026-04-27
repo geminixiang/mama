@@ -36,7 +36,8 @@ function makeDiscordBot(overrides: Partial<DiscordBot> = {}): DiscordBot {
 function makeEvent(overrides: Partial<DiscordEvent> = {}): DiscordEvent {
   return {
     type: "mention",
-    channel: "CH001",
+    conversationId: "CH001",
+    conversationKind: "shared",
     ts: "MSG001",
     user: "U001",
     text: "hello",
