@@ -1,16 +1,16 @@
 import { createHash, randomBytes } from "crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
-import { resolveLinkBaseUrl } from "./config.js";
-import type { InMemoryLinkTokenStore } from "./link-token.js";
+import { resolveLinkBaseUrl } from "../config.js";
+import type { InMemoryLinkTokenStore } from "./session.js";
 import {
   getOAuthServices,
   resolveOAuthService,
   type LoginCredentialKind,
   type OAuthService,
-} from "./login.js";
-import * as log from "./log.js";
-import { PRODUCT_NAME } from "./ui-copy.js";
-import { defaultVaultTargetPath, type VaultManager } from "./vault.js";
+} from "./index.js";
+import * as log from "../log.js";
+import { PRODUCT_NAME } from "../ui-copy.js";
+import { defaultVaultTargetPath, type VaultManager } from "../vault.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
