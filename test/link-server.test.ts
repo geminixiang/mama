@@ -192,7 +192,7 @@ describe("link server", () => {
     );
   });
 
-  test("/link shows Cloudflare preset guidance for API token onboarding", async () => {
+  test("/link shows built-in preset cards and provider-specific env guidance", async () => {
     const stateDir = join(tmpdir(), `mama-link-server-${Date.now()}-${Math.random()}`);
     dirs.push(stateDir);
 
@@ -210,8 +210,18 @@ describe("link server", () => {
 
     expect(response.status).toBe(200);
     expect(html).toContain("Cloudflare / Wrangler");
+    expect(html).toContain("OpenAI");
+    expect(html).toContain("Anthropic");
+    expect(html).toContain("Gemini");
+    expect(html).toContain("OpenRouter");
+    expect(html).toContain("GitHub PAT");
+    expect(html).toContain("Vercel");
+    expect(html).toContain("Sentry");
     expect(html).toContain("CLOUDFLARE_API_TOKEN");
-    expect(html).toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(html).toContain("GOOGLE_API_KEY");
+    expect(html).toContain("GITHUB_TOKEN");
+    expect(html).toContain("VERCEL_PROJECT_ID");
+    expect(html).toContain("SENTRY_AUTH_TOKEN");
     expect(html).toContain("Do not use the Global API Key.");
   });
 
@@ -239,23 +249,27 @@ describe("link server", () => {
         token: token.token,
         mode: "api_key",
         env: {
-          CLOUDFLARE_API_TOKEN: "v1.0-test-token",
-          CLOUDFLARE_ACCOUNT_ID: "b4ed92bb40d94816e882d9f39d4d236b",
+          GEMINI_API_KEY: "AIza-test-gemini-key",
+          GOOGLE_API_KEY: "AIza-test-gemini-key",
+          GH_TOKEN: "github_pat_test",
+          GITHUB_TOKEN: "github_pat_test",
         },
       }),
     });
     const body = (await response.json()) as { message: string };
 
     expect(response.status).toBe(200);
-    expect(body.message).toContain("2 secrets stored successfully in vault");
+    expect(body.message).toContain("4 secrets stored successfully in vault");
     expect(vaultManager.resolve("vault-u888")?.env).toMatchObject({
-      CLOUDFLARE_API_TOKEN: "v1.0-test-token",
-      CLOUDFLARE_ACCOUNT_ID: "b4ed92bb40d94816e882d9f39d4d236b",
+      GEMINI_API_KEY: "AIza-test-gemini-key",
+      GOOGLE_API_KEY: "AIza-test-gemini-key",
+      GH_TOKEN: "github_pat_test",
+      GITHUB_TOKEN: "github_pat_test",
     });
     expect(notify).toHaveBeenCalledWith(
       "telegram",
       "888",
-      expect.stringContaining("CLOUDFLARE_API_TOKEN"),
+      expect.stringContaining("GEMINI_API_KEY"),
     );
   });
 

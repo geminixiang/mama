@@ -39,10 +39,12 @@ interface PendingOAuthState {
 
 interface SecretPresetField {
   envKey: string;
+  envKeys?: string[];
   label: string;
   type: "text" | "password";
   placeholder: string;
   helpText: string;
+  optional?: boolean;
   pattern?: string;
   patternMessage?: string;
 }
@@ -80,6 +82,147 @@ const SECRET_PRESETS: SecretPreset[] = [
         helpText: "Find this via wrangler whoami or in the Cloudflare dashboard account page.",
         pattern: "^[A-Fa-f0-9]{32}$",
         patternMessage: "Account ID must be a 32-character hexadecimal string.",
+      },
+    ],
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    description: "Store an OpenAI API key for tools and SDKs that use OPENAI_API_KEY.",
+    note: "Create a standard API key from the OpenAI dashboard. Paste the key exactly as issued.",
+    fields: [
+      {
+        envKey: "OPENAI_API_KEY",
+        label: "OpenAI API Key",
+        type: "password",
+        placeholder: "sk-...",
+        helpText: "Used by the OpenAI SDK, CLI wrappers, and many coding tools.",
+      },
+    ],
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic",
+    description: "Store an Anthropic API key for Claude and tools that use ANTHROPIC_API_KEY.",
+    note: "Create this key from the Anthropic Console. Use a workspace-scoped key when possible.",
+    fields: [
+      {
+        envKey: "ANTHROPIC_API_KEY",
+        label: "Anthropic API Key",
+        type: "password",
+        placeholder: "sk-ant-...",
+        helpText: "Used by Claude integrations and Anthropic-compatible tooling.",
+      },
+    ],
+  },
+  {
+    id: "gemini",
+    label: "Gemini",
+    description:
+      "Store one Google AI Studio key and expose it as both GEMINI_API_KEY and GOOGLE_API_KEY.",
+    note: "Create a Gemini / Google AI Studio API key, then paste it once here for compatibility with both env names.",
+    fields: [
+      {
+        envKey: "GEMINI_API_KEY",
+        envKeys: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+        label: "Gemini API Key",
+        type: "password",
+        placeholder: "AIza...",
+        helpText: "One value will be written to both GEMINI_API_KEY and GOOGLE_API_KEY.",
+      },
+    ],
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    description: "Store an OpenRouter API key for tools that route models through OpenRouter.",
+    note: "Create a key from the OpenRouter dashboard and paste it here.",
+    fields: [
+      {
+        envKey: "OPENROUTER_API_KEY",
+        label: "OpenRouter API Key",
+        type: "password",
+        placeholder: "sk-or-v1-...",
+        helpText: "Used by OpenRouter SDKs and compatible model gateways.",
+      },
+    ],
+  },
+  {
+    id: "github_pat",
+    label: "GitHub PAT",
+    description:
+      "Store one GitHub personal access token and expose it as both GH_TOKEN and GITHUB_TOKEN.",
+    note: "Create a fine-grained or classic personal access token from GitHub Settings → Developer settings.",
+    fields: [
+      {
+        envKey: "GH_TOKEN",
+        envKeys: ["GH_TOKEN", "GITHUB_TOKEN"],
+        label: "GitHub Personal Access Token",
+        type: "password",
+        placeholder: "github_pat_...",
+        helpText: "One value will be written to both GH_TOKEN and GITHUB_TOKEN.",
+      },
+    ],
+  },
+  {
+    id: "vercel",
+    label: "Vercel",
+    description: "Store a Vercel token plus optional org and project IDs for deployment tooling.",
+    note: "Create a token from the Vercel dashboard. Org ID and Project ID are optional but useful for scripted deploys.",
+    fields: [
+      {
+        envKey: "VERCEL_TOKEN",
+        label: "Vercel Token",
+        type: "password",
+        placeholder: "vercel_...",
+        helpText: "Required for Vercel CLI and API access.",
+      },
+      {
+        envKey: "VERCEL_ORG_ID",
+        label: "Vercel Org ID",
+        type: "text",
+        placeholder: "team_...",
+        helpText: "Optional. Set this when you want to target a specific team or account.",
+        optional: true,
+      },
+      {
+        envKey: "VERCEL_PROJECT_ID",
+        label: "Vercel Project ID",
+        type: "text",
+        placeholder: "prj_...",
+        helpText: "Optional. Set this when deploy scripts need a fixed project reference.",
+        optional: true,
+      },
+    ],
+  },
+  {
+    id: "sentry",
+    label: "Sentry",
+    description: "Store a Sentry auth token plus optional org and project identifiers.",
+    note: "Create an auth token from Sentry Settings → Account → API → Auth Tokens. Org and project are optional helpers.",
+    fields: [
+      {
+        envKey: "SENTRY_AUTH_TOKEN",
+        label: "Sentry Auth Token",
+        type: "password",
+        placeholder: "sntrys_...",
+        helpText: "Required for Sentry CLI, releases, and sourcemap uploads.",
+      },
+      {
+        envKey: "SENTRY_ORG",
+        label: "Sentry Org Slug",
+        type: "text",
+        placeholder: "my-org",
+        helpText: "Optional. Helpful for Sentry CLI commands and CI automation.",
+        optional: true,
+      },
+      {
+        envKey: "SENTRY_PROJECT",
+        label: "Sentry Project Slug",
+        type: "text",
+        placeholder: "my-project",
+        helpText: "Optional. Helpful for release and sourcemap commands.",
+        optional: true,
       },
     ],
   },
@@ -496,8 +639,43 @@ const sharedPageStyles = `
     height: 20px;
   }
 
+  .service-logo-text {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
   .service-logo.cloudflare {
     background: linear-gradient(180deg, #ffb66d 0%, #f48120 100%);
+  }
+
+  .service-logo.openai {
+    background: linear-gradient(180deg, #3e4045 0%, #111315 100%);
+  }
+
+  .service-logo.anthropic {
+    background: linear-gradient(180deg, #d6b48c 0%, #9a6d3a 100%);
+  }
+
+  .service-logo.gemini {
+    background: linear-gradient(180deg, #8ab4ff 0%, #5b6cff 100%);
+  }
+
+  .service-logo.openrouter {
+    background: linear-gradient(180deg, #8c8cff 0%, #4f46e5 100%);
+  }
+
+  .service-logo.github {
+    background: linear-gradient(180deg, #4a4f57 0%, #1b1f23 100%);
+  }
+
+  .service-logo.vercel {
+    background: linear-gradient(180deg, #4a4f57 0%, #000 100%);
+  }
+
+  .service-logo.sentry {
+    background: linear-gradient(180deg, #7c5cff 0%, #3f2e8c 100%);
   }
 
   .service-logo.manual {
@@ -814,12 +992,28 @@ function renderServiceLogo(kind: string): string {
     </span>`;
   }
 
-  return `<span class="service-logo manual" aria-hidden="true">
-    <svg viewBox="0 0 24 24" fill="none">
-      <path d="M6.5 8.5 10 12l-3.5 3.5" stroke="white" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/>
-      <path d="M12 15.5h5.5" stroke="white" stroke-width="1.9" stroke-linecap="round"/>
-    </svg>
-  </span>`;
+  const textLogos: Record<string, { className: string; text: string }> = {
+    openai: { className: "openai", text: "OA" },
+    anthropic: { className: "anthropic", text: "AI" },
+    gemini: { className: "gemini", text: "G" },
+    openrouter: { className: "openrouter", text: "OR" },
+    github_pat: { className: "github", text: "GH" },
+    vercel: { className: "vercel", text: "V" },
+    sentry: { className: "sentry", text: "S" },
+    manual: { className: "manual", text: ">_" },
+  };
+  const logo = textLogos[kind] ?? textLogos.manual;
+  return `<span class="service-logo ${logo.className}" aria-hidden="true"><span class="service-logo-text">${logo.text}</span></span>`;
+}
+
+function resolveFieldEnvKeys(field: SecretPresetField): string[] {
+  return field.envKeys && field.envKeys.length > 0 ? field.envKeys : [field.envKey];
+}
+
+function renderStoredEnvKeysInline(field: SecretPresetField): string {
+  return resolveFieldEnvKeys(field)
+    .map((envKey) => `<code>${esc(envKey)}</code>`)
+    .join(", ");
 }
 
 function renderHelpIcon(html: string): string {
@@ -832,11 +1026,13 @@ function renderHelpIcon(html: string): string {
 function renderPresetProviderCard(preset: SecretPreset): string {
   const headerHelp = preset.note ? renderHelpIcon(esc(preset.note)) : "";
   const fields = preset.fields
-    .map(
-      (field) => `<div class="provider-field">
+    .map((field) => {
+      const storedKeys = renderStoredEnvKeysInline(field);
+      const helpText = `${esc(field.helpText)} Stored as ${storedKeys}.${field.optional ? " Optional." : ""}`;
+      return `<div class="provider-field">
         <label for="preset-${esc(preset.id)}-${esc(field.envKey)}">
           ${esc(field.label)}
-          ${renderHelpIcon(`${esc(field.helpText)} Stored as <code>${esc(field.envKey)}</code>.`)}
+          ${renderHelpIcon(helpText)}
         </label>
         <input
           id="preset-${esc(preset.id)}-${esc(field.envKey)}"
@@ -844,12 +1040,14 @@ function renderPresetProviderCard(preset: SecretPreset): string {
           autocomplete="off"
           placeholder="${esc(field.placeholder)}"
           data-env-key="${esc(field.envKey)}"
+          data-env-keys="${esc(resolveFieldEnvKeys(field).join(","))}"
           data-field-label="${esc(field.label)}"
+          ${field.optional ? 'data-optional="true"' : ""}
           ${field.pattern ? `data-pattern="${esc(field.pattern)}"` : ""}
           ${field.patternMessage ? `data-pattern-message="${esc(field.patternMessage)}"` : ""}
         >
-      </div>`,
-    )
+      </div>`;
+    })
     .join("\n");
 
   return `<section class="card provider-card" data-provider-kind="preset" data-provider-id="${esc(preset.id)}">
@@ -982,11 +1180,21 @@ function renderCredentialPage(
       for (const input of inputs) {
         const value = input.value.trim();
         const label = input.dataset.fieldLabel || input.dataset.envKey || 'a value';
-        if (!value) return { error: 'Please enter ' + label + '.' };
+        const optional = input.dataset.optional === 'true';
+        if (!value) {
+          if (optional) continue;
+          return { error: 'Please enter ' + label + '.' };
+        }
         if (input.dataset.pattern && !(new RegExp(input.dataset.pattern).test(value))) {
           return { error: input.dataset.patternMessage || ('Invalid ' + label + '.') };
         }
-        env[input.dataset.envKey] = value;
+        const envKeys = (input.dataset.envKeys || input.dataset.envKey || '')
+          .split(',')
+          .map((entry) => entry.trim())
+          .filter(Boolean);
+        for (const envKey of envKeys) {
+          env[envKey] = value;
+        }
       }
       return { env };
     }
