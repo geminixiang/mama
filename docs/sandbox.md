@@ -150,10 +150,19 @@ container-<name>
 ## `image:<image>`
 
 ```bash
-# Build the bundled image once
-docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+# Pull the prebuilt image from GHCR
+# Release builds publish :tools, :<version>, and :latest / :beta
+# Pushes to main also publish :edge
+docker pull ghcr.io/geminixiang/mama-sandbox:tools
 
 # Run mama with managed per-user containers
+mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:tools /path/to/workspace
+```
+
+如果你想自行客製 image，也可以本地 build：
+
+```bash
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
 mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 ```
 

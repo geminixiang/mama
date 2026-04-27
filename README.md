@@ -377,10 +377,19 @@ mama --sandbox=container:mama-tools /path/to/workspace
 ## Managed Per-User Container Sandbox
 
 ```bash
-# Build the bundled image once
-docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
+# Pull the prebuilt image from GHCR
+# Release builds publish :tools, :<version>, and :latest / :beta
+# Pushes to main also publish :edge
+docker pull ghcr.io/geminixiang/mama-sandbox:tools
 
 # Start mama with managed image sandboxes
+mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:tools /path/to/workspace
+```
+
+Or build the bundled image locally:
+
+```bash
+docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
 mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 ```
 
