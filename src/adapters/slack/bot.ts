@@ -808,15 +808,16 @@ export class SlackBot implements Bot {
         sessionKey,
       };
 
-      // SYNC: Log to log.jsonl (ALWAYS, even for old messages)
-      // Also downloads attachments in background and stores local paths
-      slackEvent.attachments = this.logUserMessage(slackEvent);
+      const attachmentsPromise = this.logUserMessage(slackEvent);
 
       // Only trigger processing for messages AFTER startup (not replayed old messages)
       if (this.startupTs && e.ts < this.startupTs) {
         log.logInfo(
           `[${e.channel}] Logged old message (pre-startup), not triggering: ${slackEvent.text.substring(0, 30)}`,
         );
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -829,11 +830,15 @@ export class SlackBot implements Bot {
         } else {
           this.postMessage(e.channel, formatNothingRunning("slack"));
         }
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
 
-      this.getQueue(sessionKey).enqueue(() => {
+      this.getQueue(sessionKey).enqueue(async () => {
+        slackEvent.attachments = await attachmentsPromise;
         const adapters = createSlackAdapters(slackEvent, this, false);
         return this.handler.handleEvent(
           slackEvent as unknown as import("../../adapter.js").BotEvent,
@@ -897,15 +902,16 @@ export class SlackBot implements Bot {
         sessionKey: isDM ? e.channel : undefined,
       };
 
-      // SYNC: Log to log.jsonl (ALL messages - channel chatter and DMs)
-      // Also downloads attachments in background and stores local paths
-      slackEvent.attachments = this.logUserMessage(slackEvent);
+      const attachmentsPromise = this.logUserMessage(slackEvent);
 
       // Only trigger processing for messages AFTER startup (not replayed old messages)
       if (this.startupTs && e.ts < this.startupTs) {
         log.logInfo(
           `[${e.channel}] Skipping old message (pre-startup): ${slackEvent.text.substring(0, 30)}`,
         );
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -919,6 +925,9 @@ export class SlackBot implements Bot {
         } else {
           this.postMessage(e.channel, formatNothingRunning("slack"));
         }
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
+        });
         ack();
         return;
       }
@@ -933,11 +942,15 @@ export class SlackBot implements Bot {
           } else {
             this.postMessage(e.channel, formatNothingRunning("slack"));
           }
+          void attachmentsPromise.catch((err) => {
+            log.logWarning("Failed to log Slack message", String(err));
+          });
           ack();
           return;
         }
 
-        this.getQueue(dmSessionKey).enqueue(() => {
+        this.getQueue(dmSessionKey).enqueue(async () => {
+          slackEvent.attachments = await attachmentsPromise;
           const adapters = createSlackAdapters(slackEvent, this, false);
           return this.handler.handleEvent(
             slackEvent as unknown as import("../../adapter.js").BotEvent,
@@ -945,6 +958,10 @@ export class SlackBot implements Bot {
             adapters,
             false,
           );
+        });
+      } else {
+        void attachmentsPromise.catch((err) => {
+          log.logWarning("Failed to log Slack message", String(err));
         });
       }
 
@@ -1048,14 +1065,12 @@ export class SlackBot implements Bot {
   }
 
   /**
-   * Log a user message to log.jsonl (SYNC)
-   * Downloads attachments in background via store
+   * Log a user message to log.jsonl after attachments are ready.
    */
-  private logUserMessage(event: SlackEvent): Attachment[] {
+  private async logUserMessage(event: SlackEvent): Promise<Attachment[]> {
     const user = this.users.get(event.user);
-    // Process attachments - queues downloads in background
     const attachments = event.files
-      ? this.store.processAttachments(event.channel, event.files, event.ts)
+      ? await this.store.processAttachments(event.channel, event.files, event.ts)
       : [];
     this.logToFile(event.channel, {
       date: new Date(parseFloat(event.ts) * 1000).toISOString(),
@@ -1149,9 +1164,8 @@ export class SlackBot implements Bot {
       const user = this.users.get(msg.user!);
       // Strip @mentions from text (same as live messages)
       const text = (msg.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim();
-      // Process attachments - queues downloads in background
       const attachments = msg.files
-        ? this.store.processAttachments(channelId, msg.files, msg.ts!)
+        ? await this.store.processAttachments(channelId, msg.files, msg.ts!)
         : [];
 
       this.logToFile(channelId, {

@@ -303,3 +303,82 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 });
+
+describe("SlackBot attachments", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-slack-attachments-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("waits for attachment downloads before invoking the agent", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let mentionHandler:
+      | ((payload: {
+          event: {
+            text: string;
+            channel: string;
+            user: string;
+            ts: string;
+            files?: Array<{ name: string; url_private: string }>;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    let resolveAttachments!: (attachments: Array<{ original: string; localPath: string }>) => void;
+    const attachmentsPromise = new Promise<Array<{ original: string; localPath: string }>>(
+      (resolve) => {
+        resolveAttachments = resolve;
+      },
+    );
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue(attachmentsPromise);
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "app_mention") mentionHandler = fn as typeof mentionHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const ack = vi.fn();
+    mentionHandler?.({
+      event: {
+        text: "<@B123> 看這個檔案",
+        channel: "C123",
+        user: "U123",
+        ts: "1001.0001",
+        files: [{ name: "clip.mov", url_private: "https://example.com/clip.mov" }],
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    await Promise.resolve();
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    resolveAttachments([{ original: "clip.mov", localPath: "C123/attachments/1_clip.mov" }]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      attachments: [{ original: "clip.mov", localPath: "C123/attachments/1_clip.mov" }],
+    });
+  });
+});
