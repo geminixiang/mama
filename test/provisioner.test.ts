@@ -226,4 +226,98 @@ describe("DockerContainerManager", () => {
     await expect(manager.provision("slack-u123")).resolves.toBe("mama-sandbox-slack-u123");
     expect(execMock.mock.calls[2][1][0]).toBe("inspect");
   });
+
+  test("passes --cpus and --memory to docker run when limits are configured", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockRejectedValueOnce(new Error("No such object"))
+      .mockResolvedValueOnce({ stdout: "new-container-id\n" })
+      .mockResolvedValueOnce({ stdout: "" });
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+      limits: { cpus: "0.5", memory: "512m" },
+      execFileImpl: execMock as any,
+    });
+
+    await manager.provision("slack-u123");
+
+    expect(execMock).toHaveBeenNthCalledWith(2, "docker", [
+      "run",
+      "-d",
+      "--name",
+      "mama-sandbox-slack-u123",
+      "--label",
+      "mama.managed=true",
+      "--label",
+      "mama.sandbox=image",
+      "--label",
+      "mama.vault-id=slack-u123",
+      "--cpus",
+      "0.5",
+      "--memory",
+      "512m",
+      "-v",
+      "/tmp/workspace:/workspace",
+      "ubuntu:24.04",
+      "sleep",
+      "infinity",
+    ]);
+    expect(execMock).toHaveBeenNthCalledWith(3, "docker", [
+      "update",
+      "--cpus",
+      "0.5",
+      "--memory",
+      "512m",
+      "mama-sandbox-slack-u123",
+    ]);
+  });
+
+  test("applies limits to already-running containers via docker update", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "true\n" })
+      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "" });
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+      limits: { cpus: "1", memory: "1g" },
+      execFileImpl: execMock as any,
+    });
+
+    await manager.provision("slack-u123");
+
+    expect(execMock).toHaveBeenNthCalledWith(3, "docker", [
+      "update",
+      "--cpus",
+      "1",
+      "--memory",
+      "1g",
+      "mama-sandbox-slack-u123",
+    ]);
+  });
+
+  test("skips docker update when no limits configured", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "true\n" })
+      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' });
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+
+    await manager.provision("slack-u123");
+
+    const updateCalls = execMock.mock.calls.filter((c) => c[1][0] === "update");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  test("provision succeeds even when docker update fails", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockRejectedValueOnce(new Error("No such object"))
+      .mockResolvedValueOnce({ stdout: "new-container-id\n" })
+      .mockRejectedValueOnce(new Error("docker update unsupported"));
+    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+      limits: { memory: "256m" },
+      execFileImpl: execMock as any,
+    });
+
+    await expect(manager.provision("slack-u123")).resolves.toBe("mama-sandbox-slack-u123");
+  });
 });

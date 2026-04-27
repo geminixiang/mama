@@ -18,9 +18,19 @@ export interface ContainerMount {
   target: string;
 }
 
+export interface ResourceLimits {
+  cpus?: string;
+  memory?: string;
+}
+
 export interface ProvisionOptions {
   containerName?: string;
   mounts?: ContainerMount[];
+}
+
+export interface DockerContainerManagerOptions {
+  limits?: ResourceLimits;
+  execFileImpl?: ExecFileAsync;
 }
 
 export class DockerContainerManager {
@@ -30,11 +40,21 @@ export class DockerContainerManager {
   private static readonly IMAGE_MODE_LABEL = "mama.sandbox=image";
   private static readonly VAULT_ID_LABEL_KEY = "mama.vault-id";
 
+  private readonly limits?: ResourceLimits;
+  private readonly execFileImpl: ExecFileAsync;
+
   constructor(
     private readonly image: string,
     private readonly workspaceDir: string,
-    private readonly execFileImpl: ExecFileAsync = execFileAsync,
-  ) {}
+    options: DockerContainerManagerOptions | ExecFileAsync = {},
+  ) {
+    if (typeof options === "function") {
+      this.execFileImpl = options;
+    } else {
+      this.limits = options.limits;
+      this.execFileImpl = options.execFileImpl ?? execFileAsync;
+    }
+  }
 
   static sanitizeSegment(value: string): string {
     const sanitized = value
@@ -89,6 +109,7 @@ export class DockerContainerManager {
     }
 
     this.setState(vaultId, "running", containerName);
+    await this.applyResourceLimits(containerName);
     return containerName;
   }
 
@@ -195,6 +216,7 @@ export class DockerContainerManager {
       DockerContainerManager.IMAGE_MODE_LABEL,
       "--label",
       `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+      ...this.resourceLimitArgs(),
       "-v",
       `${this.workspaceDir}:/workspace`,
       ...this.mountArgs(mounts),
@@ -202,6 +224,26 @@ export class DockerContainerManager {
       "sleep",
       "infinity",
     ]);
+  }
+
+  private resourceLimitArgs(): string[] {
+    const args: string[] = [];
+    if (this.limits?.cpus) args.push("--cpus", this.limits.cpus);
+    if (this.limits?.memory) args.push("--memory", this.limits.memory);
+    return args;
+  }
+
+  private async applyResourceLimits(containerName: string): Promise<void> {
+    if (!this.limits?.cpus && !this.limits?.memory) return;
+    const args = ["update", ...this.resourceLimitArgs(), containerName];
+    try {
+      await this.execFileImpl("docker", args);
+    } catch (err) {
+      log.logWarning(
+        `Failed to apply resource limits to container ${containerName}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   private async hasBindMountDrift(
