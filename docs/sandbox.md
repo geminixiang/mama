@@ -169,6 +169,7 @@ mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 特性：
 
 - mama 會為每個 resolved vault / user 建立一個獨立 container
+- 每個 container 會綁定自己的 Docker bridge network，彼此預設互相隔離
 - workspace 會固定 mount 到 `/workspace`
 - vault env 會在執行時注入
 - vault file credential 會依 target path 自動 bind mount 進 container

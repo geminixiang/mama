@@ -72,6 +72,10 @@ export class DockerContainerManager {
     return `mama-sandbox-${vaultId}`;
   }
 
+  static networkName(vaultId: string): string {
+    return `mama-sandbox-net-${vaultId}`;
+  }
+
   async provision(vaultId: string, options: ProvisionOptions = {}): Promise<string> {
     const existing = this.inflight.get(vaultId);
     if (existing) return existing;
@@ -89,8 +93,8 @@ export class DockerContainerManager {
     const status = await this.inspectStatus(containerName);
 
     try {
-      if (status !== "missing" && (await this.hasBindMountDrift(containerName, mounts))) {
-        log.logInfo(`Container ${containerName} mounts changed; recreating container`);
+      if (status !== "missing" && (await this.hasRuntimeDrift(vaultId, containerName, mounts))) {
+        log.logInfo(`Container ${containerName} configuration changed; recreating container`);
         await this.execFileImpl("docker", ["rm", "-f", containerName]);
         await this.runContainer(vaultId, containerName, mounts);
         log.logInfo(`Container ${containerName} recreated`);
@@ -129,9 +133,10 @@ export class DockerContainerManager {
 
   async remove(vaultId: string): Promise<void> {
     const containerName = this.getContainerName(vaultId);
+    const networkName = DockerContainerManager.networkName(vaultId);
+
     try {
       await this.execFileImpl("docker", ["rm", "-f", containerName]);
-      this.state.delete(vaultId);
       log.logInfo(`Container ${containerName} removed`);
     } catch (err) {
       log.logWarning(
@@ -139,6 +144,18 @@ export class DockerContainerManager {
         err instanceof Error ? err.message : String(err),
       );
     }
+
+    try {
+      await this.execFileImpl("docker", ["network", "rm", networkName]);
+      log.logInfo(`Network ${networkName} removed`);
+    } catch (err) {
+      log.logWarning(
+        `Failed to remove network ${networkName}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+
+    this.state.delete(vaultId);
   }
 
   async stopIdle(maxIdleMs: number): Promise<void> {
@@ -204,12 +221,15 @@ export class DockerContainerManager {
     containerName: string,
     mounts: ContainerMount[],
   ): Promise<void> {
+    const networkName = await this.ensureNetwork(vaultId);
     log.logInfo(`Creating container ${containerName} from image ${this.image}`);
     await this.execFileImpl("docker", [
       "run",
       "-d",
       "--name",
       containerName,
+      "--network",
+      networkName,
       "--label",
       DockerContainerManager.MANAGED_LABEL,
       "--label",
@@ -244,6 +264,17 @@ export class DockerContainerManager {
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+
+  private async hasRuntimeDrift(
+    vaultId: string,
+    containerName: string,
+    mounts: ContainerMount[],
+  ): Promise<boolean> {
+    if (await this.hasBindMountDrift(containerName, mounts)) {
+      return true;
+    }
+    return this.hasNetworkModeDrift(vaultId, containerName);
   }
 
   private async hasBindMountDrift(
@@ -288,6 +319,39 @@ export class DockerContainerManager {
     }
 
     return [...parsed].sort();
+  }
+
+  private async hasNetworkModeDrift(vaultId: string, containerName: string): Promise<boolean> {
+    const expected = DockerContainerManager.networkName(vaultId);
+    const { stdout } = await this.execFileImpl("docker", [
+      "inspect",
+      "-f",
+      "{{.HostConfig.NetworkMode}}",
+      containerName,
+    ]);
+    return stdout.trim() !== expected;
+  }
+
+  private async ensureNetwork(vaultId: string): Promise<string> {
+    const networkName = DockerContainerManager.networkName(vaultId);
+    try {
+      await this.execFileImpl("docker", ["network", "inspect", networkName]);
+    } catch {
+      await this.execFileImpl("docker", [
+        "network",
+        "create",
+        "--driver",
+        "bridge",
+        "--label",
+        DockerContainerManager.MANAGED_LABEL,
+        "--label",
+        DockerContainerManager.IMAGE_MODE_LABEL,
+        "--label",
+        `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+        networkName,
+      ]);
+    }
+    return networkName;
   }
 
   private async inspectStatus(containerName: string): Promise<ContainerStatus> {

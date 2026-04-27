@@ -393,7 +393,7 @@ docker build -f docker/mama-sandbox.Dockerfile -t mama-sandbox:tools .
 mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 ```
 
-In this mode mama creates one Docker container per resolved vault/user, mounts the workspace at `/workspace`, injects vault env on execution, mounts any credential files declared in the vault, and stops idle containers automatically.
+In this mode mama creates one Docker container per resolved vault/user, attaches each container to its own Docker bridge network for per-user network isolation, mounts the workspace at `/workspace`, injects vault env on execution, mounts any credential files declared in the vault, and stops idle containers automatically.
 
 ## Firecracker Sandbox
 
