@@ -52,6 +52,19 @@ describe("loadAgentConfig", () => {
     expect(config.sentryDsn).toBe("https://examplePublicKey@o0.ingest.sentry.io/0");
   });
 
+  test("reads sandboxCpus and sandboxMemory from settings.json", () => {
+    saveAgentConfig(tmpDir, { sandboxCpus: "0.5", sandboxMemory: "512m" });
+    const config = loadAgentConfig(tmpDir);
+    expect(config.sandboxCpus).toBe("0.5");
+    expect(config.sandboxMemory).toBe("512m");
+  });
+
+  test("sandboxCpus and sandboxMemory are undefined when not set", () => {
+    const config = loadAgentConfig(tmpDir);
+    expect(config.sandboxCpus).toBeUndefined();
+    expect(config.sandboxMemory).toBeUndefined();
+  });
+
   test("env vars override defaults but not settings.json", () => {
     process.env.MOM_AI_PROVIDER = "google";
     process.env.MOM_AI_MODEL = "gemini-2.0-flash";

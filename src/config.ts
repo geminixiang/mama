@@ -10,6 +10,8 @@ export interface AgentConfig {
   logFormat?: "console" | "json";
   logLevel?: "trace" | "debug" | "info" | "warn" | "error";
   sentryDsn?: string;
+  sandboxCpus?: string;
+  sandboxMemory?: string;
 }
 
 const DEFAULTS: AgentConfig = {
@@ -71,8 +73,20 @@ export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
   const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
+  const sandboxCpus = fromFile.sandboxCpus;
+  const sandboxMemory = fromFile.sandboxMemory;
 
-  return { provider, model, thinkingLevel, sessionScope, logFormat, logLevel, sentryDsn };
+  return {
+    provider,
+    model,
+    thinkingLevel,
+    sessionScope,
+    logFormat,
+    logLevel,
+    sentryDsn,
+    sandboxCpus,
+    sandboxMemory,
+  };
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {

@@ -177,6 +177,25 @@ vault key 選擇邏輯：
 - 需要 per-user env/file credential isolation
 - 想比 shared container 更安全，但又不想直接上 Firecracker
 
+### 容器資源限制
+
+在 `settings.json` 中可設定每個 managed container 的 CPU 與記憶體上限：
+
+```json
+{
+  "sandboxCpus": "0.5",
+  "sandboxMemory": "512m"
+}
+```
+
+| 欄位            | 說明                             | 範例值           |
+| --------------- | -------------------------------- | ---------------- |
+| `sandboxCpus`   | CPU 核心數上限（浮點數字串）     | `"0.5"`, `"2"`   |
+| `sandboxMemory` | 記憶體上限（Docker memory 格式） | `"512m"`, `"2g"` |
+
+- 建立新 container 時，限制直接加進 `docker run` 參數
+- 已在執行的 container 會在下次 provision 時透過 `docker update` 立即套用新限制，不需重新建立
+
 ---
 
 ## `firecracker:<vm-id>:<host-path>`

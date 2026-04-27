@@ -26,6 +26,7 @@ import { startLinkServer } from "./link-server.js";
 import { parseLoginCommand } from "./login.js";
 import { InMemoryLinkTokenStore } from "./link-token.js";
 import { DockerContainerManager } from "./provisioner.js";
+import { loadAgentConfig } from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import {
@@ -249,8 +250,16 @@ if (bindingStore.isEnabled()) {
   );
 }
 
+const startupConfig = loadAgentConfig(workingDir);
+const sandboxLimits =
+  startupConfig.sandboxCpus || startupConfig.sandboxMemory
+    ? { cpus: startupConfig.sandboxCpus, memory: startupConfig.sandboxMemory }
+    : undefined;
+
 const provisioner =
-  sandbox.type === "image" ? new DockerContainerManager(sandbox.image, workingDir) : undefined;
+  sandbox.type === "image"
+    ? new DockerContainerManager(sandbox.image, workingDir, { limits: sandboxLimits })
+    : undefined;
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
