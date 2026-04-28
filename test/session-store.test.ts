@@ -178,7 +178,7 @@ describe("managed session initialization", () => {
     const header = entries.find((entry) => entry.type === "session");
 
     expect(header?.cwd).toBe(channelDir);
-    expect(countSessionHeaders(sessionFile)).toBeGreaterThan(0);
+    expect(countSessionHeaders(sessionFile)).toBe(1);
   });
 
   test("creates a fixed-path thread session with the provided cwd", () => {
@@ -188,6 +188,7 @@ describe("managed session initialization", () => {
     const sessionManager = openManagedSession(threadFile, sessionDir, channelDir);
 
     sessionManager.appendMessage(makeUserMessage("hello thread"));
+    sessionManager.appendMessage(makeAssistantMessage("thread reply"));
 
     const entries = readFileSync(threadFile, "utf-8")
       .split("\n")

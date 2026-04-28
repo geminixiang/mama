@@ -88,6 +88,10 @@ export function openManagedSession(
   sessionDir: string,
   cwd: string,
 ): SessionManager {
+  if (shouldRecreatePreinitializedSession(sessionFile)) {
+    rmSync(sessionFile, { force: true });
+  }
+
   const SessionManagerCtor = SessionManager as unknown as {
     new (cwd: string, sessionDir: string, sessionFile: string, persist: boolean): SessionManager;
   };
@@ -141,6 +145,22 @@ function hasSessionHeader(sessionFile: string): boolean {
     return false;
   }
   return false;
+}
+
+function shouldRecreatePreinitializedSession(sessionFile: string): boolean {
+  if (!existsSync(sessionFile)) return false;
+
+  try {
+    const entries = readFileSync(sessionFile, "utf-8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string });
+
+    return entries.length === 1 && entries[0]?.type === "session";
+  } catch {
+    return false;
+  }
 }
 
 function getFileDir(sessionFile: string): string {

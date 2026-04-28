@@ -47,6 +47,12 @@ interface LogMessage {
   isBot?: boolean;
 }
 
+interface ExistingSessionMessage {
+  timestamp?: number;
+  rawText: string;
+  normalizedText: string;
+}
+
 /**
  * Thread filter for scoping log sync to a specific thread session.
  * When provided, only messages belonging to this thread are synced,
@@ -69,7 +75,7 @@ export interface ThreadFilter {
  *
  * @param sessionManager - The SessionManager to sync to
  * @param conversationDir - Path to the conversation directory containing log.jsonl
- * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
+ * @param excludeSlackTs - Current platform message ID/timestamp (will be added via prompt(), not sync)
  * @param timeRange - Optional time range to filter log entries (defaults to last 10 days)
  * @param threadFilter - Optional thread filter to scope sync to a specific thread
  * @returns Number of messages synced
@@ -89,10 +95,12 @@ export async function syncLogToSessionManager(
 
   if (!existsSync(logFile)) return 0;
 
-  // Build set of existing log-derived message keys from session entries.
-  // Deduping must use the embedded message.timestamp/content pair, not the
-  // session entry timestamp (ISO string), otherwise every refresh/run can
-  // re-import the same log.jsonl user messages again.
+  // Build a list of existing session messages for dedupe.
+  // Live user prompts carry a formatted timestamp in the text and use Date.now(),
+  // while log.jsonl uses the platform event timestamp. We therefore need a small
+  // fuzzy match window in addition to the exact timestamp/content match used for
+  // already-synced log entries.
+  const existingMessages: ExistingSessionMessage[] = [];
   const existingMessageKeys = new Set<string>();
   for (const entry of sessionManager.getEntries()) {
     if (entry.type !== "message") continue;
@@ -106,6 +114,11 @@ export async function syncLogToSessionManager(
       : typeof message.content === "string"
         ? message.content
         : "";
+    existingMessages.push({
+      timestamp: typeof message.timestamp === "number" ? message.timestamp : undefined,
+      rawText: contentText,
+      normalizedText: normalizeComparableUserText(contentText),
+    });
     if (typeof message.timestamp === "number") {
       existingMessageKeys.add(`${message.timestamp}:${contentText}`);
     }
@@ -127,6 +140,11 @@ export async function syncLogToSessionManager(
 
       // Skip the current message being processed (will be added via prompt())
       if (excludeSlackTs && slackTs === excludeSlackTs) continue;
+
+      // While queued messages are being processed, newer messages may already be present
+      // in log.jsonl. Do not look ahead into those future messages when building the
+      // current turn's context.
+      if (!isMessageAtOrBeforeCurrent(slackTs, excludeSlackTs)) continue;
 
       // Skip bot messages - added through agent flow
       if (logMsg.isBot) continue;
@@ -164,6 +182,7 @@ export async function syncLogToSessionManager(
       const msgTime = new Date(date).getTime() || Date.now();
       const messageKey = `${msgTime}:${messageText}`;
       if (existingMessageKeys.has(messageKey)) continue;
+      if (hasExistingSessionMessage(existingMessages, msgTime, messageText)) continue;
 
       // Skip messages outside the time range
       if (msgTime < range.start || msgTime > range.end) continue;
@@ -175,6 +194,11 @@ export async function syncLogToSessionManager(
       };
 
       newMessages.push({ timestamp: msgTime, message: userMessage });
+      existingMessages.push({
+        timestamp: msgTime,
+        rawText: messageText,
+        normalizedText: normalizeComparableUserText(messageText),
+      });
       existingMessageKeys.add(messageKey); // Track to avoid duplicates within this sync
     } catch {
       // Skip malformed lines
@@ -202,4 +226,50 @@ export async function syncLogToSessionManager(
 // without interfering with coding-agent's global settings files.
 export function createMamaSettingsManager(_workspaceDir: string): SettingsManager {
   return SettingsManager.inMemory();
+}
+
+function normalizeComparableUserText(text: string): string {
+  return text.replace(
+    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s+(?=\[[^\]]+\](?:\s+\[in-thread:[^\]]+\])?:\s)/,
+    "",
+  );
+}
+
+function hasExistingSessionMessage(
+  existingMessages: ExistingSessionMessage[],
+  timestamp: number,
+  text: string,
+): boolean {
+  const normalizedText = normalizeComparableUserText(text);
+  return existingMessages.some((existing) => {
+    if (existing.timestamp === timestamp && existing.rawText === text) {
+      return true;
+    }
+    if (existing.normalizedText !== normalizedText || existing.timestamp === undefined) {
+      return false;
+    }
+    return existing.timestamp >= timestamp;
+  });
+}
+
+function isMessageAtOrBeforeCurrent(messageId: string, currentMessageId?: string): boolean {
+  if (!currentMessageId) return true;
+  const comparison = compareMessageIds(messageId, currentMessageId);
+  return comparison === null || comparison <= 0;
+}
+
+function compareMessageIds(a: string, b: string): number | null {
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+    const left = BigInt(a);
+    const right = BigInt(b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  const left = Number(a);
+  const right = Number(b);
+  if (Number.isFinite(left) && Number.isFinite(right)) {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  return null;
 }

@@ -151,6 +151,86 @@ describe("syncLogToSessionManager", () => {
     ]);
   });
 
+  test("does not look ahead to newer queued messages", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "first",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:00:05.000Z",
+        ts: "1000.0020",
+        user: "U001",
+        userName: "alice",
+        text: "second",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:00:10.000Z",
+        ts: "1000.0030",
+        user: "U001",
+        userName: "alice",
+        text: "third",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "[2026-04-01 18:00:00+08:00] [alice]: first" }],
+      timestamp: new Date("2026-04-01T10:00:00.500Z").getTime(),
+    });
+
+    const synced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      "1000.0020",
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "C001" },
+    );
+
+    expect(synced).toBe(0);
+    expect(getMessageTexts(sessionManager)).toEqual(["[2026-04-01 18:00:00+08:00] [alice]: first"]);
+  });
+
+  test("does not re-import a live prompt that was already added to the session", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "hello from slack",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [{ type: "text", text: "[2026-04-01 18:01:10+08:00] [alice]: hello from slack" }],
+      timestamp: new Date("2026-04-01T10:01:10.000Z").getTime(),
+    });
+
+    const synced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      undefined,
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "C001" },
+    );
+
+    expect(synced).toBe(0);
+    expect(getMessageTexts(sessionManager)).toEqual([
+      "[2026-04-01 18:01:10+08:00] [alice]: hello from slack",
+    ]);
+  });
+
   test("thread scope only syncs the matching root message and thread replies", async () => {
     writeLog([
       {
