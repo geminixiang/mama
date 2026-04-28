@@ -23,7 +23,12 @@ import type {
   PlatformInfo,
 } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
-import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import {
+  createMamaSettingsManager,
+  findLogMessageById,
+  syncLogToSessionManager,
+  type ConversationLogMessage,
+} from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { UserBindingStore } from "./bindings.js";
@@ -36,6 +41,7 @@ import {
   extractSessionSuffix,
   extractSessionUuid,
   forkThreadSessionFile,
+  forkThreadSessionFileFromRootMessage,
   getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
@@ -67,6 +73,13 @@ const IMAGE_MIME_TYPES: Record<string, string> = {
 
 function getImageMimeType(filename: string): string | undefined {
   return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
+}
+
+function buildThreadSessionName(message: ConversationLogMessage | null): string | undefined {
+  const text = message?.text?.trim();
+  if (!text) return undefined;
+  const userLabel = message?.userName || message?.user || "unknown";
+  return `[${userLabel}]: ${text}`;
 }
 
 async function getMemory(conversationDir: string): Promise<string> {
@@ -506,6 +519,8 @@ export async function createRunner(
   // Thread sessions use fixed files: {conversationDir}/sessions/{threadTs}.jsonl
   const sessionDir = getChannelSessionDir(conversationDir);
   const isThread = sessionKey.includes(":");
+  const rootTs = extractSessionSuffix(sessionKey);
+  const threadRootMessage = isThread ? await findLogMessageById(conversationDir, rootTs) : null;
 
   let sessionManager!: SessionManager;
   let contextFile!: string;
@@ -520,7 +535,21 @@ export async function createRunner(
       const conversationSource = resolveChannelSessionFile(conversationDir);
       if (conversationSource) {
         try {
-          contextFile = forkThreadSessionFile(conversationSource, threadFile, conversationDir);
+          contextFile = threadRootMessage
+            ? forkThreadSessionFileFromRootMessage(
+                conversationSource,
+                threadFile,
+                conversationDir,
+                {
+                  text: threadRootMessage.text,
+                  userName: threadRootMessage.userName,
+                  user: threadRootMessage.user,
+                  loggedAt: threadRootMessage.date
+                    ? new Date(threadRootMessage.date).getTime()
+                    : undefined,
+                },
+              )
+            : forkThreadSessionFile(conversationSource, threadFile, conversationDir);
           sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
         } catch {
           contextFile = createManagedSessionFileAtPath(threadFile, conversationDir);
@@ -536,9 +565,13 @@ export async function createRunner(
     contextFile = resolveManagedSessionFile(sessionDir, conversationDir);
     sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
   }
+  const threadSessionName = buildThreadSessionName(threadRootMessage);
+  if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
+    sessionManager.appendSessionInfo(threadSessionName);
+  }
+
   const sessionUuid = extractSessionUuid(contextFile);
   // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
-  const rootTs = extractSessionSuffix(sessionKey);
   const settingsManager = createMamaSettingsManager(join(conversationDir, ".."));
 
   // Create AuthStorage and ModelRegistry

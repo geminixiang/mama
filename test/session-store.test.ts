@@ -8,6 +8,7 @@ import {
   createManagedSessionFileAtPath,
   createNewSessionFile,
   forkThreadSessionFile,
+  forkThreadSessionFileFromRootMessage,
   getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
@@ -239,6 +240,30 @@ describe("thread fork", () => {
     const reopened = openManagedSession(existing!, sessionDir, channelDir);
     expect(reopened.getSessionId()).toBe(threadSessionId);
     expect(readFileSync(existing!, "utf-8")).toContain("thread msg");
+  });
+
+  test("forks thread history from the root message turn instead of the latest channel state", () => {
+    const sessionDir = getChannelSessionDir(channelDir);
+    const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
+    const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
+    channelSM.appendMessage(makeUserMessage("[2026-04-28 18:18:59+08:00] [alice]: first"));
+    channelSM.appendMessage(makeAssistantMessage("first reply"));
+    channelSM.appendMessage(makeUserMessage("[2026-04-28 18:19:03+08:00] [alice]: second"));
+    channelSM.appendMessage(makeAssistantMessage("second reply"));
+    channelSM.appendMessage(makeUserMessage("[2026-04-28 18:19:08+08:00] [alice]: third"));
+    channelSM.appendMessage(makeAssistantMessage("third reply"));
+
+    const threadFile = getThreadSessionFile(channelDir, "C123:1777371539.041289");
+    forkThreadSessionFileFromRootMessage(channelFile, threadFile, channelDir, {
+      userName: "alice",
+      text: "second",
+      loggedAt: 3,
+    });
+
+    const threadContent = readFileSync(threadFile, "utf-8");
+    expect(threadContent).toContain("first reply");
+    expect(threadContent).toContain("second reply");
+    expect(threadContent).not.toContain("third");
   });
 
   test("different threads get independent session IDs", () => {

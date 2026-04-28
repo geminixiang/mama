@@ -37,7 +37,7 @@ export interface TimeRange {
  */
 const DEFAULT_SYNC_DAYS = 10;
 
-interface LogMessage {
+export interface ConversationLogMessage {
   date?: string;
   ts?: string;
   threadTs?: string;
@@ -132,7 +132,7 @@ export async function syncLogToSessionManager(
 
   for (const line of logLines) {
     try {
-      const logMsg: LogMessage = JSON.parse(line);
+      const logMsg: ConversationLogMessage = JSON.parse(line);
 
       const slackTs = logMsg.ts;
       const date = logMsg.date;
@@ -226,6 +226,30 @@ export async function syncLogToSessionManager(
 // without interfering with coding-agent's global settings files.
 export function createMamaSettingsManager(_workspaceDir: string): SettingsManager {
   return SettingsManager.inMemory();
+}
+
+export async function findLogMessageById(
+  conversationDir: string,
+  messageId: string,
+): Promise<ConversationLogMessage | null> {
+  const logFile = join(conversationDir, "log.jsonl");
+  if (!existsSync(logFile)) return null;
+
+  const logContent = await readFile(logFile, "utf-8");
+  const logLines = logContent.trim().split("\n").filter(Boolean);
+
+  for (let i = logLines.length - 1; i >= 0; i--) {
+    try {
+      const entry = JSON.parse(logLines[i]) as ConversationLogMessage;
+      if (entry.ts === messageId) {
+        return entry;
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  return null;
 }
 
 function normalizeComparableUserText(text: string): string {
