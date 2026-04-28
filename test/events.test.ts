@@ -191,6 +191,8 @@ describe("EventsWatcher platform routing", () => {
       conversationKind: "shared",
       text: "Deploy in 10 minutes",
       userId: "U123",
+      sessionKey: "CH-42:THREAD-1",
+      threadTs: "THREAD-1",
     });
 
     expect(enqueueSlack).not.toHaveBeenCalled();
@@ -202,7 +204,8 @@ describe("EventsWatcher platform routing", () => {
       user: "U123",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
       ts: "event:deploy-reminder.json",
-      sessionKey: "CH-42",
+      thread_ts: "THREAD-1",
+      sessionKey: "CH-42:THREAD-1",
     });
   });
 });

@@ -937,6 +937,8 @@ export async function createRunner(
         conversationId,
         conversationKind: message.conversationKind,
         userId: message.userId,
+        sessionKey: message.sessionKey,
+        threadTs: platform.name === "slack" ? (message.threadTs ?? message.id) : message.threadTs,
       });
 
       // Set up file upload function

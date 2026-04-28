@@ -40,6 +40,9 @@ export function createSlackAdapters(
    */
   const postFirstMessage = async (text: string): Promise<string> => {
     if (isEvent) {
+      if (event.thread_ts) {
+        return slack.postInThread(channelId, event.thread_ts, text);
+      }
       return slack.postMessage(channelId, text);
     }
     return slack.postInThread(channelId, event.ts, text);

@@ -32,6 +32,8 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
+      sessionKey: "C123",
+      threadTs: "1000.0001",
     });
 
     const result = await tool.execute("call-1", {
@@ -51,6 +53,8 @@ describe("createEventTool", () => {
       conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
+      sessionKey: "C123",
+      threadTs: "1000.0001",
     });
     expect(result.content[0]?.type).toBe("text");
     expect(result.content[0]?.text).toContain(
@@ -79,6 +83,8 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
+      sessionKey: "C123",
+      threadTs: "1000.0001",
     });
 
     await expect(
@@ -98,6 +104,7 @@ describe("createEventTool", () => {
       conversationId: "D123",
       conversationKind: "direct",
       userId: "U456",
+      sessionKey: "D123",
     });
 
     await expect(
@@ -128,6 +135,7 @@ describe("createEventTool", () => {
       conversationId: "999",
       conversationKind: "direct",
       userId: "U789",
+      sessionKey: "999",
     });
 
     const result = await tool.execute("call-1", {
@@ -150,6 +158,7 @@ describe("createEventTool", () => {
       text: "Check inbox",
       schedule: "0 9 * * 1-5",
       timezone: "Asia/Taipei",
+      sessionKey: "999",
     });
     expect(result.content[0]?.text).toContain(
       "Scheduled periodic event periodic-1700000000100.json",

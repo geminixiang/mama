@@ -36,6 +36,8 @@ interface EventToolContext {
   conversationId: string;
   conversationKind: "direct" | "shared";
   userId: string;
+  sessionKey: string;
+  threadTs?: string;
 }
 
 type EventToolParams = {
@@ -56,6 +58,8 @@ type EventPayload =
       conversationKind: "direct" | "shared";
       userId: string;
       text: string;
+      sessionKey?: string;
+      threadTs?: string;
     }
   | {
       type: "one-shot";
@@ -65,6 +69,8 @@ type EventPayload =
       userId: string;
       text: string;
       at: string;
+      sessionKey?: string;
+      threadTs?: string;
     }
   | {
       type: "periodic";
@@ -75,6 +81,8 @@ type EventPayload =
       text: string;
       schedule: string;
       timezone: string;
+      sessionKey?: string;
+      threadTs?: string;
     };
 
 export function createEventTool(workspaceDir: string): {
@@ -139,6 +147,8 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
     conversationKind: context.conversationKind,
     userId: context.userId,
     text: params.text,
+    sessionKey: context.sessionKey,
+    ...(context.threadTs ? { threadTs: context.threadTs } : {}),
   };
 
   if (params.type === "immediate") {

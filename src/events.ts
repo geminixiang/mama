@@ -18,7 +18,12 @@ import * as log from "./log.js";
 // Event Types
 // ============================================================================
 
-export interface ImmediateEvent {
+interface ScopedEventFields {
+  sessionKey?: string;
+  threadTs?: string;
+}
+
+export interface ImmediateEvent extends ScopedEventFields {
   type: "immediate";
   platform: string;
   conversationId: string;
@@ -28,7 +33,7 @@ export interface ImmediateEvent {
   text: string;
 }
 
-export interface OneShotEvent {
+export interface OneShotEvent extends ScopedEventFields {
   type: "one-shot";
   platform: string;
   conversationId: string;
@@ -38,7 +43,7 @@ export interface OneShotEvent {
   at: string; // ISO 8601 with timezone offset
 }
 
-export interface PeriodicEvent {
+export interface PeriodicEvent extends ScopedEventFields {
   type: "periodic";
   platform: string;
   conversationId: string;
@@ -337,6 +342,8 @@ export class EventsWatcher {
       data.conversationKind,
     );
     const userId = typeof data.userId === "string" ? data.userId : undefined;
+    const sessionKey = typeof data.sessionKey === "string" ? data.sessionKey : undefined;
+    const threadTs = typeof data.threadTs === "string" ? data.threadTs : undefined;
 
     switch (data.type) {
       case "immediate":
@@ -347,6 +354,8 @@ export class EventsWatcher {
           conversationKind,
           userId,
           text: data.text,
+          sessionKey,
+          threadTs,
         };
 
       case "one-shot":
@@ -361,6 +370,8 @@ export class EventsWatcher {
           userId,
           text: data.text,
           at: data.at,
+          sessionKey,
+          threadTs,
         };
 
       case "periodic":
@@ -379,6 +390,8 @@ export class EventsWatcher {
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
+          sessionKey,
+          threadTs,
         };
 
       default:
@@ -531,7 +544,8 @@ export class EventsWatcher {
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,
-      sessionKey: event.conversationId,
+      thread_ts: event.threadTs,
+      sessionKey: event.sessionKey ?? event.conversationId,
     };
 
     // Enqueue for processing
