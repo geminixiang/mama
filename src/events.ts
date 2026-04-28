@@ -203,20 +203,29 @@ export class EventsWatcher {
     const filePath = join(this.eventsDir, filename);
 
     if (!existsSync(filePath)) {
-      // File was deleted
-      this.handleDelete(filename);
+      // fs.watch can briefly report a file as missing during create/rename churn.
+      // Confirm deletion before canceling scheduled events.
+      void this.handleDelete(filename);
     } else if (this.knownFiles.has(filename)) {
       // File was modified - cancel existing and re-schedule
       this.cancelScheduled(filename);
-      this.handleFile(filename);
+      void this.handleFile(filename);
     } else {
       // New file
-      this.handleFile(filename);
+      void this.handleFile(filename);
     }
   }
 
-  private handleDelete(filename: string): void {
+  private async handleDelete(filename: string): Promise<void> {
     if (!this.knownFiles.has(filename)) return;
+
+    const filePath = join(this.eventsDir, filename);
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      await this.sleep(RETRY_BASE_MS * 2 ** i);
+      if (existsSync(filePath)) {
+        return;
+      }
+    }
 
     log.logInfo(`Event file deleted: ${filename}`);
     this.cancelScheduled(filename);

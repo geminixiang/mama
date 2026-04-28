@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -102,6 +102,50 @@ describe("EventsWatcher platform routing", () => {
         "ambiguous.json",
       ),
     ).toThrow(/Missing required field 'platform'/);
+  });
+
+  test("ignores transient missing-file signals so scheduled events stay active", async () => {
+    const { bot } = makeBot("slack");
+    const watcher = new EventsWatcher(eventsDir, { slack: bot }) as any;
+    const filename = "reminder.json";
+    const filePath = join(eventsDir, filename);
+
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        type: "one-shot",
+        platform: "slack",
+        conversationId: "D123",
+        conversationKind: "direct",
+        text: "wake up",
+        at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+
+    await watcher.handleFile(filename);
+    expect(watcher.timers.has(filename)).toBe(true);
+
+    watcher.sleep = vi.fn(async () => {
+      if (!existsSync(filePath)) {
+        writeFileSync(
+          filePath,
+          JSON.stringify({
+            type: "one-shot",
+            platform: "slack",
+            conversationId: "D123",
+            conversationKind: "direct",
+            text: "wake up",
+            at: new Date(Date.now() + 60_000).toISOString(),
+          }),
+        );
+      }
+    });
+
+    rmSync(filePath, { force: true });
+    await watcher.handleDelete(filename);
+
+    expect(watcher.timers.has(filename)).toBe(true);
+    expect(watcher.knownFiles.has(filename)).toBe(true);
   });
 
   test("routes synthetic events to the explicitly requested platform", () => {
