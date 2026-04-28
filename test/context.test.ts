@@ -89,6 +89,68 @@ describe("syncLogToSessionManager", () => {
     ]);
   });
 
+  test("does not duplicate messages when sync runs again after new activity", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "first top-level message",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:02:00.000Z",
+        ts: "1000.0030",
+        user: "U003",
+        userName: "charlie",
+        text: "second top-level message",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    const firstSynced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      undefined,
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "C001" },
+    );
+
+    expect(firstSynced).toBe(2);
+    expect(getMessageTexts(sessionManager)).toEqual([
+      "[alice]: first top-level message",
+      "[charlie]: second top-level message",
+    ]);
+
+    writeLog([
+      {
+        date: "2026-04-01T10:05:00.000Z",
+        ts: "1000.0050",
+        user: "U004",
+        userName: "dora",
+        text: "third top-level message",
+        isBot: false,
+      },
+    ]);
+
+    const secondSynced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      undefined,
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "C001" },
+    );
+
+    expect(secondSynced).toBe(1);
+    expect(getMessageTexts(sessionManager)).toEqual([
+      "[alice]: first top-level message",
+      "[charlie]: second top-level message",
+      "[dora]: third top-level message",
+    ]);
+  });
+
   test("thread scope only syncs the matching root message and thread replies", async () => {
     writeLog([
       {

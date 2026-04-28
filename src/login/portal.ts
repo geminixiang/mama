@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from "crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { resolveLinkBaseUrl } from "../config.js";
+import { handleSessionViewRequest } from "../session-view/portal.js";
+import type { InMemorySessionViewTokenStore } from "../session-view/store.js";
 import type { InMemoryLinkTokenStore } from "./session.js";
 import {
   getOAuthServices,
@@ -245,100 +247,113 @@ export function startLinkServer(
   linkTokenStore: InMemoryLinkTokenStore,
   vaultManager: VaultManager,
   notify: NotifyFn,
+  sessionViewTokenStore?: InMemorySessionViewTokenStore,
 ): Server {
   const oauthStates = new Map<string, PendingOAuthState>();
 
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    const url = new URL(req.url ?? "/", requestBaseUrl(req));
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    try {
+      const url = new URL(req.url ?? "/", requestBaseUrl(req));
 
-    if (req.method === "GET" && url.pathname === "/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true }));
-      return;
-    }
+      if (req.method === "GET" && url.pathname === "/health") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
 
-    if (req.method === "GET" && url.pathname === "/link") {
-      const rawToken = url.searchParams.get("token") ?? "";
-      const linkToken = linkTokenStore.peek(rawToken);
+      if (await handleSessionViewRequest(req, res, url, sessionViewTokenStore)) {
+        return;
+      }
 
-      if (!linkToken) {
-        res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+      if (req.method === "GET" && url.pathname === "/link") {
+        const rawToken = url.searchParams.get("token") ?? "";
+        const linkToken = linkTokenStore.peek(rawToken);
+
+        if (!linkToken) {
+          res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(
+            renderErrorPage(
+              "This link is invalid or has expired. Ask the bot for a new /login link.",
+            ),
+          );
+          return;
+        }
+
+        const oauthServiceHint = linkToken.providerId
+          ? resolveOAuthService(linkToken.providerId)
+          : undefined;
+        const oauthServices = getOAuthServices();
+        const defaultMode: LoginCredentialKind = oauthServiceHint ? "oauth" : "api_key";
+        const existingSecrets = describeVaultSecrets(vaultManager, linkToken.vaultId);
+
+        const title = oauthServiceHint ? `${oauthServiceHint.label} OAuth` : "Store Secret";
+        const helpText = oauthServiceHint
+          ? `Authorize ${oauthServiceHint.label} and store tokens in your vault.`
+          : "Set any environment variable key/value pair in your vault.";
+        const secretLabel = "Secret value";
+        const placeholder = "sk-...";
+        const initialEnvKey = "";
+
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(
-          renderErrorPage(
-            "This link is invalid or has expired. Ask the bot for a new /login link.",
+          renderCredentialPage(
+            rawToken,
+            title,
+            defaultMode,
+            initialEnvKey,
+            secretLabel,
+            placeholder,
+            helpText,
+            oauthServices,
+            oauthServiceHint?.id,
+            existingSecrets,
           ),
         );
         return;
       }
 
-      const oauthServiceHint = linkToken.providerId
-        ? resolveOAuthService(linkToken.providerId)
-        : undefined;
-      const oauthServices = getOAuthServices();
-      const defaultMode: LoginCredentialKind = oauthServiceHint ? "oauth" : "api_key";
-      const existingSecrets = describeVaultSecrets(vaultManager, linkToken.vaultId);
+      if (req.method === "POST" && url.pathname === "/api/link/complete") {
+        if (!enforceCsrf(req, res)) return;
+        void readJsonBody(req, res, async (body) => {
+          await handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
+        });
+        return;
+      }
 
-      const title = oauthServiceHint ? `${oauthServiceHint.label} OAuth` : "Store Secret";
-      const helpText = oauthServiceHint
-        ? `Authorize ${oauthServiceHint.label} and store tokens in your vault.`
-        : "Set any environment variable key/value pair in your vault.";
-      const secretLabel = "Secret value";
-      const placeholder = "sk-...";
-      const initialEnvKey = "";
+      if (req.method === "POST" && url.pathname === "/api/oauth/start") {
+        if (!enforceCsrf(req, res)) return;
+        void readJsonBody(req, res, async (body) => {
+          await handleOAuthStart(body, req, linkTokenStore, oauthStates, res);
+        });
+        return;
+      }
 
-      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(
-        renderCredentialPage(
-          rawToken,
-          title,
-          defaultMode,
-          initialEnvKey,
-          secretLabel,
-          placeholder,
-          helpText,
-          oauthServices,
-          oauthServiceHint?.id,
-          existingSecrets,
-        ),
-      );
-      return;
+      if (req.method === "GET" && url.pathname === "/oauth/callback") {
+        void handleOAuthCallback(
+          url,
+          req,
+          linkTokenStore,
+          vaultManager,
+          notify,
+          oauthStates,
+          res,
+        ).catch((err: Error) => {
+          log.logWarning("OAuth callback failed", err.message);
+          res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(renderErrorPage("OAuth callback failed. Please retry /login."));
+        });
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    } catch (err) {
+      log.logWarning("Link server request error", err instanceof Error ? err.message : String(err));
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+      }
+      res.end(JSON.stringify({ error: "Internal server error" }));
     }
-
-    if (req.method === "POST" && url.pathname === "/api/link/complete") {
-      if (!enforceCsrf(req, res)) return;
-      void readJsonBody(req, res, async (body) => {
-        await handleLinkComplete(body, linkTokenStore, vaultManager, notify, res);
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/oauth/start") {
-      if (!enforceCsrf(req, res)) return;
-      void readJsonBody(req, res, async (body) => {
-        await handleOAuthStart(body, req, linkTokenStore, oauthStates, res);
-      });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/oauth/callback") {
-      void handleOAuthCallback(
-        url,
-        req,
-        linkTokenStore,
-        vaultManager,
-        notify,
-        oauthStates,
-        res,
-      ).catch((err: Error) => {
-        log.logWarning("OAuth callback failed", err.message);
-        res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
-        res.end(renderErrorPage("OAuth callback failed. Please retry /login."));
-      });
-      return;
-    }
-
-    res.writeHead(404);
-    res.end();
   });
 
   // Bind to loopback when MOM_LINK_URL is unset so the credential UI and OAuth

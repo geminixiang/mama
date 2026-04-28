@@ -25,6 +25,9 @@ import { FileUserBindingStore } from "./bindings.js";
 import { parseLoginCommand } from "./login/index.js";
 import { startLinkServer } from "./login/portal.js";
 import { InMemoryLinkTokenStore } from "./login/session.js";
+import { parseSessionViewCommand } from "./session-view/command.js";
+import { resolveExistingSessionFile } from "./session-view/service.js";
+import { InMemorySessionViewTokenStore } from "./session-view/store.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { loadAgentConfig } from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -262,9 +265,11 @@ const provisioner =
     : undefined;
 
 const linkTokenStore = new InMemoryLinkTokenStore();
+const sessionViewTokenStore = new InMemorySessionViewTokenStore();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
+setInterval(() => sessionViewTokenStore.purge(), 5 * 60 * 1000).unref();
 
-function normalizeLoginBaseUrl(): string | undefined {
+function normalizePortalBaseUrl(): string | undefined {
   if (MOM_LINK_URL) {
     return MOM_LINK_URL.replace(/\/+$/, "");
   }
@@ -327,7 +332,7 @@ async function handleLoginCommand(
     return true;
   }
 
-  const baseUrl = normalizeLoginBaseUrl();
+  const baseUrl = normalizePortalBaseUrl();
   if (!baseUrl) {
     await replyWithContext(
       responseCtx,
@@ -362,6 +367,58 @@ async function handleLoginCommand(
   await replyWithContext(
     responseCtx,
     `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${baseUrl}/link?token=${token.token}`,
+  );
+  return true;
+}
+
+async function handleSessionViewCommand(
+  platform: string,
+  platformUserId: string,
+  conversationId: string,
+  sessionKey: string,
+  responseCtx: BotAdapters["responseCtx"],
+  commandText: string,
+  privateConversation: boolean,
+): Promise<boolean> {
+  if (!parseSessionViewCommand(commandText)) return false;
+
+  if (!privateConversation) {
+    await replyWithContext(
+      responseCtx,
+      "為了保護對話內容，`/session` 目前只能在與機器人的私訊 / DM 中使用。",
+    );
+    return true;
+  }
+
+  const baseUrl = normalizePortalBaseUrl();
+  if (!baseUrl) {
+    await replyWithContext(
+      responseCtx,
+      "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+    );
+    return true;
+  }
+
+  const sessionFile = resolveExistingSessionFile(workingDir, conversationId, sessionKey);
+  if (!sessionFile) {
+    await replyWithContext(
+      responseCtx,
+      "目前還沒有可查看的 session。先和機器人對話一次，建立 session 後再試。",
+    );
+    return true;
+  }
+
+  const token = sessionViewTokenStore.create(
+    platform as "slack" | "discord" | "telegram",
+    platformUserId,
+    conversationId,
+    sessionKey,
+    sessionFile,
+  );
+
+  await replyWithContext(
+    responseCtx,
+    `Open this read-only session link (expires in 24 hours):\n${baseUrl}/session?token=${token.token}`,
   );
   return true;
 }
@@ -549,15 +606,27 @@ const handler: BotHandler = {
     }
 
     const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
+    const privateConversation = isPrivateConversation(event);
     const handledLogin = await handleLoginCommand(
       adapters.platform.name,
       event.user,
       conversationId,
       adapters.responseCtx,
       event.text,
-      isPrivateConversation(event),
+      privateConversation,
     );
     if (handledLogin) return;
+
+    const handledSessionView = await handleSessionViewCommand(
+      adapters.platform.name,
+      event.user,
+      conversationId,
+      sessionKey,
+      adapters.responseCtx,
+      event.text,
+      privateConversation,
+    );
+    if (handledSessionView) return;
 
     const state = await getState(conversationId, sessionKey);
 
@@ -726,6 +795,7 @@ if (MOM_LINK_PORT) {
       const bot = botsByPlatform[platform];
       if (bot) await bot.postMessage(conversationId, message);
     },
+    sessionViewTokenStore,
   );
 }
 

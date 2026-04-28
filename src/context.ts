@@ -10,7 +10,7 @@
  * - createMamaSettingsManager: Creates an in-memory SettingsManager for AgentSession
  */
 
-import type { UserMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage } from "@mariozechner/pi-ai";
 import {
   type SessionManager,
   type SessionMessageEntry,
@@ -89,16 +89,25 @@ export async function syncLogToSessionManager(
 
   if (!existsSync(logFile)) return 0;
 
-  // Build set of existing timestamps from session entries
-  // We use ts (Slack timestamp) as the unique key instead of message content
-  const existingTimestamps = new Set<string>();
+  // Build set of existing log-derived message keys from session entries.
+  // Deduping must use the embedded message.timestamp/content pair, not the
+  // session entry timestamp (ISO string), otherwise every refresh/run can
+  // re-import the same log.jsonl user messages again.
+  const existingMessageKeys = new Set<string>();
   for (const entry of sessionManager.getEntries()) {
-    if (entry.type === "message") {
-      const msgEntry = entry as SessionMessageEntry;
-      // SessionMessageEntry has a timestamp field (number, Unix ms)
-      if (msgEntry.timestamp) {
-        existingTimestamps.add(msgEntry.timestamp.toString());
-      }
+    if (entry.type !== "message") continue;
+    const msgEntry = entry as SessionMessageEntry;
+    const message = msgEntry.message as Message;
+    const contentText = Array.isArray(message.content)
+      ? message.content
+          .filter((part): part is { type: "text"; text: string } => part.type === "text")
+          .map((part) => part.text)
+          .join("\n\n")
+      : typeof message.content === "string"
+        ? message.content
+        : "";
+    if (typeof message.timestamp === "number") {
+      existingMessageKeys.add(`${message.timestamp}:${contentText}`);
     }
   }
 
@@ -148,16 +157,13 @@ export async function syncLogToSessionManager(
         }
       }
 
-      // Skip if this Slack timestamp is already in the session (dedupe by ts, not content)
-      // Convert Slack ts (e.g., "1234567890.123456") to Unix ms for comparison
-      const slackTsMs = Math.floor(parseFloat(slackTs) * 1000).toString();
-      if (existingTimestamps.has(slackTsMs)) continue;
-
       // Build the message text as it would appear in context
       const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
       const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
 
       const msgTime = new Date(date).getTime() || Date.now();
+      const messageKey = `${msgTime}:${messageText}`;
+      if (existingMessageKeys.has(messageKey)) continue;
 
       // Skip messages outside the time range
       if (msgTime < range.start || msgTime > range.end) continue;
@@ -169,7 +175,7 @@ export async function syncLogToSessionManager(
       };
 
       newMessages.push({ timestamp: msgTime, message: userMessage });
-      existingTimestamps.add(slackTsMs); // Track to avoid duplicates within this sync
+      existingMessageKeys.add(messageKey); // Track to avoid duplicates within this sync
     } catch {
       // Skip malformed lines
     }
