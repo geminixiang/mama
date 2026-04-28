@@ -14,6 +14,8 @@ function makeHandler(): BotHandler {
     handleStop: vi.fn(),
     forceStop: vi.fn(),
     handleNew: vi.fn(),
+    resolveSessionKey: vi.fn((sessionKey: string) => sessionKey),
+    registerThreadAlias: vi.fn(),
   };
 }
 

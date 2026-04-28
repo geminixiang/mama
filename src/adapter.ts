@@ -102,4 +102,8 @@ export interface BotHandler {
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
   handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
+  /** Resolve a platform-specific alias (for example, bot-created Discord threads) to its canonical session key. */
+  resolveSessionKey(sessionKey: string): string;
+  /** Register an alias that should route follow-up messages back to an existing session. */
+  registerThreadAlias(aliasKey: string, sessionKey: string): void;
 }

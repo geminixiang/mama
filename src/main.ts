@@ -442,6 +442,7 @@ interface ConversationState {
 }
 
 const conversationStates = new Map<string, ConversationState>();
+const sessionAliases = new Map<string, string>();
 
 /** Track in-flight runs for graceful shutdown */
 const inFlightRuns = new Set<Promise<void>>();
@@ -493,12 +494,21 @@ async function getState(conversationId: string, sessionKey?: string): Promise<Co
  * Evict idle sessions from conversationStates to bound memory usage.
  * Called after each handleEvent completes.
  */
+function clearSessionAliases(sessionKey: string): void {
+  for (const [aliasKey, targetSessionKey] of sessionAliases) {
+    if (aliasKey === sessionKey || targetSessionKey === sessionKey) {
+      sessionAliases.delete(aliasKey);
+    }
+  }
+}
+
 function evictIdleSessions(): void {
   const now = Date.now();
 
   for (const [key, state] of conversationStates) {
     if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
       conversationStates.delete(key);
+      clearSessionAliases(key);
     }
   }
 
@@ -515,6 +525,7 @@ function evictIdleSessions(): void {
     const toEvict = conversationStates.size - MAX_SESSIONS;
     for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
       conversationStates.delete(idleSessions[i].key);
+      clearSessionAliases(idleSessions[i].key);
     }
   }
 }
@@ -546,6 +557,14 @@ const handler: BotHandler = {
     return sessions;
   },
 
+  resolveSessionKey(sessionKey: string): string {
+    return sessionAliases.get(sessionKey) ?? sessionKey;
+  },
+
+  registerThreadAlias(aliasKey: string, sessionKey: string): void {
+    sessionAliases.set(aliasKey, sessionKey);
+  },
+
   async handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
     const state = conversationStates.get(sessionKey);
     if (state?.running) {
@@ -565,6 +584,7 @@ const handler: BotHandler = {
       state.stopRequested = true;
       state.runner.abort();
       state.running = false;
+      clearSessionAliases(sessionKey);
     }
   },
 
@@ -588,6 +608,7 @@ const handler: BotHandler = {
 
     // Remove from in-memory cache
     conversationStates.delete(sessionKey);
+    clearSessionAliases(sessionKey);
 
     log.logInfo(`[${conversationId}] Session reset: ${sessionKey}`);
     await bot.postMessage(conversationId, "Conversation reset. Send a new message to start fresh.");
