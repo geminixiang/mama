@@ -100,8 +100,11 @@ export class EventsWatcher {
     this.scanExisting();
 
     // Watch for changes
-    this.watcher = watch(this.eventsDir, (_eventType, filename) => {
+    this.watcher = watch(this.eventsDir, (eventType, filename) => {
       if (!filename || !filename.endsWith(".json")) return;
+      log.logInfo(
+        `Events watcher fs event: ${String(eventType)} ${filename} (exists=${existsSync(join(this.eventsDir, filename))})`,
+      );
       this.debounce(filename, () => this.handleFileChange(filename));
     });
 
@@ -201,14 +204,17 @@ export class EventsWatcher {
 
   private handleFileChange(filename: string): void {
     const filePath = join(this.eventsDir, filename);
+    const exists = existsSync(filePath);
+    const known = this.knownFiles.has(filename);
+    log.logInfo(`Handling event file change: ${filename} (exists=${exists}, known=${known})`);
 
-    if (!existsSync(filePath)) {
+    if (!exists) {
       // fs.watch can briefly report a file as missing during create/rename churn.
       // Confirm deletion before canceling scheduled events.
       void this.handleDelete(filename);
-    } else if (this.knownFiles.has(filename)) {
+    } else if (known) {
       // File was modified - cancel existing and re-schedule
-      this.cancelScheduled(filename);
+      this.cancelScheduled(filename, "file-modified");
       void this.handleFile(filename);
     } else {
       // New file
@@ -221,25 +227,31 @@ export class EventsWatcher {
 
     const filePath = join(this.eventsDir, filename);
     for (let i = 0; i < MAX_RETRIES; i++) {
-      await this.sleep(RETRY_BASE_MS * 2 ** i);
-      if (existsSync(filePath)) {
+      const delay = RETRY_BASE_MS * 2 ** i;
+      await this.sleep(delay);
+      const exists = existsSync(filePath);
+      log.logInfo(`Confirming event deletion: ${filename} after ${delay}ms (exists=${exists})`);
+      if (exists) {
         return;
       }
     }
 
     log.logInfo(`Event file deleted: ${filename}`);
-    this.cancelScheduled(filename);
+    this.cancelScheduled(filename, "confirmed-delete");
     this.knownFiles.delete(filename);
   }
 
-  private cancelScheduled(filename: string): void {
+  private cancelScheduled(filename: string, reason = "unspecified"): void {
     const timer = this.timers.get(filename);
+    const cron = this.crons.get(filename);
+    log.logInfo(
+      `Canceling scheduled event: ${filename} (reason=${reason}, timer=${Boolean(timer)}, cron=${Boolean(cron)})`,
+    );
     if (timer) {
       clearTimeout(timer);
       this.timers.delete(filename);
     }
 
-    const cron = this.crons.get(filename);
     if (cron) {
       cron.stop();
       this.crons.delete(filename);
@@ -248,6 +260,7 @@ export class EventsWatcher {
 
   private async handleFile(filename: string): Promise<void> {
     const filePath = join(this.eventsDir, filename);
+    log.logInfo(`Loading event file: ${filename} from ${filePath}`);
 
     // Parse with retries
     let event: MamaEvent | null = null;
@@ -271,11 +284,14 @@ export class EventsWatcher {
         `Failed to parse event file after ${MAX_RETRIES} retries: ${filename}`,
         lastError?.message,
       );
-      this.deleteFile(filename);
+      this.deleteFile(filename, "parse-failed");
       return;
     }
 
     this.knownFiles.add(filename);
+    log.logInfo(
+      `Parsed event file: ${filename} (${event.type} for ${event.platform}/${event.conversationId})`,
+    );
 
     // Schedule based on type
     switch (event.type) {
@@ -410,7 +426,7 @@ export class EventsWatcher {
       const stat = statSync(filePath);
       if (stat.mtimeMs < this.startTime) {
         log.logInfo(`Stale immediate event, deleting: ${filename}`);
-        this.deleteFile(filename);
+        this.deleteFile(filename, "stale-immediate");
         return;
       }
     } catch {
@@ -429,12 +445,14 @@ export class EventsWatcher {
     if (atTime <= now) {
       // Past - delete without executing
       log.logInfo(`One-shot event in the past, deleting: ${filename}`);
-      this.deleteFile(filename);
+      this.deleteFile(filename, "one-shot-in-past");
       return;
     }
 
     const delay = atTime - now;
-    log.logInfo(`Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s`);
+    log.logInfo(
+      `Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s (at=${event.at}, now=${new Date(now).toISOString()})`,
+    );
 
     const timer = setTimeout(() => {
       this.timers.delete(filename);
@@ -443,6 +461,7 @@ export class EventsWatcher {
     }, delay);
 
     this.timers.set(filename, timer);
+    log.logInfo(`Stored one-shot timer: ${filename} (active timers=${this.timers.size})`);
   }
 
   private handlePeriodic(filename: string, event: PeriodicEvent): void {
@@ -460,7 +479,7 @@ export class EventsWatcher {
       );
     } catch (err) {
       log.logWarning(`Invalid cron schedule for ${filename}: ${event.schedule}`, String(err));
-      this.deleteFile(filename);
+      this.deleteFile(filename, "invalid-cron");
     }
   }
 
@@ -485,7 +504,7 @@ export class EventsWatcher {
     if (!bot) {
       log.logWarning(`No bot configured for event platform '${event.platform}'`, filename);
       if (deleteAfter) {
-        this.deleteFile(filename);
+        this.deleteFile(filename, "missing-bot");
       }
       return;
     }
@@ -508,18 +527,19 @@ export class EventsWatcher {
 
     if (enqueued && deleteAfter) {
       // Delete file after successful enqueue (immediate and one-shot)
-      this.deleteFile(filename);
+      this.deleteFile(filename, "executed-and-enqueued");
     } else if (!enqueued) {
       log.logWarning(`Event queue full, discarded: ${filename}`);
       // Still delete immediate/one-shot even if discarded
       if (deleteAfter) {
-        this.deleteFile(filename);
+        this.deleteFile(filename, "queue-full-discarded");
       }
     }
   }
 
-  private deleteFile(filename: string): void {
+  private deleteFile(filename: string, reason = "unspecified"): void {
     const filePath = join(this.eventsDir, filename);
+    log.logInfo(`Deleting event file: ${filename} (reason=${reason})`);
     try {
       unlinkSync(filePath);
     } catch (err) {
