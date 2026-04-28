@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BotHandler } from "../src/adapter.js";
 import { SlackBot } from "../src/adapters/slack/bot.js";
+import { createManagedSessionFileAtPath, getThreadSessionFile } from "../src/session-store.js";
 
 function makeHandler(): BotHandler {
   return {
@@ -236,6 +237,61 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 
+  test("first shared-channel thread reply waits behind the channel queue until the thread session exists", async () => {
+    const handler = makeHandler();
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let mentionHandler:
+      | ((payload: {
+          event: {
+            text: string;
+            channel: string;
+            user: string;
+            ts: string;
+            thread_ts?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).postMessage = vi.fn().mockResolvedValue("2000.0001");
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "app_mention") mentionHandler = fn as typeof mentionHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("C123");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    mentionHandler?.({
+      event: {
+        text: "<@B123> thread request",
+        channel: "C123",
+        user: "U123",
+        ts: "1001.0002",
+        thread_ts: "1000.0001",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+  });
+
   test("DM follow-up messages are queued while the top-level DM session is running", async () => {
     const handler = makeHandler();
     vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "D123");
@@ -303,7 +359,64 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 
-  test("DM thread follow-up messages are queued on the thread session key", async () => {
+  test("first DM thread reply waits behind the top-level DM queue until the thread session exists", async () => {
+    const handler = makeHandler();
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let messageHandler:
+      | ((payload: {
+          event: {
+            text?: string;
+            channel: string;
+            user?: string;
+            ts: string;
+            thread_ts?: string;
+            channel_type?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).postMessage = vi.fn().mockResolvedValue("3000.0001");
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "message") messageHandler = fn as typeof messageHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("D123");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    messageHandler?.({
+      event: {
+        text: "thread request",
+        channel: "D123",
+        user: "U123",
+        ts: "2001.0001",
+        thread_ts: "2000.0001",
+        channel_type: "im",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+  });
+
+  test("DM thread follow-up messages are queued on the thread session key once the thread session exists", async () => {
     const handler = makeHandler();
     vi.mocked(handler.isRunning).mockImplementation(
       (sessionKey: string) => sessionKey === "D123:2000.0001",
@@ -340,6 +453,11 @@ describe("SlackBot queues follow-up messages", () => {
       }),
     };
 
+    createManagedSessionFileAtPath(
+      getThreadSessionFile(join(workingDir, "D123"), "D123:2000.0001"),
+      join(workingDir, "D123"),
+    );
+
     (bot as any).setupEventHandlers();
 
     const queue = (bot as any).getQueue("D123:2000.0001");
@@ -372,6 +490,57 @@ describe("SlackBot queues follow-up messages", () => {
       text: "thread request",
       thread_ts: "2000.0001",
     });
+  });
+});
+
+describe("SlackBot backfill", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-slack-backfill-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("backfill preserves threadTs for thread replies", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {
+        processAttachments: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    (bot as any).botUserId = "B123";
+    (bot as any).users = new Map([
+      ["U123", { id: "U123", userName: "alice", displayName: "Alice" }],
+    ]);
+    (bot as any).webClient = {
+      conversations: {
+        history: vi.fn().mockResolvedValue({
+          messages: [
+            {
+              user: "U123",
+              text: "reply in thread",
+              ts: "1000.0002",
+              thread_ts: "1000.0001",
+            },
+          ],
+          response_metadata: {},
+        }),
+      },
+    };
+
+    const count = await (bot as any).backfillChannel("C123");
+
+    expect(count).toBe(1);
+    const logContent = readFileSync(join(workingDir, "C123", "log.jsonl"), "utf-8");
+    expect(logContent).toContain('"threadTs":"1000.0001"');
   });
 });
 

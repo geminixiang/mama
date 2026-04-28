@@ -69,6 +69,27 @@ describe("stop command resolution in threads", () => {
     expect(target).toBe("C123");
   });
 
+  test("stop at top level falls back to the only running thread session", () => {
+    const handler = makeHandler(["C123:1000.0001"]);
+    vi.mocked(handler.getRunningSessions).mockReturnValue([
+      { sessionKey: "C123:1000.0001", startedAt: 1 },
+    ]);
+    const bot = makeBot(handler);
+    const target = (bot as any).resolveStopTarget("C123", undefined);
+    expect(target).toBe("C123:1000.0001");
+  });
+
+  test("stop at top level returns null when multiple thread sessions are running", () => {
+    const handler = makeHandler(["C123:1000.0001", "C123:1000.0002"]);
+    vi.mocked(handler.getRunningSessions).mockReturnValue([
+      { sessionKey: "C123:1000.0001", startedAt: 1 },
+      { sessionKey: "C123:1000.0002", startedAt: 2 },
+    ]);
+    const bot = makeBot(handler);
+    const target = (bot as any).resolveStopTarget("C123", undefined);
+    expect(target).toBeNull();
+  });
+
   test("stop at top level returns null when not running", () => {
     const handler = makeHandler([]);
     const bot = makeBot(handler);
@@ -95,5 +116,15 @@ describe("stop command resolution in threads", () => {
     const bot = makeBot(handler);
     const target = (bot as any).resolveStopTarget("D123", "1000.0001");
     expect(target).toBe("D123");
+  });
+
+  test("DM top-level stop can target the only running DM thread session", () => {
+    const handler = makeHandler(["D123:1000.0001"]);
+    vi.mocked(handler.getRunningSessions).mockReturnValue([
+      { sessionKey: "D123:1000.0001", startedAt: 1 },
+    ]);
+    const bot = makeBot(handler);
+    const target = (bot as any).resolveStopTarget("D123", undefined);
+    expect(target).toBe("D123:1000.0001");
   });
 });

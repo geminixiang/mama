@@ -103,6 +103,3 @@ export interface BotHandler {
   /** Reset a session: abort if running, delete history, remove from cache */
   handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
 }
-
-/** @deprecated Use BotHandler */
-export type MomHandler = BotHandler;

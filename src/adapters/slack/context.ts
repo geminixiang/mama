@@ -1,6 +1,7 @@
 import type { ChatMessage, ChatResponseContext, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import type { SlackBot, SlackEvent } from "./bot.js";
+import { resolveSlackRootTs, resolveSlackSessionKey } from "./session.js";
 
 export const SLACK_FORMATTING_GUIDE = `## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
@@ -29,7 +30,7 @@ export function createSlackAdapters(
   // Extract event filename for status message
   const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-  const rootTs = event.thread_ts ?? event.ts;
+  const rootTs = resolveSlackRootTs(event.ts, event.thread_ts);
   const isThreaded = !!event.thread_ts;
 
   /** Post first reply in-thread under the user's message, creating a thread if none exists */
@@ -39,9 +40,7 @@ export function createSlackAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey:
-      event.sessionKey ??
-      (event.thread_ts ? `${conversationId}:${event.thread_ts}` : conversationId),
+    sessionKey: event.sessionKey ?? resolveSlackSessionKey(conversationId, event.thread_ts),
     conversationKind: event.conversationKind,
     userId: event.user,
     userName: user?.userName,

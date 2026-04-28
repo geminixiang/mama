@@ -7,6 +7,7 @@ import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
   createNewSessionFile,
+  createThreadSessionFileFromRootMessage,
   forkThreadSessionFile,
   forkThreadSessionFileFromRootMessage,
   getChannelSessionDir,
@@ -15,6 +16,7 @@ import {
   resolveChannelSessionFile,
   resolveManagedSessionFile,
   resolveSessionFile,
+  ThreadRootNotFoundError,
   tryResolveCurrentSession,
   tryResolveThreadSession,
 } from "../src/session-store.js";
@@ -264,6 +266,63 @@ describe("thread fork", () => {
     expect(threadContent).toContain("first reply");
     expect(threadContent).toContain("second reply");
     expect(threadContent).not.toContain("third");
+  });
+
+  test("matches root messages even when the parent turn includes attachment markup", () => {
+    const sessionDir = getChannelSessionDir(channelDir);
+    const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
+    const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
+    channelSM.appendMessage(
+      makeUserMessage(
+        "[2026-04-28 18:18:59+08:00] [alice]: first\n\n<slack_attachments>\n/workspace/C123/attachments/a.txt\n</slack_attachments>",
+      ),
+    );
+    channelSM.appendMessage(makeAssistantMessage("first reply"));
+    channelSM.appendMessage(makeUserMessage("[2026-04-28 18:19:03+08:00] [alice]: second"));
+    channelSM.appendMessage(makeAssistantMessage("second reply"));
+
+    const threadFile = getThreadSessionFile(channelDir, "C123:1777371539.041289");
+    forkThreadSessionFileFromRootMessage(channelFile, threadFile, channelDir, {
+      userName: "alice",
+      text: "first",
+      loggedAt: 1,
+    });
+
+    const threadContent = readFileSync(threadFile, "utf-8");
+    expect(threadContent).toContain("first reply");
+    expect(threadContent).not.toContain("second");
+  });
+
+  test("falls back to a root-only thread session instead of copying the latest channel state", () => {
+    const sessionDir = getChannelSessionDir(channelDir);
+    const channelFile = resolveManagedSessionFile(sessionDir, channelDir);
+    const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
+    channelSM.appendMessage(makeUserMessage("[2026-04-28 18:18:59+08:00] [alice]: second"));
+    channelSM.appendMessage(makeAssistantMessage("second reply"));
+
+    const threadFile = getThreadSessionFile(channelDir, "C123:1777371539.041289");
+    expect(() =>
+      forkThreadSessionFileFromRootMessage(channelFile, threadFile, channelDir, {
+        userName: "alice",
+        text: "first",
+      }),
+    ).toThrow(ThreadRootNotFoundError);
+
+    createThreadSessionFileFromRootMessage(
+      threadFile,
+      channelDir,
+      {
+        userName: "alice",
+        text: "first",
+        loggedAt: 123,
+      },
+      channelFile,
+    );
+
+    const threadContent = readFileSync(threadFile, "utf-8");
+    expect(threadContent).toContain(`"parentSession":"${channelFile}"`);
+    expect(threadContent).toContain("[alice]: first");
+    expect(threadContent).not.toContain("second reply");
   });
 
   test("different threads get independent session IDs", () => {

@@ -18,6 +18,8 @@ import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { PRODUCT_NAME, formatForceStopped, formatNothingRunning } from "../../ui-copy.js";
 import { createSlackAdapters } from "./context.js";
+import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
+import { resolveSlackSessionKey } from "./session.js";
 
 // ============================================================================
 // Exponential backoff utility for Slack API calls
@@ -135,9 +137,6 @@ export interface SlackContext {
   setWorking: (working: boolean) => Promise<void>;
   deleteMessage: () => Promise<void>;
 }
-
-/** @deprecated Use BotHandler from adapter.ts instead */
-export type MomHandler = BotHandler;
 
 // ============================================================================
 // Per-channel queue for sequential processing
@@ -444,6 +443,14 @@ export class SlackBot implements Bot {
     return queue;
   }
 
+  private resolveQueueKey(conversationId: string, sessionKey: string): string {
+    if (!sessionKey.includes(":")) return sessionKey;
+
+    return hasMaterializedSlackBranchSession(join(this.workingDir, conversationId), sessionKey)
+      ? sessionKey
+      : conversationId;
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildHomeView(): { type: "home"; blocks: any[] } {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -607,16 +614,27 @@ export class SlackBot implements Bot {
    * When stop is called from a thread, the thread session (channelId:thread_ts) might
    * not be running — but the channel session (channelId) might be, because the bot's
    * reply to a top-level mention creates a thread. Check both, prefer thread first.
+   *
+   * For top-level stop requests, fall back to the only running scoped thread session in
+   * this conversation when there is exactly one candidate. This keeps DM/channel stop
+   * useful after thread sessions were introduced without guessing between multiple threads.
    */
   private resolveStopTarget(channelId: string, threadTs?: string): string | null {
     if (threadTs) {
-      const threadKey = `${channelId}:${threadTs}`;
+      const threadKey = resolveSlackSessionKey(channelId, threadTs);
       if (this.handler.isRunning(threadKey)) return threadKey;
-      // Fall back to channel session — the thread may have been spawned by a top-level run
       if (this.handler.isRunning(channelId)) return channelId;
       return null;
     }
-    return this.handler.isRunning(channelId) ? channelId : null;
+
+    if (this.handler.isRunning(channelId)) return channelId;
+
+    const runningInConversation = this.handler
+      .getRunningSessions()
+      .map((session) => session.sessionKey)
+      .filter((sessionKey) => sessionKey.startsWith(`${channelId}:`));
+
+    return runningInConversation.length === 1 ? runningInConversation[0] : null;
   }
 
   private createDirectCommandAdapters(
@@ -793,7 +811,7 @@ export class SlackBot implements Bot {
 
       // Top-level mentions use a persistent channel session.
       // Thread replies get their own isolated session (channelId:thread_ts).
-      const sessionKey = e.thread_ts ? `${e.channel}:${e.thread_ts}` : e.channel;
+      const sessionKey = resolveSlackSessionKey(e.channel, e.thread_ts);
 
       const slackEvent: SlackEvent = {
         type: "mention",
@@ -837,7 +855,7 @@ export class SlackBot implements Bot {
         return;
       }
 
-      this.getQueue(sessionKey).enqueue(async () => {
+      this.getQueue(this.resolveQueueKey(e.channel, sessionKey)).enqueue(async () => {
         slackEvent.attachments = await attachmentsPromise;
         const adapters = createSlackAdapters(slackEvent, this, false);
         return this.handler.handleEvent(
@@ -889,11 +907,7 @@ export class SlackBot implements Bot {
         return;
       }
 
-      const dmSessionKey = isDM
-        ? e.thread_ts
-          ? `${e.channel}:${e.thread_ts}`
-          : e.channel
-        : undefined;
+      const dmSessionKey = isDM ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
@@ -956,7 +970,7 @@ export class SlackBot implements Bot {
           return;
         }
 
-        this.getQueue(dmSessionKey).enqueue(async () => {
+        this.getQueue(this.resolveQueueKey(e.channel, dmSessionKey)).enqueue(async () => {
           slackEvent.attachments = await attachmentsPromise;
           const adapters = createSlackAdapters(slackEvent, this, false);
           return this.handler.handleEvent(
@@ -1127,6 +1141,7 @@ export class SlackBot implements Bot {
       bot_id?: string;
       text?: string;
       ts?: string;
+      thread_ts?: string;
       subtype?: string;
       files?: Array<{ name: string }>;
     };
@@ -1178,6 +1193,7 @@ export class SlackBot implements Bot {
       this.logToFile(channelId, {
         date: new Date(parseFloat(msg.ts!) * 1000).toISOString(),
         ts: msg.ts!,
+        threadTs: msg.thread_ts,
         user: isMamaMessage ? "bot" : msg.user!,
         userName: isMamaMessage ? undefined : user?.userName,
         displayName: isMamaMessage ? undefined : user?.displayName,

@@ -9,7 +9,6 @@ import {
   getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
-  SessionManager,
   type Skill,
 } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
@@ -25,7 +24,6 @@ import type {
 import { loadAgentConfig } from "./config.js";
 import {
   createMamaSettingsManager,
-  findLogMessageById,
   syncLogToSessionManager,
   type ConversationLogMessage,
 } from "./context.js";
@@ -36,19 +34,8 @@ import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
-import {
-  createManagedSessionFileAtPath,
-  extractSessionSuffix,
-  extractSessionUuid,
-  forkThreadSessionFile,
-  forkThreadSessionFileFromRootMessage,
-  getChannelSessionDir,
-  getThreadSessionFile,
-  openManagedSession,
-  resolveChannelSessionFile,
-  resolveManagedSessionFile,
-  tryResolveThreadSession,
-} from "./session-store.js";
+import { extractSessionSuffix, extractSessionUuid, openManagedSession } from "./session-store.js";
+import { resolveSlackSessionScope } from "./adapters/slack/branch-manager.js";
 import { createMamaTools } from "./tools/index.js";
 import * as Sentry from "@sentry/node";
 
@@ -205,7 +192,10 @@ function buildSystemPrompt(
 ## Context
 - For current date/time, use: date
 - You have access to previous conversation context including tool results from prior turns.
-- For older history beyond your context, search log.jsonl (contains user messages and your final responses, but not tool results).
+- For older human-readable history beyond your context, search \`log.jsonl\` (contains user messages and your final responses, but not tool results).
+- Structured session history with tool results lives in \`${conversationPath}/sessions/\`.
+- The active top-level session is selected by \`${conversationPath}/sessions/current\`, which points to a timestamped \`.jsonl\` file in the same directory.
+- Slack thread/branch sessions use fixed files at \`${conversationPath}/sessions/<root_message_ts>.jsonl\` (for example \`${conversationPath}/sessions/1777386320.800769.jsonl\`).
 - User messages include a \`[in-thread:TS]\` marker when sent from within a Slack thread (TS is the root message timestamp). Without this marker, the message is a top-level channel message.
 
 ${platform.formattingGuide}
@@ -226,7 +216,11 @@ ${workspacePath}/
 ├── skills/                      # Global CLI tools you create
 └── ${conversationId}/           # This conversation
     ├── MEMORY.md                # Conversation-specific memory
-    ├── log.jsonl                # Message history (no tool results)
+    ├── log.jsonl                # Human-readable message history (no tool results)
+    ├── sessions/                # Structured session history used for context reconstruction
+    │   ├── current              # Active top-level session pointer
+    │   ├── <timestamp>_<id>.jsonl  # Top-level session files
+    │   └── <root_message_ts>.jsonl # Slack thread/branch session files
     ├── attachments/             # User-shared files
     ├── scratch/                 # Your working directory
     └── skills/                  # Conversation-specific tools
@@ -286,7 +280,7 @@ You can schedule events that wake you up at specific times or when external thin
 All \`at\` timestamps must include offset (e.g., \`+01:00\`). Periodic events use IANA timezone names. The harness runs in ${Intl.DateTimeFormat().resolvedOptions().timeZone}. When users mention times without timezone, assume ${Intl.DateTimeFormat().resolvedOptions().timeZone}.
 
 ### Platform and Credential Routing
-Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). When only one platform is running, omitting \`platform\` is allowed for backward compatibility, but include it by default to avoid ambiguity.
+Set \`platform\` to the target bot platform (\`${platform.name}\` for this conversation). Include it explicitly to avoid ambiguity.
 
 Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single shared vault.
 
@@ -343,6 +337,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 ## Log Queries (for older history)
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
+Use \`log.jsonl\` for quick grep-style history. Use \`${conversationPath}/sessions/\` when you need structured turns, tool outputs, or branch lineage.
 ${isContainer ? "Install jq: apt-get install jq" : ""}
 ${isFirecracker ? "Install jq: apt-get install jq" : ""}
 
@@ -355,6 +350,10 @@ grep -i "topic" log.jsonl | jq -c '{date: .date[0:19], user: (.userName // .user
 
 # Messages from specific user
 grep '"userName":"mario"' log.jsonl | tail -20 | jq -c '{date: .date[0:19], text}'
+
+# Inspect top-level session pointer and available session files
+cat sessions/current
+ls -1 sessions/
 \`\`\`
 
 ## Tools
@@ -515,56 +514,15 @@ export async function createRunner(
   );
 
   // Create session manager and settings manager
-  // Conversation sessions use {conversationDir}/sessions/current.
-  // Thread sessions use fixed files: {conversationDir}/sessions/{threadTs}.jsonl
-  const sessionDir = getChannelSessionDir(conversationDir);
+  // Slack top-level sessions use {conversationDir}/sessions/current.
+  // Slack branch sessions use fixed files: {conversationDir}/sessions/{rootTs}.jsonl
   const isThread = sessionKey.includes(":");
   const rootTs = extractSessionSuffix(sessionKey);
-  const threadRootMessage = isThread ? await findLogMessageById(conversationDir, rootTs) : null;
-
-  let sessionManager!: SessionManager;
-  let contextFile!: string;
-
-  if (isThread) {
-    const threadFile = getThreadSessionFile(conversationDir, sessionKey);
-    const existing = tryResolveThreadSession(threadFile);
-    if (existing) {
-      contextFile = existing;
-      sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
-    } else {
-      const conversationSource = resolveChannelSessionFile(conversationDir);
-      if (conversationSource) {
-        try {
-          contextFile = threadRootMessage
-            ? forkThreadSessionFileFromRootMessage(
-                conversationSource,
-                threadFile,
-                conversationDir,
-                {
-                  text: threadRootMessage.text,
-                  userName: threadRootMessage.userName,
-                  user: threadRootMessage.user,
-                  loggedAt: threadRootMessage.date
-                    ? new Date(threadRootMessage.date).getTime()
-                    : undefined,
-                },
-              )
-            : forkThreadSessionFile(conversationSource, threadFile, conversationDir);
-          sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
-        } catch {
-          contextFile = createManagedSessionFileAtPath(threadFile, conversationDir);
-          sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
-        }
-      } else {
-        contextFile = createManagedSessionFileAtPath(threadFile, conversationDir);
-        sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
-      }
-    }
-  } else {
-    // Direct/shared session: normal resolve
-    contextFile = resolveManagedSessionFile(sessionDir, conversationDir);
-    sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
-  }
+  const { sessionDir, contextFile, threadRootMessage } = await resolveSlackSessionScope({
+    conversationDir,
+    sessionKey,
+  });
+  const sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
   const threadSessionName = buildThreadSessionName(threadRootMessage);
   if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
     sessionManager.appendSessionInfo(threadSessionName);

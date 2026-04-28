@@ -231,6 +231,42 @@ describe("syncLogToSessionManager", () => {
     ]);
   });
 
+  test("does not re-import a live prompt when the session copy includes attachment markup", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "hello from slack",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    sessionManager.appendMessage({
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "[2026-04-01 18:01:10+08:00] [alice]: hello from slack\n\n<slack_attachments>\n/workspace/C001/attachments/report.txt\n</slack_attachments>",
+        },
+      ],
+      timestamp: new Date("2026-04-01T10:01:10.000Z").getTime(),
+    });
+
+    const synced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      undefined,
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "C001" },
+    );
+
+    expect(synced).toBe(0);
+    expect(getMessageTexts(sessionManager)).toHaveLength(1);
+  });
+
   test("thread scope only syncs the matching root message and thread replies", async () => {
     writeLog([
       {

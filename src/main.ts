@@ -40,6 +40,10 @@ import {
 import { addLifecycleBreadcrumb, applyRunScope } from "./sentry.js";
 import { ChannelStore } from "./store.js";
 import { formatNothingRunning, formatStopped, formatStopping } from "./ui-copy.js";
+import {
+  hasMaterializedSlackBranchSession,
+  waitForSlackBranchBootstrap,
+} from "./adapters/slack/branch-manager.js";
 import * as Sentry from "@sentry/node";
 
 // ============================================================================
@@ -627,6 +631,22 @@ const handler: BotHandler = {
       privateConversation,
     );
     if (handledSessionView) return;
+
+    const conversationDir = join(workingDir, conversationId);
+    const waitedForParent =
+      adapters.platform.name === "slack"
+        ? await waitForSlackBranchBootstrap({
+            parentSessionKey: conversationId,
+            sessionKey,
+            hasThreadSession: () => hasMaterializedSlackBranchSession(conversationDir, sessionKey),
+            isParentRunning: () => conversationStates.get(conversationId)?.running === true,
+          })
+        : false;
+    if (waitedForParent) {
+      log.logInfo(
+        `[${conversationId}] Delayed thread bootstrap until parent session sealed: ${sessionKey}`,
+      );
+    }
 
     const state = await getState(conversationId, sessionKey);
 

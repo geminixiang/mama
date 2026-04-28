@@ -252,11 +252,16 @@ export async function findLogMessageById(
   return null;
 }
 
+function stripSlackAttachmentBlock(text: string): string {
+  return text.replace(/\n*<slack_attachments>\n[\s\S]*?\n<\/slack_attachments>\s*$/g, "");
+}
+
 function normalizeComparableUserText(text: string): string {
-  return text.replace(
+  const withoutTimestamp = text.replace(
     /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s+(?=\[[^\]]+\](?:\s+\[in-thread:[^\]]+\])?:\s)/,
     "",
   );
+  return stripSlackAttachmentBlock(withoutTimestamp).trim();
 }
 
 function hasExistingSessionMessage(
