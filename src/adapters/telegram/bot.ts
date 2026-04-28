@@ -104,6 +104,7 @@ export class TelegramBot implements Bot {
       { command: "start", description: "Welcome message" },
       { command: "help", description: "Show available commands" },
       { command: "login", description: "Store credentials in your private vault" },
+      { command: "session", description: "Open the current session in the web viewer" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
     ]);
@@ -425,6 +426,7 @@ export class TelegramBot implements Bot {
           "",
           "/new — Reset conversation history and start fresh",
           "/stop — Stop the current conversation",
+          "/session — Open the current session in the web viewer",
           "/help — Show available commands",
           "/login — Store credentials in your private vault",
         ].join("\n"),
@@ -442,6 +444,7 @@ export class TelegramBot implements Bot {
           "/start — Welcome message",
           "/help — Show this help",
           "/login — Store credentials in your private vault",
+          "/session — Open the current session in the web viewer",
           "/stop — Stop ongoing conversation",
           "/new — Reset conversation history and start fresh",
           "",

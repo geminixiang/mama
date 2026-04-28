@@ -49,6 +49,7 @@ We actively track the upstream `pi-mom` and plan to:
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
 - **Sandbox execution** — run agent commands on host, in a shared container, in a managed per-user container, or in a Firecracker VM
 - **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/image/Firecracker runs
+- **Web session viewer** — users can open a read-only web view of the current session via `session` / `/session`
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
 - **Skills** — drop custom CLI tools into `skills/` directories
 - **Event system** — schedule one-shot or recurring tasks via JSON files
@@ -178,7 +179,9 @@ The bot responds when `@mentioned` in any channel or via DM.
 
 - **Top-level channel messages** — share one persistent channel session.
 - **Thread replies** — fork from the channel session into an isolated thread session.
-- **Thread memory** — inherited at fork time only; thread changes do not merge back into the channel automatically.
+- **DM top-level messages** — share one persistent DM session.
+- **DM thread replies** — fork from the DM session into an isolated thread session.
+- **Thread memory** — inherited at fork time only; thread changes do not merge back into the parent session automatically.
 
 ---
 
@@ -266,6 +269,17 @@ On Slack, you can also register native slash commands such as `/pi-login` and `/
 
 - `/pi-login` in a shared channel opens a DM and continues the credential flow there.
 - `/pi-new` only works in a Slack DM and resets that DM session context.
+
+## Web Session Viewer
+
+The same web portal used for `/login` can also render a read-only view of the current session.
+
+- Users can send `session`, `/session`, or `/pi-session` in a private conversation / DM.
+- mama returns an expiring read-only link to `/session?token=...`.
+- The page shows the current branch timeline, including user messages, assistant replies, tool results, and compaction / branch summary events.
+- For now, session links are only issued from private conversations to avoid leaking shared-channel history.
+
+This feature uses the same `MOM_LINK_URL` / `MOM_LINK_PORT` configuration as `/login`.
 
 Built-in OAuth guides:
 

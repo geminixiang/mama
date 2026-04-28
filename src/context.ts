@@ -10,7 +10,7 @@
  * - createMamaSettingsManager: Creates an in-memory SettingsManager for AgentSession
  */
 
-import type { UserMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage } from "@mariozechner/pi-ai";
 import {
   type SessionManager,
   type SessionMessageEntry,
@@ -37,7 +37,7 @@ export interface TimeRange {
  */
 const DEFAULT_SYNC_DAYS = 10;
 
-interface LogMessage {
+export interface ConversationLogMessage {
   date?: string;
   ts?: string;
   threadTs?: string;
@@ -45,6 +45,12 @@ interface LogMessage {
   userName?: string;
   text?: string;
   isBot?: boolean;
+}
+
+interface ExistingSessionMessage {
+  timestamp?: number;
+  rawText: string;
+  normalizedText: string;
 }
 
 /**
@@ -69,7 +75,7 @@ export interface ThreadFilter {
  *
  * @param sessionManager - The SessionManager to sync to
  * @param conversationDir - Path to the conversation directory containing log.jsonl
- * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
+ * @param excludeSlackTs - Current platform message ID/timestamp (will be added via prompt(), not sync)
  * @param timeRange - Optional time range to filter log entries (defaults to last 10 days)
  * @param threadFilter - Optional thread filter to scope sync to a specific thread
  * @returns Number of messages synced
@@ -89,16 +95,32 @@ export async function syncLogToSessionManager(
 
   if (!existsSync(logFile)) return 0;
 
-  // Build set of existing timestamps from session entries
-  // We use ts (Slack timestamp) as the unique key instead of message content
-  const existingTimestamps = new Set<string>();
+  // Build a list of existing session messages for dedupe.
+  // Live user prompts carry a formatted timestamp in the text and use Date.now(),
+  // while log.jsonl uses the platform event timestamp. We therefore need a small
+  // fuzzy match window in addition to the exact timestamp/content match used for
+  // already-synced log entries.
+  const existingMessages: ExistingSessionMessage[] = [];
+  const existingMessageKeys = new Set<string>();
   for (const entry of sessionManager.getEntries()) {
-    if (entry.type === "message") {
-      const msgEntry = entry as SessionMessageEntry;
-      // SessionMessageEntry has a timestamp field (number, Unix ms)
-      if (msgEntry.timestamp) {
-        existingTimestamps.add(msgEntry.timestamp.toString());
-      }
+    if (entry.type !== "message") continue;
+    const msgEntry = entry as SessionMessageEntry;
+    const message = msgEntry.message as Message;
+    const contentText = Array.isArray(message.content)
+      ? message.content
+          .filter((part): part is { type: "text"; text: string } => part.type === "text")
+          .map((part) => part.text)
+          .join("\n\n")
+      : typeof message.content === "string"
+        ? message.content
+        : "";
+    existingMessages.push({
+      timestamp: typeof message.timestamp === "number" ? message.timestamp : undefined,
+      rawText: contentText,
+      normalizedText: normalizeComparableUserText(contentText),
+    });
+    if (typeof message.timestamp === "number") {
+      existingMessageKeys.add(`${message.timestamp}:${contentText}`);
     }
   }
 
@@ -110,7 +132,7 @@ export async function syncLogToSessionManager(
 
   for (const line of logLines) {
     try {
-      const logMsg: LogMessage = JSON.parse(line);
+      const logMsg: ConversationLogMessage = JSON.parse(line);
 
       const slackTs = logMsg.ts;
       const date = logMsg.date;
@@ -118,6 +140,11 @@ export async function syncLogToSessionManager(
 
       // Skip the current message being processed (will be added via prompt())
       if (excludeSlackTs && slackTs === excludeSlackTs) continue;
+
+      // While queued messages are being processed, newer messages may already be present
+      // in log.jsonl. Do not look ahead into those future messages when building the
+      // current turn's context.
+      if (!isMessageAtOrBeforeCurrent(slackTs, excludeSlackTs)) continue;
 
       // Skip bot messages - added through agent flow
       if (logMsg.isBot) continue;
@@ -148,16 +175,14 @@ export async function syncLogToSessionManager(
         }
       }
 
-      // Skip if this Slack timestamp is already in the session (dedupe by ts, not content)
-      // Convert Slack ts (e.g., "1234567890.123456") to Unix ms for comparison
-      const slackTsMs = Math.floor(parseFloat(slackTs) * 1000).toString();
-      if (existingTimestamps.has(slackTsMs)) continue;
-
       // Build the message text as it would appear in context
       const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
       const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
 
       const msgTime = new Date(date).getTime() || Date.now();
+      const messageKey = `${msgTime}:${messageText}`;
+      if (existingMessageKeys.has(messageKey)) continue;
+      if (hasExistingSessionMessage(existingMessages, msgTime, messageText)) continue;
 
       // Skip messages outside the time range
       if (msgTime < range.start || msgTime > range.end) continue;
@@ -169,7 +194,12 @@ export async function syncLogToSessionManager(
       };
 
       newMessages.push({ timestamp: msgTime, message: userMessage });
-      existingTimestamps.add(slackTsMs); // Track to avoid duplicates within this sync
+      existingMessages.push({
+        timestamp: msgTime,
+        rawText: messageText,
+        normalizedText: normalizeComparableUserText(messageText),
+      });
+      existingMessageKeys.add(messageKey); // Track to avoid duplicates within this sync
     } catch {
       // Skip malformed lines
     }
@@ -196,4 +226,79 @@ export async function syncLogToSessionManager(
 // without interfering with coding-agent's global settings files.
 export function createMamaSettingsManager(_workspaceDir: string): SettingsManager {
   return SettingsManager.inMemory();
+}
+
+export async function findLogMessageById(
+  conversationDir: string,
+  messageId: string,
+): Promise<ConversationLogMessage | null> {
+  const logFile = join(conversationDir, "log.jsonl");
+  if (!existsSync(logFile)) return null;
+
+  const logContent = await readFile(logFile, "utf-8");
+  const logLines = logContent.trim().split("\n").filter(Boolean);
+
+  for (let i = logLines.length - 1; i >= 0; i--) {
+    try {
+      const entry = JSON.parse(logLines[i]) as ConversationLogMessage;
+      if (entry.ts === messageId) {
+        return entry;
+      }
+    } catch {
+      // Skip malformed lines
+    }
+  }
+
+  return null;
+}
+
+function stripSlackAttachmentBlock(text: string): string {
+  return text.replace(/\n*<slack_attachments>\n[\s\S]*?\n<\/slack_attachments>\s*$/g, "");
+}
+
+function normalizeComparableUserText(text: string): string {
+  const withoutTimestamp = text.replace(
+    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s+(?=\[[^\]]+\](?:\s+\[in-thread:[^\]]+\])?:\s)/,
+    "",
+  );
+  return stripSlackAttachmentBlock(withoutTimestamp).trim();
+}
+
+function hasExistingSessionMessage(
+  existingMessages: ExistingSessionMessage[],
+  timestamp: number,
+  text: string,
+): boolean {
+  const normalizedText = normalizeComparableUserText(text);
+  return existingMessages.some((existing) => {
+    if (existing.timestamp === timestamp && existing.rawText === text) {
+      return true;
+    }
+    if (existing.normalizedText !== normalizedText || existing.timestamp === undefined) {
+      return false;
+    }
+    return existing.timestamp >= timestamp;
+  });
+}
+
+function isMessageAtOrBeforeCurrent(messageId: string, currentMessageId?: string): boolean {
+  if (!currentMessageId) return true;
+  const comparison = compareMessageIds(messageId, currentMessageId);
+  return comparison === null || comparison <= 0;
+}
+
+function compareMessageIds(a: string, b: string): number | null {
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) {
+    const left = BigInt(a);
+    const right = BigInt(b);
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  const left = Number(a);
+  const right = Number(b);
+  if (Number.isFinite(left) && Number.isFinite(right)) {
+    return left < right ? -1 : left > right ? 1 : 0;
+  }
+
+  return null;
 }

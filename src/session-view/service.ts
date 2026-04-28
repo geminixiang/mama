@@ -1,0 +1,467 @@
+import { basename, dirname, join, resolve } from "path";
+import { existsSync, readdirSync } from "fs";
+import {
+  SessionManager,
+  type BranchSummaryEntry,
+  type CompactionEntry,
+  type SessionEntry,
+  type SessionMessageEntry,
+} from "@mariozechner/pi-coding-agent";
+import {
+  getThreadSessionFile,
+  resolveChannelSessionFile,
+  tryResolveThreadSession,
+} from "../session-store.js";
+
+export interface SessionViewItem {
+  kind: "user" | "assistant" | "tool" | "system";
+  title: string;
+  body?: string;
+  meta?: string;
+  tone?: "default" | "ok" | "err" | "muted";
+  entryId?: string;
+  forks?: SessionViewRelation[];
+}
+
+export interface SessionViewRelation {
+  kind: "parent" | "fork";
+  fileName: string;
+  sessionId: string;
+  title: string;
+  updatedAt: string;
+  entryCount: number;
+  summary?: string;
+  anchorEntryId?: string;
+}
+
+export interface SessionViewModel {
+  sessionId: string;
+  fileName: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  entryCount: number;
+  items: SessionViewItem[];
+  parent?: SessionViewRelation;
+  forks: SessionViewRelation[];
+}
+
+export function resolveExistingSessionFile(
+  workingDir: string,
+  conversationId: string,
+  sessionKey: string,
+): string | null {
+  const conversationDir = join(workingDir, conversationId);
+  if (sessionKey.includes(":")) {
+    return tryResolveThreadSession(getThreadSessionFile(conversationDir, sessionKey));
+  }
+  return resolveChannelSessionFile(conversationDir);
+}
+
+export function loadSessionViewModel(sessionFile: string): SessionViewModel {
+  const resolvedFile = resolve(sessionFile);
+  const sm = SessionManager.open(resolvedFile);
+  const header = sm.getHeader();
+  if (!header) throw new Error(`No valid session found: ${sessionFile}`);
+
+  const entries = sm.getEntries();
+  const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
+  const title = sm.getSessionName() || `Session ${header.id.slice(0, 8)}`;
+
+  const parent = header.parentSession
+    ? buildSessionRelation(resolve(header.parentSession), "parent")
+    : undefined;
+  const forks = listRelatedSessionFiles(resolvedFile)
+    .filter((candidate) => candidate !== resolvedFile)
+    .map((candidate) => buildSessionRelation(candidate, "fork", resolvedFile))
+    .filter((relation): relation is SessionViewRelation => relation !== null)
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+
+  const forksByEntryId = new Map<string, SessionViewRelation[]>();
+  for (const fork of forks) {
+    if (!fork.anchorEntryId) continue;
+    const bucket = forksByEntryId.get(fork.anchorEntryId) ?? [];
+    bucket.push(fork);
+    forksByEntryId.set(fork.anchorEntryId, bucket);
+  }
+
+  const items = entries.flatMap((entry) => {
+    const item = mapEntryToItem(entry);
+    if (!item) return [];
+    if (item.entryId) {
+      const anchoredForks = forksByEntryId.get(item.entryId);
+      if (anchoredForks) {
+        item.forks = anchoredForks;
+      }
+    }
+    return [item];
+  });
+
+  return {
+    sessionId: header.id,
+    fileName: basename(resolvedFile),
+    title,
+    createdAt: header.timestamp,
+    updatedAt,
+    entryCount: entries.length,
+    items,
+    parent: parent ?? undefined,
+    forks,
+  };
+}
+
+export function resolveRequestedSessionFile(
+  baseSessionFile: string,
+  requestedFileName?: string | null,
+): string | null {
+  const resolvedBase = resolve(baseSessionFile);
+  if (!requestedFileName) return resolvedBase;
+
+  const trimmed = requestedFileName.trim();
+  if (!trimmed) return resolvedBase;
+
+  const fileName = basename(trimmed);
+  if (fileName !== trimmed || !fileName.endsWith(".jsonl")) return null;
+
+  const candidate = join(dirname(resolvedBase), fileName);
+  if (!existsSync(candidate)) return null;
+
+  try {
+    return SessionManager.open(candidate).getHeader() ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function listRelatedSessionFiles(sessionFile: string): string[] {
+  const dir = dirname(sessionFile);
+  if (!existsSync(dir)) return [];
+
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".jsonl"))
+    .map((fileName) => join(dir, fileName));
+}
+
+function buildSessionRelation(
+  sessionFile: string,
+  kind: "parent" | "fork",
+  expectedParent?: string,
+): SessionViewRelation | null {
+  try {
+    const sm = SessionManager.open(sessionFile);
+    const header = sm.getHeader();
+    if (!header) return null;
+    if (kind === "fork" && resolve(header.parentSession ?? "") !== expectedParent) {
+      return null;
+    }
+
+    const entries = sm.getEntries();
+    const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
+    const anchorEntryId =
+      kind === "fork" && expectedParent
+        ? findForkAnchorEntryId(SessionManager.open(expectedParent).getEntries(), entries)
+        : undefined;
+    return {
+      kind,
+      fileName: basename(sessionFile),
+      sessionId: header.id,
+      title: sm.getSessionName() || `Session ${header.id.slice(0, 8)}`,
+      updatedAt,
+      entryCount: entries.length,
+      summary: extractSessionSummary(entries),
+      anchorEntryId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findForkAnchorEntryId(
+  parentEntries: SessionEntry[],
+  childEntries: SessionEntry[],
+): string | undefined {
+  let sharedCount = 0;
+  while (
+    sharedCount < parentEntries.length &&
+    sharedCount < childEntries.length &&
+    parentEntries[sharedCount]?.id === childEntries[sharedCount]?.id
+  ) {
+    sharedCount += 1;
+  }
+
+  for (let i = sharedCount - 1; i >= 0; i--) {
+    const entry = parentEntries[i];
+    if (entry?.type === "message" && entry.message.role === "user") {
+      return entry.id;
+    }
+  }
+
+  return sharedCount > 0 ? parentEntries[sharedCount - 1]?.id : undefined;
+}
+
+function extractSessionSummary(entries: SessionEntry[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const item = mapEntryToItem(entry);
+    if (!item?.body) continue;
+    return collapseSummary(item.body);
+  }
+  return undefined;
+}
+
+function collapseSummary(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length > 96 ? `${singleLine.slice(0, 93)}…` : singleLine;
+}
+
+function mapEntryToItem(entry: SessionEntry): SessionViewItem | null {
+  switch (entry.type) {
+    case "message":
+      return mapMessageEntry(entry);
+    case "model_change":
+      return {
+        kind: "system",
+        title: "Model changed",
+        body: `${entry.provider} / ${entry.modelId}`,
+        meta: entry.timestamp,
+        tone: "muted",
+      };
+    case "thinking_level_change":
+      return {
+        kind: "system",
+        title: "Thinking level changed",
+        body: entry.thinkingLevel,
+        meta: entry.timestamp,
+        tone: "muted",
+      };
+    case "compaction":
+      return mapCompactionEntry(entry);
+    case "branch_summary":
+      return mapBranchSummaryEntry(entry);
+    case "custom_message":
+      return {
+        kind: "system",
+        title: `Custom message · ${entry.customType}`,
+        body: contentToText(entry.content),
+        meta: entry.timestamp,
+        tone: "muted",
+      };
+    case "custom":
+      return {
+        kind: "system",
+        title: `Custom data · ${entry.customType}`,
+        body: entry.data === undefined ? "(no data)" : JSON.stringify(entry.data, null, 2),
+        meta: entry.timestamp,
+        tone: "muted",
+      };
+    case "label":
+      return {
+        kind: "system",
+        title: "Label updated",
+        body: entry.label || "(cleared)",
+        meta: entry.timestamp,
+        tone: "muted",
+      };
+    case "session_info":
+      return entry.name
+        ? {
+            kind: "system",
+            title: "Session renamed",
+            body: entry.name,
+            meta: entry.timestamp,
+            tone: "muted",
+          }
+        : null;
+    default:
+      return null;
+  }
+}
+
+function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
+  const message = entry.message as unknown as Record<string, unknown> & {
+    role?: string;
+    content?: unknown;
+    provider?: string;
+    model?: string;
+    toolName?: string;
+    isError?: boolean;
+    command?: string;
+    output?: string;
+    stopReason?: string;
+    customType?: string;
+    summary?: string;
+  };
+
+  switch (message.role) {
+    case "user":
+      return {
+        kind: "user",
+        title: "User",
+        body: contentToText(message.content),
+        meta: entry.timestamp,
+        entryId: entry.id,
+      };
+    case "assistant": {
+      const assistantBody = assistantContentToText(message.content);
+      const metaParts = [message.provider, message.model, message.stopReason].filter(Boolean);
+      return {
+        kind: "assistant",
+        title: "Assistant",
+        body: assistantBody,
+        meta:
+          metaParts.length > 0 ? `${entry.timestamp} · ${metaParts.join(" · ")}` : entry.timestamp,
+        entryId: entry.id,
+      };
+    }
+    case "toolResult":
+      return {
+        kind: "tool",
+        title: `Tool result · ${String(message.toolName ?? "unknown")}`,
+        body: contentToText(message.content),
+        meta: entry.timestamp,
+        tone: message.isError ? "err" : "ok",
+        entryId: entry.id,
+      };
+    case "bashExecution": {
+      const command = String(message.command ?? "").trim();
+      const output = String(message.output ?? "").trim();
+      const body = [command ? `$ ${command}` : "", output].filter(Boolean).join("\n\n");
+      return {
+        kind: "tool",
+        title: "Bash execution",
+        body: body || "(no output)",
+        meta: entry.timestamp,
+        entryId: entry.id,
+      };
+    }
+    case "custom":
+      return {
+        kind: "system",
+        title: `Custom message · ${String(message.customType ?? "custom")}`,
+        body: contentToText(message.content),
+        meta: entry.timestamp,
+        tone: "muted",
+        entryId: entry.id,
+      };
+    case "branchSummary":
+      return {
+        kind: "system",
+        title: "Branch summary",
+        body: String(message.summary ?? ""),
+        meta: entry.timestamp,
+        tone: "muted",
+        entryId: entry.id,
+      };
+    case "compactionSummary":
+      return {
+        kind: "system",
+        title: "Compaction summary",
+        body: String(message.summary ?? ""),
+        meta: entry.timestamp,
+        tone: "muted",
+        entryId: entry.id,
+      };
+    default:
+      return {
+        kind: "system",
+        title: `Message · ${String(message.role ?? "unknown")}`,
+        body: contentToText(message.content),
+        meta: entry.timestamp,
+        tone: "muted",
+        entryId: entry.id,
+      };
+  }
+}
+
+function mapCompactionEntry(entry: CompactionEntry): SessionViewItem {
+  return {
+    kind: "system",
+    title: "Context compacted",
+    body: entry.summary,
+    meta: `${entry.timestamp} · ${entry.tokensBefore} tokens before compaction`,
+    tone: "muted",
+  };
+}
+
+function mapBranchSummaryEntry(entry: BranchSummaryEntry): SessionViewItem {
+  return {
+    kind: "system",
+    title: "Branch summary",
+    body: entry.summary,
+    meta: entry.timestamp,
+    tone: "muted",
+  };
+}
+
+function assistantContentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const textBlocks: string[] = [];
+  const thinkingBlocks: string[] = [];
+  const toolCalls: string[] = [];
+  const otherBlocks: string[] = [];
+
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const value = block as Record<string, unknown>;
+    if (value.type === "text" && typeof value.text === "string") {
+      textBlocks.push(value.text);
+      continue;
+    }
+    if (value.type === "thinking" && typeof value.thinking === "string") {
+      thinkingBlocks.push(value.thinking);
+      continue;
+    }
+    if (value.type === "toolCall") {
+      const name = typeof value.name === "string" ? value.name : "tool";
+      const args = value.arguments === undefined ? "" : JSON.stringify(value.arguments, null, 2);
+      toolCalls.push([name, args].filter(Boolean).join("\n"));
+      continue;
+    }
+    if (value.type === "image") {
+      otherBlocks.push(`[image ${String(value.mimeType ?? "unknown")}]`);
+    }
+  }
+
+  const sections = [
+    textBlocks.join("\n\n").trim(),
+    thinkingBlocks.length > 0
+      ? [`[thinking]`, thinkingBlocks.join("\n\n")].filter(Boolean).join("\n")
+      : "",
+    toolCalls.length > 0 ? [`[tool calls]`, toolCalls.join("\n\n")].filter(Boolean).join("\n") : "",
+    otherBlocks.join("\n"),
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
+function contentToText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  const lines: string[] = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const value = block as Record<string, unknown>;
+    if (value.type === "text" && typeof value.text === "string") {
+      lines.push(value.text);
+      continue;
+    }
+    if (value.type === "thinking" && typeof value.thinking === "string") {
+      lines.push(`[thinking]\n${value.thinking}`);
+      continue;
+    }
+    if (value.type === "toolCall") {
+      const name = typeof value.name === "string" ? value.name : "tool";
+      const args = value.arguments === undefined ? "" : JSON.stringify(value.arguments, null, 2);
+      lines.push([`[toolCall] ${name}`, args].filter(Boolean).join("\n"));
+      continue;
+    }
+    if (value.type === "image") {
+      lines.push(`[image ${String(value.mimeType ?? "unknown")}]`);
+    }
+  }
+
+  return lines.join("\n\n");
+}

@@ -3,6 +3,32 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { join } from "path";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 
+export class ThreadRootNotFoundError extends Error {
+  constructor(sessionFile: string) {
+    super(`Thread root message not found in source session: ${sessionFile}`);
+    this.name = "ThreadRootNotFoundError";
+  }
+}
+
+export interface ThreadRootMessage {
+  text?: string;
+  userName?: string;
+  user?: string;
+  loggedAt?: number;
+}
+
+interface SessionMessageEntryLike {
+  type: string;
+  id: string;
+  parentId: string | null;
+  timestamp: string;
+  message?: {
+    role?: string;
+    timestamp?: number;
+    content?: Array<{ type?: string; text?: string }> | string;
+  };
+}
+
 /**
  * Returns the shared session directory for a conversation.
  * Channel sessions use a current pointer within this directory.
@@ -88,6 +114,10 @@ export function openManagedSession(
   sessionDir: string,
   cwd: string,
 ): SessionManager {
+  if (shouldRecreatePreinitializedSession(sessionFile)) {
+    rmSync(sessionFile, { force: true });
+  }
+
   const SessionManagerCtor = SessionManager as unknown as {
     new (cwd: string, sessionDir: string, sessionFile: string, persist: boolean): SessionManager;
   };
@@ -143,8 +173,103 @@ function hasSessionHeader(sessionFile: string): boolean {
   return false;
 }
 
+function shouldRecreatePreinitializedSession(sessionFile: string): boolean {
+  if (!existsSync(sessionFile)) return false;
+
+  try {
+    const entries = readFileSync(sessionFile, "utf-8")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { type?: string });
+
+    return entries.length === 1 && entries[0]?.type === "session";
+  } catch {
+    return false;
+  }
+}
+
 function getFileDir(sessionFile: string): string {
   return sessionFile.substring(0, sessionFile.lastIndexOf("/"));
+}
+
+function resolveThreadSnapshotEntries(
+  sourceSessionFile: string,
+  rootMessage: ThreadRootMessage,
+): SessionMessageEntryLike[] | null {
+  const targetText = buildComparableRootMessageText(rootMessage);
+  if (!targetText) return null;
+
+  const entries = SessionManager.open(sourceSessionFile).getEntries() as SessionMessageEntryLike[];
+  const matchIndex = findRootMessageIndex(entries, targetText, rootMessage.loggedAt);
+  if (matchIndex === -1) return null;
+
+  const nextTopLevelUserIndex = entries.findIndex(
+    (entry, index) => index > matchIndex && isUserMessageEntry(entry),
+  );
+  const endIndex = nextTopLevelUserIndex === -1 ? entries.length : nextTopLevelUserIndex;
+  return entries.slice(0, endIndex);
+}
+
+function findRootMessageIndex(
+  entries: SessionMessageEntryLike[],
+  targetText: string,
+  loggedAt?: number,
+): number {
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i];
+    if (!isUserMessageEntry(entry)) continue;
+
+    const comparableText = normalizeComparableUserText(getMessageText(entry));
+    if (comparableText !== targetText) continue;
+
+    const messageTimestamp = entry.message?.timestamp;
+    if (
+      loggedAt !== undefined &&
+      typeof messageTimestamp === "number" &&
+      messageTimestamp < loggedAt
+    ) {
+      continue;
+    }
+
+    return i;
+  }
+
+  return -1;
+}
+
+function isUserMessageEntry(entry: SessionMessageEntryLike): boolean {
+  return entry.type === "message" && entry.message?.role === "user";
+}
+
+function getMessageText(entry: SessionMessageEntryLike): string {
+  const content = entry.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+
+  return content
+    .filter((part): part is { type?: string; text?: string } => part.type === "text")
+    .map((part) => part.text ?? "")
+    .join("\n\n");
+}
+
+function buildComparableRootMessageText(rootMessage: ThreadRootMessage): string | null {
+  const userLabel = rootMessage.userName || rootMessage.user || "unknown";
+  const text = rootMessage.text?.trim();
+  if (!text) return null;
+  return normalizeComparableUserText(`[${userLabel}]: ${text}`);
+}
+
+function stripSlackAttachmentBlock(text: string): string {
+  return text.replace(/\n*<slack_attachments>\n[\s\S]*?\n<\/slack_attachments>\s*$/g, "");
+}
+
+function normalizeComparableUserText(text: string): string {
+  const withoutTimestamp = text.replace(
+    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s+(?=\[[^\]]+\](?:\s+\[in-thread:[^\]]+\])?:\s)/,
+    "",
+  );
+  return stripSlackAttachmentBlock(withoutTimestamp).trim();
 }
 
 function getCurrentSessionPath(sessionDir: string): string | null {
@@ -199,5 +324,73 @@ export function forkThreadSessionFile(
   }
   rmSync(targetSessionFile, { force: true });
   renameSync(forkedFile, targetSessionFile);
+  return targetSessionFile;
+}
+
+export function createThreadSessionFileFromRootMessage(
+  targetSessionFile: string,
+  cwd: string,
+  rootMessage: ThreadRootMessage,
+  parentSession?: string,
+): string {
+  const sessionDir = getFileDir(targetSessionFile);
+  mkdirSync(sessionDir, { recursive: true });
+  rmSync(targetSessionFile, { force: true });
+
+  const header = {
+    type: "session",
+    version: 3,
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    cwd,
+    ...(parentSession ? { parentSession } : {}),
+  };
+  const rootText = buildComparableRootMessageText(rootMessage);
+  if (!rootText) {
+    writeFileSync(targetSessionFile, `${JSON.stringify(header)}\n`, "utf-8");
+    return targetSessionFile;
+  }
+
+  const rootEntry = {
+    type: "message",
+    id: randomUUID().slice(0, 8),
+    parentId: null,
+    timestamp: new Date().toISOString(),
+    message: {
+      role: "user",
+      content: [{ type: "text", text: rootText }],
+      ...(rootMessage.loggedAt !== undefined ? { timestamp: rootMessage.loggedAt } : {}),
+    },
+  };
+  const content = [header, rootEntry].map((entry) => JSON.stringify(entry)).join("\n");
+  writeFileSync(targetSessionFile, `${content}\n`, "utf-8");
+  return targetSessionFile;
+}
+
+export function forkThreadSessionFileFromRootMessage(
+  sourceSessionFile: string,
+  targetSessionFile: string,
+  cwd: string,
+  rootMessage: ThreadRootMessage,
+): string {
+  const snapshotEntries = resolveThreadSnapshotEntries(sourceSessionFile, rootMessage);
+  if (!snapshotEntries) {
+    throw new ThreadRootNotFoundError(sourceSessionFile);
+  }
+
+  const sessionDir = getFileDir(targetSessionFile);
+  mkdirSync(sessionDir, { recursive: true });
+  rmSync(targetSessionFile, { force: true });
+
+  const header = {
+    type: "session",
+    version: 3,
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    cwd,
+    parentSession: sourceSessionFile,
+  };
+  const content = [header, ...snapshotEntries].map((entry) => JSON.stringify(entry)).join("\n");
+  writeFileSync(targetSessionFile, `${content}\n`, "utf-8");
   return targetSessionFile;
 }
