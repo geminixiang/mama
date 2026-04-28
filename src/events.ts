@@ -72,6 +72,7 @@ const RETRY_BASE_MS = 100;
 
 export class EventsWatcher {
   private timers: Map<string, NodeJS.Timeout> = new Map();
+  private timerEventTypes: Map<string, "one-shot"> = new Map();
   private crons: Map<string, Cron> = new Map();
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private startTime: number;
@@ -132,6 +133,7 @@ export class EventsWatcher {
       clearTimeout(timer);
     }
     this.timers.clear();
+    this.timerEventTypes.clear();
 
     // Cancel all cron jobs
     for (const cron of this.crons.values()) {
@@ -236,6 +238,13 @@ export class EventsWatcher {
       }
     }
 
+    if (this.timerEventTypes.get(filename) === "one-shot" && this.timers.has(filename)) {
+      log.logInfo(
+        `Ignoring deleted one-shot file after scheduling: ${filename} (timer remains active)`,
+      );
+      return;
+    }
+
     log.logInfo(`Event file deleted: ${filename}`);
     this.cancelScheduled(filename, "confirmed-delete");
     this.knownFiles.delete(filename);
@@ -250,6 +259,7 @@ export class EventsWatcher {
     if (timer) {
       clearTimeout(timer);
       this.timers.delete(filename);
+      this.timerEventTypes.delete(filename);
     }
 
     if (cron) {
@@ -456,11 +466,13 @@ export class EventsWatcher {
 
     const timer = setTimeout(() => {
       this.timers.delete(filename);
+      this.timerEventTypes.delete(filename);
       log.logInfo(`Executing one-shot event: ${filename}`);
       this.execute(filename, event);
     }, delay);
 
     this.timers.set(filename, timer);
+    this.timerEventTypes.set(filename, "one-shot");
     log.logInfo(`Stored one-shot timer: ${filename} (active timers=${this.timers.size})`);
   }
 

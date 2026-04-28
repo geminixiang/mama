@@ -148,6 +148,34 @@ describe("EventsWatcher platform routing", () => {
     expect(watcher.knownFiles.has(filename)).toBe(true);
   });
 
+  test("keeps a scheduled one-shot timer even if the file truly disappears", async () => {
+    const { bot } = makeBot("slack");
+    const watcher = new EventsWatcher(eventsDir, { slack: bot }) as any;
+    const filename = "reminder.json";
+    const filePath = join(eventsDir, filename);
+
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        type: "one-shot",
+        platform: "slack",
+        conversationId: "D123",
+        conversationKind: "direct",
+        text: "wake up",
+        at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+
+    await watcher.handleFile(filename);
+    expect(watcher.timers.has(filename)).toBe(true);
+
+    rmSync(filePath, { force: true });
+    await watcher.handleDelete(filename);
+
+    expect(watcher.timers.has(filename)).toBe(true);
+    expect(watcher.knownFiles.has(filename)).toBe(true);
+  });
+
   test("routes synthetic events to the explicitly requested platform", () => {
     const { bot: slackBot, enqueueEvent: enqueueSlack } = makeBot("slack");
     const { bot: discordBot, enqueueEvent: enqueueDiscord } = makeBot("discord");
