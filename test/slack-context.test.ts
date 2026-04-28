@@ -420,7 +420,7 @@ describe("thread_ts boundary values", () => {
     expect(createSlackAdapters(event, makeSlackBot()).message.sessionKey).toBe("C001");
   });
 
-  test("DM channel should share a single persistent session across messages", () => {
+  test("DM top-level messages share a single persistent session", () => {
     const event1 = makeEvent({ channel: "D001", ts: "1000.0001", thread_ts: undefined });
     const event2 = makeEvent({ channel: "D001", ts: "1000.0002", thread_ts: undefined });
     const bot = makeSlackBot();
@@ -428,6 +428,17 @@ describe("thread_ts boundary values", () => {
     const { message: msg2 } = createSlackAdapters(event2, bot);
     expect(msg1.sessionKey).toBe("D001");
     expect(msg2.sessionKey).toBe("D001");
+  });
+
+  test("DM thread replies use isolated per-thread sessions", () => {
+    const event = makeEvent({
+      channel: "D001",
+      ts: "1000.0003",
+      thread_ts: "1000.0001",
+    });
+    const bot = makeSlackBot();
+    const { message } = createSlackAdapters(event, bot);
+    expect(message.sessionKey).toBe("D001:1000.0001");
   });
 
   test("setTyping in thread should set assistant status with correct rootTs", async () => {

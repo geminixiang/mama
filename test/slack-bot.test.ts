@@ -236,7 +236,7 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 
-  test("DM follow-up messages are queued while the session is running", async () => {
+  test("DM follow-up messages are queued while the top-level DM session is running", async () => {
     const handler = makeHandler();
     vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "D123");
 
@@ -300,6 +300,77 @@ describe("SlackBot queues follow-up messages", () => {
       conversationId: "D123",
       sessionKey: "D123",
       text: "second request",
+    });
+  });
+
+  test("DM thread follow-up messages are queued on the thread session key", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation(
+      (sessionKey: string) => sessionKey === "D123:2000.0001",
+    );
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let messageHandler:
+      | ((payload: {
+          event: {
+            text?: string;
+            channel: string;
+            user?: string;
+            ts: string;
+            thread_ts?: string;
+            channel_type?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).postMessage = vi.fn().mockResolvedValue("3000.0001");
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "message") messageHandler = fn as typeof messageHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("D123:2000.0001");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    messageHandler?.({
+      event: {
+        text: "thread request",
+        channel: "D123",
+        user: "U123",
+        ts: "2001.0001",
+        thread_ts: "2000.0001",
+        channel_type: "im",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    queue.processing = false;
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "D123",
+      sessionKey: "D123:2000.0001",
+      text: "thread request",
+      thread_ts: "2000.0001",
     });
   });
 });

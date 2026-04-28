@@ -153,12 +153,12 @@ function renderForkLinks(relations: SessionViewRelation[] | undefined, token: st
     .join("")}</div>`;
 }
 
-function parseUserBody(raw: string): { username: string | null; content: string } {
-  // [timestamp] [username]: content
-  let m = raw.match(/^\[[^\]]+\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/);
+export function parseUserBody(raw: string): { username: string | null; content: string } {
+  // [timestamp] [username] [in-thread:ts]: content
+  let m = raw.match(/^\[[^\]]+\]\s*\[([^\]]+)\](?:\s*\[in-thread:[^\]]+\])?:\s*([\s\S]*)$/);
   if (m) return { username: m[1], content: m[2] };
-  // [username]: content
-  m = raw.match(/^\[([^\]]+)\]:\s*([\s\S]*)$/);
+  // [username] [in-thread:ts]: content
+  m = raw.match(/^\[([^\]]+)\](?:\s*\[in-thread:[^\]]+\])?:\s*([\s\S]*)$/);
   if (m) return { username: m[1], content: m[2] };
   return { username: null, content: raw };
 }

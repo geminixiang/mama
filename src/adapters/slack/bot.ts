@@ -889,6 +889,12 @@ export class SlackBot implements Bot {
         return;
       }
 
+      const dmSessionKey = isDM
+        ? e.thread_ts
+          ? `${e.channel}:${e.thread_ts}`
+          : e.channel
+        : undefined;
+
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
         conversationId: e.channel,
@@ -899,7 +905,7 @@ export class SlackBot implements Bot {
         user: e.user,
         text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
         files: e.files,
-        sessionKey: isDM ? e.channel : undefined,
+        sessionKey: dmSessionKey,
       };
 
       const attachmentsPromise = this.logUserMessage(slackEvent);
@@ -937,8 +943,9 @@ export class SlackBot implements Bot {
         const dmSessionKey = slackEvent.sessionKey!;
         // Check for stop command - execute immediately, don't queue!
         if (slackEvent.text.toLowerCase().trim() === "stop") {
-          if (this.handler.isRunning(dmSessionKey)) {
-            this.handler.handleStop(dmSessionKey, e.channel, this); // Don't await, don't queue
+          const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
+          if (stopTarget) {
+            this.handler.handleStop(stopTarget, e.channel, this); // Don't await, don't queue
           } else {
             this.postMessage(e.channel, formatNothingRunning("slack"));
           }

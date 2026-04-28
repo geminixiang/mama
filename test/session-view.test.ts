@@ -11,6 +11,7 @@ import {
   getThreadSessionFile,
   openManagedSession,
 } from "../src/session-store.js";
+import { parseUserBody } from "../src/session-view/portal.js";
 import { parseSessionViewCommand } from "../src/session-view/command.js";
 import { loadSessionViewModel, resolveExistingSessionFile } from "../src/session-view/service.js";
 
@@ -142,5 +143,18 @@ describe("loadSessionViewModel", () => {
     const threadModel = loadSessionViewModel(threadFile);
     expect(threadModel.parent?.fileName).toBe(basename(channelFile));
     expect(threadModel.items.some((item) => item.body?.includes("thread only"))).toBe(true);
+  });
+});
+
+describe("parseUserBody", () => {
+  test("strips in-thread markers from timestamped user messages", () => {
+    expect(
+      parseUserBody(
+        "[2026-04-29 00:11:10+08:00] [geminixiang] [in-thread:1777386320.800769]: hello from thread",
+      ),
+    ).toEqual({
+      username: "geminixiang",
+      content: "hello from thread",
+    });
   });
 });

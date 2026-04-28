@@ -82,4 +82,18 @@ describe("stop command resolution in threads", () => {
     const target = (bot as any).resolveStopTarget("C123", "1000.0001");
     expect(target).toBe("C123:1000.0001");
   });
+
+  test("DM thread stop targets the DM thread session first", () => {
+    const handler = makeHandler(["D123", "D123:1000.0001"]);
+    const bot = makeBot(handler);
+    const target = (bot as any).resolveStopTarget("D123", "1000.0001");
+    expect(target).toBe("D123:1000.0001");
+  });
+
+  test("DM thread stop falls back to the top-level DM session", () => {
+    const handler = makeHandler(["D123"]);
+    const bot = makeBot(handler);
+    const target = (bot as any).resolveStopTarget("D123", "1000.0001");
+    expect(target).toBe("D123");
+  });
 });

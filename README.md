@@ -179,7 +179,9 @@ The bot responds when `@mentioned` in any channel or via DM.
 
 - **Top-level channel messages** — share one persistent channel session.
 - **Thread replies** — fork from the channel session into an isolated thread session.
-- **Thread memory** — inherited at fork time only; thread changes do not merge back into the channel automatically.
+- **DM top-level messages** — share one persistent DM session.
+- **DM thread replies** — fork from the DM session into an isolated thread session.
+- **Thread memory** — inherited at fork time only; thread changes do not merge back into the parent session automatically.
 
 ---
 
