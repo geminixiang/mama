@@ -1,4 +1,4 @@
-import { dirname, join } from "path";
+import { basename, dirname, join, resolve } from "path";
 import { existsSync, readdirSync } from "fs";
 import {
   SessionManager,
@@ -19,15 +19,31 @@ export interface SessionViewItem {
   body?: string;
   meta?: string;
   tone?: "default" | "ok" | "err" | "muted";
+  entryId?: string;
+  forks?: SessionViewRelation[];
+}
+
+export interface SessionViewRelation {
+  kind: "parent" | "fork";
+  fileName: string;
+  sessionId: string;
+  title: string;
+  updatedAt: string;
+  entryCount: number;
+  summary?: string;
+  anchorEntryId?: string;
 }
 
 export interface SessionViewModel {
   sessionId: string;
+  fileName: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   entryCount: number;
   items: SessionViewItem[];
+  parent?: SessionViewRelation;
+  forks: SessionViewRelation[];
 }
 
 export function resolveExistingSessionFile(
@@ -43,81 +59,159 @@ export function resolveExistingSessionFile(
 }
 
 export function loadSessionViewModel(sessionFile: string): SessionViewModel {
-  const sessionFiles = resolveSessionFiles(sessionFile);
-  const allItems: SessionViewItem[] = [];
-  let createdAt = "";
-  let updatedAt = "";
-  let totalEntries = 0;
-  let sessionId = "";
-  let title = "";
+  const resolvedFile = resolve(sessionFile);
+  const sm = SessionManager.open(resolvedFile);
+  const header = sm.getHeader();
+  if (!header) throw new Error(`No valid session found: ${sessionFile}`);
 
-  for (let i = 0; i < sessionFiles.length; i++) {
-    const file = sessionFiles[i];
-    const sm = SessionManager.open(file);
-    const header = sm.getHeader();
-    if (!header) continue;
+  const entries = sm.getEntries();
+  const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
+  const title = sm.getSessionName() || `Session ${header.id.slice(0, 8)}`;
 
-    const entries = sm.getEntries();
-    totalEntries += entries.length;
+  const parent = header.parentSession
+    ? buildSessionRelation(resolve(header.parentSession), "parent")
+    : undefined;
+  const forks = listRelatedSessionFiles(resolvedFile)
+    .filter((candidate) => candidate !== resolvedFile)
+    .map((candidate) => buildSessionRelation(candidate, "fork", resolvedFile))
+    .filter((relation): relation is SessionViewRelation => relation !== null)
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
 
-    if (!createdAt || header.timestamp < createdAt) createdAt = header.timestamp;
-    const lastTs = entries.at(-1)?.timestamp ?? header.timestamp;
-    if (!updatedAt || lastTs > updatedAt) updatedAt = lastTs;
-
-    sessionId = header.id;
-    const sessionName = sm.getSessionName() || `Session ${header.id.slice(0, 8)}`;
-    title = sessionName;
-
-    if (sessionFiles.length > 1) {
-      allItems.push({
-        kind: "system",
-        title: i === 0 ? `Session started — ${sessionName}` : `New session — ${sessionName}`,
-        meta: header.timestamp,
-        tone: "muted",
-      });
-    }
-
-    for (const entry of entries) {
-      const item = mapEntryToItem(entry);
-      if (item) allItems.push(item);
-    }
+  const forksByEntryId = new Map<string, SessionViewRelation[]>();
+  for (const fork of forks) {
+    if (!fork.anchorEntryId) continue;
+    const bucket = forksByEntryId.get(fork.anchorEntryId) ?? [];
+    bucket.push(fork);
+    forksByEntryId.set(fork.anchorEntryId, bucket);
   }
 
-  if (!createdAt) throw new Error(`No valid sessions found near: ${sessionFile}`);
+  const items = entries.flatMap((entry) => {
+    const item = mapEntryToItem(entry);
+    if (!item) return [];
+    if (item.entryId) {
+      const anchoredForks = forksByEntryId.get(item.entryId);
+      if (anchoredForks) {
+        item.forks = anchoredForks;
+      }
+    }
+    return [item];
+  });
 
   return {
-    sessionId,
+    sessionId: header.id,
+    fileName: basename(resolvedFile),
     title,
-    createdAt,
+    createdAt: header.timestamp,
     updatedAt,
-    entryCount: totalEntries,
-    items: allItems,
+    entryCount: entries.length,
+    items,
+    parent: parent ?? undefined,
+    forks,
   };
 }
 
-function resolveSessionFiles(sessionFile: string): string[] {
+export function resolveRequestedSessionFile(
+  baseSessionFile: string,
+  requestedFileName?: string | null,
+): string | null {
+  const resolvedBase = resolve(baseSessionFile);
+  if (!requestedFileName) return resolvedBase;
+
+  const trimmed = requestedFileName.trim();
+  if (!trimmed) return resolvedBase;
+
+  const fileName = basename(trimmed);
+  if (fileName !== trimmed || !fileName.endsWith(".jsonl")) return null;
+
+  const candidate = join(dirname(resolvedBase), fileName);
+  if (!existsSync(candidate)) return null;
+
+  try {
+    return SessionManager.open(candidate).getHeader() ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
+function listRelatedSessionFiles(sessionFile: string): string[] {
   const dir = dirname(sessionFile);
-  if (!existsSync(dir)) return [sessionFile];
+  if (!existsSync(dir)) return [];
 
-  const files = readdirSync(dir)
+  return readdirSync(dir)
     .filter((name) => name.endsWith(".jsonl"))
-    .map((f) => join(dir, f));
+    .map((fileName) => join(dir, fileName));
+}
 
-  if (files.length === 0) return [sessionFile];
-
-  // Sort by session header timestamp so channel + thread sessions appear chronologically
-  const withTimestamp = files.flatMap((f) => {
-    try {
-      const sm = SessionManager.open(f);
-      const header = sm.getHeader();
-      return header ? [{ f, ts: header.timestamp }] : [];
-    } catch {
-      return [];
+function buildSessionRelation(
+  sessionFile: string,
+  kind: "parent" | "fork",
+  expectedParent?: string,
+): SessionViewRelation | null {
+  try {
+    const sm = SessionManager.open(sessionFile);
+    const header = sm.getHeader();
+    if (!header) return null;
+    if (kind === "fork" && resolve(header.parentSession ?? "") !== expectedParent) {
+      return null;
     }
-  });
 
-  withTimestamp.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
-  return withTimestamp.length > 0 ? withTimestamp.map((x) => x.f) : [sessionFile];
+    const entries = sm.getEntries();
+    const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
+    const anchorEntryId =
+      kind === "fork" && expectedParent
+        ? findForkAnchorEntryId(SessionManager.open(expectedParent).getEntries(), entries)
+        : undefined;
+    return {
+      kind,
+      fileName: basename(sessionFile),
+      sessionId: header.id,
+      title: sm.getSessionName() || `Session ${header.id.slice(0, 8)}`,
+      updatedAt,
+      entryCount: entries.length,
+      summary: extractSessionSummary(entries),
+      anchorEntryId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findForkAnchorEntryId(
+  parentEntries: SessionEntry[],
+  childEntries: SessionEntry[],
+): string | undefined {
+  let sharedCount = 0;
+  while (
+    sharedCount < parentEntries.length &&
+    sharedCount < childEntries.length &&
+    parentEntries[sharedCount]?.id === childEntries[sharedCount]?.id
+  ) {
+    sharedCount += 1;
+  }
+
+  for (let i = sharedCount - 1; i >= 0; i--) {
+    const entry = parentEntries[i];
+    if (entry?.type === "message" && entry.message.role === "user") {
+      return entry.id;
+    }
+  }
+
+  return sharedCount > 0 ? parentEntries[sharedCount - 1]?.id : undefined;
+}
+
+function extractSessionSummary(entries: SessionEntry[]): string | undefined {
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const item = mapEntryToItem(entry);
+    if (!item?.body) continue;
+    return collapseSummary(item.body);
+  }
+  return undefined;
+}
+
+function collapseSummary(text: string): string {
+  const singleLine = text.replace(/\s+/g, " ").trim();
+  return singleLine.length > 96 ? `${singleLine.slice(0, 93)}…` : singleLine;
 }
 
 function mapEntryToItem(entry: SessionEntry): SessionViewItem | null {
@@ -205,6 +299,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         title: "User",
         body: contentToText(message.content),
         meta: entry.timestamp,
+        entryId: entry.id,
       };
     case "assistant": {
       const assistantBody = assistantContentToText(message.content);
@@ -215,6 +310,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: assistantBody,
         meta:
           metaParts.length > 0 ? `${entry.timestamp} · ${metaParts.join(" · ")}` : entry.timestamp,
+        entryId: entry.id,
       };
     }
     case "toolResult":
@@ -224,6 +320,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: contentToText(message.content),
         meta: entry.timestamp,
         tone: message.isError ? "err" : "ok",
+        entryId: entry.id,
       };
     case "bashExecution": {
       const command = String(message.command ?? "").trim();
@@ -234,6 +331,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         title: "Bash execution",
         body: body || "(no output)",
         meta: entry.timestamp,
+        entryId: entry.id,
       };
     }
     case "custom":
@@ -243,6 +341,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: contentToText(message.content),
         meta: entry.timestamp,
         tone: "muted",
+        entryId: entry.id,
       };
     case "branchSummary":
       return {
@@ -251,6 +350,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: String(message.summary ?? ""),
         meta: entry.timestamp,
         tone: "muted",
+        entryId: entry.id,
       };
     case "compactionSummary":
       return {
@@ -259,6 +359,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: String(message.summary ?? ""),
         meta: entry.timestamp,
         tone: "muted",
+        entryId: entry.id,
       };
     default:
       return {
@@ -267,6 +368,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         body: contentToText(message.content),
         meta: entry.timestamp,
         tone: "muted",
+        entryId: entry.id,
       };
   }
 }

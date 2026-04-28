@@ -1,11 +1,12 @@
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { AssistantMessage, UserMessage } from "@mariozechner/pi-ai";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
+  forkThreadSessionFile,
   getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
@@ -115,5 +116,31 @@ describe("loadSessionViewModel", () => {
     expect(model.items[1].body).toContain("好的，我正在查看");
     expect(model.items[2].body).toContain("npm test");
     expect(model.items[2].body).toContain("1 passed");
+    expect(model.forks).toEqual([]);
+  });
+
+  test("keeps channel and thread sessions on separate pages while linking them", () => {
+    const sessionDir = getChannelSessionDir(conversationDir);
+    const channelFile = createManagedSessionFile(sessionDir, conversationDir);
+    const channelSession = openManagedSession(channelFile, sessionDir, conversationDir);
+    channelSession.appendMessage(makeUserMessage("channel root"));
+    channelSession.appendMessage(makeAssistantMessage("channel reply"));
+
+    const threadFile = getThreadSessionFile(conversationDir, "D123:1000.0001");
+    forkThreadSessionFile(channelFile, threadFile, conversationDir);
+    const threadSession = openManagedSession(threadFile, sessionDir, conversationDir);
+    threadSession.appendMessage(makeUserMessage("thread only"));
+    threadSession.appendMessage(makeAssistantMessage("thread reply"));
+
+    const channelModel = loadSessionViewModel(channelFile);
+    expect(channelModel.items.some((item) => item.body?.includes("thread only"))).toBe(false);
+    expect(channelModel.forks).toHaveLength(1);
+    expect(channelModel.forks[0]?.fileName).toBe(basename(threadFile));
+    const anchoredItem = channelModel.items.find((item) => item.body?.includes("channel root"));
+    expect(anchoredItem?.forks?.[0]?.fileName).toBe(basename(threadFile));
+
+    const threadModel = loadSessionViewModel(threadFile);
+    expect(threadModel.parent?.fileName).toBe(basename(channelFile));
+    expect(threadModel.items.some((item) => item.body?.includes("thread only"))).toBe(true);
   });
 });

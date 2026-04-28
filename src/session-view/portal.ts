@@ -1,6 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import * as log from "../log.js";
-import { loadSessionViewModel, type SessionViewItem } from "./service.js";
+import {
+  loadSessionViewModel,
+  resolveRequestedSessionFile,
+  type SessionViewItem,
+  type SessionViewRelation,
+} from "./service.js";
 import type { InMemorySessionViewTokenStore } from "./store.js";
 
 export async function handleSessionViewRequest(
@@ -31,13 +36,21 @@ export async function handleSessionViewRequest(
     return true;
   }
 
+  const requestedSession = url.searchParams.get("session");
+  const targetSessionFile = resolveRequestedSessionFile(entry.sessionFile, requestedSession);
+  if (!targetSessionFile) {
+    res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(renderStatusPage("Session unavailable", "The selected session link is invalid."));
+    return true;
+  }
+
   try {
-    const model = loadSessionViewModel(entry.sessionFile);
+    const model = loadSessionViewModel(targetSessionFile);
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
     });
-    res.end(renderSessionPage(model, entry.expiresAt));
+    res.end(renderSessionPage(model, entry.token, entry.expiresAt));
   } catch (error) {
     log.logWarning(
       `[${entry.conversationId}] Failed to render session ${entry.sessionFile}`,
@@ -54,17 +67,28 @@ function renderSessionPage(
   model: {
     title: string;
     sessionId: string;
+    fileName: string;
     createdAt: string;
     updatedAt: string;
     entryCount: number;
     items: SessionViewItem[];
+    parent?: SessionViewRelation;
+    forks: SessionViewRelation[];
   },
+  token: string,
   expiresAt: number,
 ): string {
   const items =
     model.items.length > 0
-      ? model.items.map((item) => renderItem(item)).join("\n")
+      ? model.items.map((item) => renderItem(item, token)).join("\n")
       : `<div class="system-event"><span class="event-dot"></span><span class="event-text">No messages yet — send one to the bot, then refresh.</span></div>`;
+
+  const relatedSections = model.parent
+    ? `<section class="related-card stack">
+        <p class="eyebrow">Forked from</p>
+        ${renderRelationCard(model.parent, token)}
+      </section>`
+    : "";
 
   return renderHtmlDocument(
     `${model.title} · Session Viewer`,
@@ -81,12 +105,15 @@ function renderSessionPage(
       </div>
       <div class="stat-row">
         ${renderSummaryItem("ID", model.sessionId.slice(0, 8))}
+        ${renderSummaryItem("File", model.fileName)}
         ${renderSummaryItem("Created", formatDate(model.createdAt))}
         ${renderSummaryItem("Updated", formatDate(model.updatedAt))}
         ${renderSummaryItem("Entries", String(model.entryCount))}
         ${renderSummaryItem("Expires", formatDate(new Date(expiresAt).toISOString()))}
       </div>
     </header>
+
+    ${relatedSections}
 
     <main class="timeline-shell">
       <div class="timeline-list">
@@ -100,6 +127,32 @@ function renderSummaryItem(label: string, value: string): string {
   return `<span class="stat-chip"><span class="stat-label">${esc(label)}</span><strong class="stat-value">${esc(value)}</strong></span>`;
 }
 
+function renderRelationCard(relation: SessionViewRelation, token: string): string {
+  const href = `/session?token=${encodeURIComponent(token)}&session=${encodeURIComponent(relation.fileName)}`;
+  const summary = relation.summary ? `<p class="related-summary">${esc(relation.summary)}</p>` : "";
+  return `<a class="related-link" href="${href}">
+    <span class="related-copy">
+      <strong class="related-title">${esc(relation.title)}</strong>
+      ${summary}
+      <span class="related-meta">${esc(formatDate(relation.updatedAt))} · ${esc(String(relation.entryCount))} entries · ${esc(relation.fileName)}</span>
+    </span>
+    <span class="related-arrow" aria-hidden="true">→</span>
+  </a>`;
+}
+
+function renderForkLinks(relations: SessionViewRelation[] | undefined, token: string): string {
+  if (!relations || relations.length === 0) return "";
+  return `<div class="fork-links">${relations
+    .map((relation) => {
+      const href = `/session?token=${encodeURIComponent(token)}&session=${encodeURIComponent(relation.fileName)}`;
+      return `<a class="fork-link" href="${href}" title="Open ${esc(relation.title)}">
+        <span class="fork-dot" aria-hidden="true"></span>
+        <span class="fork-text">Thread</span>
+      </a>`;
+    })
+    .join("")}</div>`;
+}
+
 function parseUserBody(raw: string): { username: string | null; content: string } {
   // [timestamp] [username]: content
   let m = raw.match(/^\[[^\]]+\]\s*\[([^\]]+)\]:\s*([\s\S]*)$/);
@@ -110,7 +163,7 @@ function parseUserBody(raw: string): { username: string | null; content: string 
   return { username: null, content: raw };
 }
 
-function renderItem(item: SessionViewItem): string {
+function renderItem(item: SessionViewItem, token?: string): string {
   if (item.kind === "system") {
     const parts = [item.title, item.body].filter((x): x is string => Boolean(x)).map(esc);
     const time = item.meta
@@ -141,9 +194,11 @@ function renderItem(item: SessionViewItem): string {
       : { username: null, content: "" };
     const initial = username ? esc(username.slice(0, 2).toUpperCase()) : "U";
     const body = content ? `<pre class="msg-body">${esc(content)}</pre>` : "";
+    const forks = renderForkLinks(item.forks, token ?? "");
     return `<div class="msg-row msg-user">
   <div class="user-bubble">
     ${body}
+    ${forks}
     ${time}
   </div>
   <div class="msg-avatar user-avatar" title="${username ? esc(username) : "User"}">${initial}</div>
@@ -152,10 +207,12 @@ function renderItem(item: SessionViewItem): string {
 
   // assistant
   const body = item.body ? `<pre class="msg-body">${esc(item.body)}</pre>` : "";
+  const forks = renderForkLinks(item.forks, token ?? "");
   return `<div class="msg-row msg-assistant">
   <div class="msg-avatar asst-avatar" aria-hidden="true">A</div>
   <div class="asst-card">
     ${body}
+    ${forks}
     ${time}
   </div>
 </div>`;
@@ -357,6 +414,115 @@ const styles = `
   }
 
   /* ── Timeline shell ───────────────────────────────────────────────────── */
+
+  .fork-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 10px;
+  }
+
+  .fork-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(239, 68, 68, 0.18);
+    background: rgba(254, 242, 242, 0.95);
+    color: #b91c1c;
+    text-decoration: none;
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1;
+    transition: transform 120ms, background 120ms, border-color 120ms;
+  }
+
+  .fork-link:hover {
+    transform: translateY(-1px);
+    background: #fff1f2;
+    border-color: rgba(239, 68, 68, 0.28);
+  }
+
+  .fork-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #ef4444;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12);
+    flex-shrink: 0;
+  }
+
+  .fork-text {
+    white-space: nowrap;
+  }
+
+  .related-card {
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    background: rgba(255,255,255,0.78);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.04);
+    backdrop-filter: blur(12px);
+  }
+
+  .related-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .related-link {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: rgba(255,255,255,0.82);
+    color: inherit;
+    text-decoration: none;
+    transition: transform 120ms, border-color 120ms, box-shadow 120ms, background 120ms;
+  }
+
+  .related-link:hover {
+    transform: translateY(-1px);
+    border-color: rgba(0,0,0,0.16);
+    background: #fff;
+    box-shadow: 0 8px 18px rgba(0,0,0,0.05);
+  }
+
+  .related-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .related-title {
+    color: var(--text);
+    font-size: 0.94rem;
+    line-height: 1.3;
+  }
+
+  .related-summary {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.45;
+  }
+
+  .related-meta {
+    color: var(--subtle);
+    font-size: 0.74rem;
+    line-height: 1.4;
+  }
+
+  .related-arrow {
+    flex-shrink: 0;
+    color: var(--subtle);
+    font-size: 1rem;
+  }
 
   .timeline-shell {
     padding: 20px 0;
