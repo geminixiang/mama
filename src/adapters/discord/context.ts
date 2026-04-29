@@ -18,6 +18,10 @@ const MAX_LENGTH = 1900;
 
 const formatDiscordContinuation = (partNum: number): string => `*(continued ${partNum})*`;
 
+function isDiscordMessageReference(id: string | undefined): id is string {
+  return typeof id === "string" && id !== "" && !id.startsWith("event:");
+}
+
 function formatToolResult(result: ChatToolResult): string {
   const argsFormatted = formatToolArgs(result.args);
   const duration = (result.durationMs / 1000).toFixed(1);
@@ -55,7 +59,8 @@ export function createDiscordAdapters(
   const conversationId = event.conversationId;
   const channelId = conversationId;
   const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
-  const isThreaded = !!event.thread_ts;
+  const threadTargetId = isDiscordMessageReference(event.thread_ts) ? event.thread_ts : undefined;
+  const replyTargetId = isDiscordMessageReference(event.ts) ? event.ts : undefined;
 
   const message: ChatMessage = {
     id: event.ts,
@@ -77,10 +82,16 @@ export function createDiscordAdapters(
 
   async function postDiagnosticMessage(text: string): Promise<string> {
     stopTyping();
-    if (isThreaded && event.thread_ts) {
-      return bot.postInThread(channelId, event.thread_ts, text);
+    if (threadTargetId) {
+      return bot.postInThread(channelId, threadTargetId, text);
     }
-    return bot.postReply(channelId, event.ts, text);
+    if (replyTargetId) {
+      return bot.postReply(channelId, replyTargetId, text);
+    }
+    if (messageId !== null) {
+      return bot.postReply(channelId, messageId, text);
+    }
+    return bot.postMessage(channelId, text);
   }
 
   const responseCtx: ChatResponseContext = {
@@ -98,10 +109,12 @@ export function createDiscordAdapters(
             await bot.updateMessageRaw(channelId, messageId, displayText);
           } else {
             stopTyping();
-            if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(channelId, event.thread_ts, displayText);
+            if (threadTargetId) {
+              messageId = await bot.postInThread(channelId, threadTargetId, displayText);
+            } else if (replyTargetId) {
+              messageId = await bot.postReply(channelId, replyTargetId, displayText);
             } else {
-              messageId = await bot.postReply(channelId, event.ts, displayText);
+              messageId = await bot.postMessage(channelId, displayText);
             }
           }
           for (const part of extraParts) {
@@ -132,10 +145,12 @@ export function createDiscordAdapters(
             await bot.updateMessageRaw(channelId, messageId, displayText);
           } else {
             stopTyping();
-            if (isThreaded && event.thread_ts) {
-              messageId = await bot.postInThread(channelId, event.thread_ts, displayText);
+            if (threadTargetId) {
+              messageId = await bot.postInThread(channelId, threadTargetId, displayText);
+            } else if (replyTargetId) {
+              messageId = await bot.postReply(channelId, replyTargetId, displayText);
             } else {
-              messageId = await bot.postReply(channelId, event.ts, displayText);
+              messageId = await bot.postMessage(channelId, displayText);
             }
           }
           for (const part of extraParts) {

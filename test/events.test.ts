@@ -84,6 +84,29 @@ describe("EventsWatcher platform routing", () => {
     });
   });
 
+  test("infers Discord DM event conversation kind from DM-prefixed conversation IDs", () => {
+    const { bot } = makeBot("discord");
+    const watcher = new EventsWatcher(eventsDir, { discord: bot }) as any;
+
+    const parsed = watcher.parseEvent(
+      JSON.stringify({
+        type: "immediate",
+        conversationId: "DM123",
+        text: "Check inbox",
+      }),
+      "discord-dm.json",
+    );
+
+    expect(parsed).toEqual({
+      type: "immediate",
+      platform: "discord",
+      conversationId: "DM123",
+      conversationKind: "direct",
+      userId: undefined,
+      text: "Check inbox",
+    });
+  });
+
   test("rejects ambiguous events when multiple platforms are configured", () => {
     const { bot: slackBot } = makeBot("slack");
     const { bot: telegramBot } = makeBot("telegram");

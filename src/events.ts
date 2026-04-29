@@ -13,6 +13,7 @@ import { readFile } from "fs/promises";
 import { join } from "path";
 import type { Bot, BotEvent, ConversationKind } from "./adapter.js";
 import * as log from "./log.js";
+import { inferConversationKind } from "./session-policy.js";
 
 // ============================================================================
 // Event Types
@@ -430,15 +431,7 @@ export class EventsWatcher {
       return conversationKindValue;
     }
 
-    if (platform === "slack") {
-      return conversationId.startsWith("D") ? "direct" : "shared";
-    }
-
-    if (platform === "telegram") {
-      return conversationId.startsWith("-") ? "shared" : "direct";
-    }
-
-    return "shared";
+    return inferConversationKind(platform, conversationId);
   }
 
   private handleImmediate(filename: string, event: ImmediateEvent): void {

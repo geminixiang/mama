@@ -137,6 +137,15 @@ describe("respond() — non-threaded", () => {
       expect.stringContaining("second"),
     );
   });
+
+  test("synthetic events without a Slack ts post a normal channel message first", async () => {
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG") });
+    const event = makeEvent({ ts: "event:reminder.json" });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respond("hello");
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("hello"));
+    expect(bot.postInThread).not.toHaveBeenCalled();
+  });
 });
 
 describe("respond() — threaded", () => {
@@ -238,6 +247,28 @@ describe("respondDiagnostic()", () => {
       expect.stringContaining("*✓ bash*: list files"),
     );
   });
+
+  test("synthetic event diagnostics anchor to the bot message after respond", async () => {
+    const postInThread = vi.fn().mockResolvedValue("THREAD_MSG");
+    const bot = makeSlackBot({
+      postMessage: vi.fn().mockResolvedValue("BOT_MSG"),
+      postInThread,
+    });
+    const event = makeEvent({ ts: "event:reminder.json" });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respond("main");
+    await responseCtx.respondDiagnostic("detail");
+    expect(postInThread).toHaveBeenCalledWith("C001", "BOT_MSG", expect.stringContaining("detail"));
+  });
+
+  test("synthetic event diagnostics before a main response are dropped instead of using invalid thread_ts", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({ ts: "event:reminder.json" });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postInThread).not.toHaveBeenCalled();
+    expect(bot.postMessage).not.toHaveBeenCalled();
+  });
 });
 
 // ============================================================================
@@ -253,6 +284,14 @@ describe("setTyping()", () => {
     expect(bot.setAssistantStatus).toHaveBeenCalledWith("C001", "1000.0001", "Thinking");
     expect(bot.postMessage).not.toHaveBeenCalled();
     expect(bot.postInThread).not.toHaveBeenCalled();
+  });
+
+  test("synthetic events do not call assistant status with invalid ts", async () => {
+    const bot = makeSlackBot({ setAssistantStatus: vi.fn().mockResolvedValue(undefined) });
+    const event = makeEvent({ ts: "event:reminder.json" });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.setTyping(true);
+    expect(bot.setAssistantStatus).not.toHaveBeenCalled();
   });
 
   test("threaded: sets assistant status only", async () => {

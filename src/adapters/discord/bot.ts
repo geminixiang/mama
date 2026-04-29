@@ -16,6 +16,7 @@ import { basename, join } from "path";
 
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createDiscordAdapters } from "./context.js";
 
@@ -359,7 +360,13 @@ export class DiscordBot implements Bot {
       const isInThread = msg.channel.isThread();
       const referencedMsgId = msg.reference?.messageId;
       const threadTs = isInThread ? msg.channelId : referencedMsgId;
-      const sessionKey = isDM ? channelId : `${channelId}:${threadTs ?? msgId}`;
+      const conversationKind = isDM ? "direct" : "shared";
+      const sessionKey = resolveChatSessionKey({
+        conversationId: channelId,
+        conversationKind,
+        messageId: msgId,
+        threadTs,
+      });
 
       const cleanedText = this.stripBotMention(msg.content);
 
@@ -368,7 +375,7 @@ export class DiscordBot implements Bot {
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
         conversationId: channelId,
-        conversationKind: isDM ? "direct" : "shared",
+        conversationKind,
         ts: msgId,
         thread_ts: threadTs,
         sessionKey,

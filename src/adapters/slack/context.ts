@@ -21,6 +21,10 @@ const TRUNCATION_NOTE_FINAL = "\n\n_(see thread for full response)_";
 
 const formatSlackContinuation = (partNum: number): string => `_(continued ${partNum})_`;
 
+function isSlackMessageTs(ts: string | undefined): ts is string {
+  return typeof ts === "string" && /^\d+\.\d+$/.test(ts);
+}
+
 function formatSlackToolResult(result: ChatToolResult): string {
   const argsFormatted = formatToolArgs(result.args);
   const duration = (result.durationMs / 1000).toFixed(1);
@@ -55,7 +59,8 @@ export function createSlackAdapters(
   // Extract event filename for status message
   const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
-  const rootTs = resolveSlackRootTs(event.ts, event.thread_ts);
+  const rootTs =
+    event.thread_ts ?? (isSlackMessageTs(event.ts) ? resolveSlackRootTs(event.ts) : undefined);
   const isThreaded = !!event.thread_ts;
 
   /**
@@ -70,14 +75,16 @@ export function createSlackAdapters(
       }
       return slack.postMessage(channelId, text);
     }
-    return slack.postInThread(channelId, event.ts, text);
+    return isSlackMessageTs(event.ts)
+      ? slack.postInThread(channelId, event.ts, text)
+      : slack.postMessage(channelId, text);
   };
 
   const postDiagnosticDirect = async (
     text: string,
     options?: { style?: "muted" | "error" },
   ): Promise<void> => {
-    const threadAnchor = rootTs;
+    const threadAnchor = rootTs ?? messageTs;
     if (!threadAnchor) return;
 
     for (const part of splitText(text, MAX_THREAD_LENGTH, formatSlackContinuation)) {
@@ -138,7 +145,7 @@ export function createSlackAdapters(
 
           if (messageTs) {
             await slack.updateMessage(channelId, messageTs, displayText);
-          } else if (isThreaded) {
+          } else if (isThreaded && rootTs) {
             // Reply within the user's thread
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
@@ -168,7 +175,7 @@ export function createSlackAdapters(
 
           if (messageTs) {
             await slack.updateMessage(channelId, messageTs, displayText);
-          } else if (isThreaded) {
+          } else if (isThreaded && rootTs) {
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
@@ -206,7 +213,7 @@ export function createSlackAdapters(
     },
 
     setTyping: async (isTyping: boolean) => {
-      if (isTyping && !messageTs) {
+      if (isTyping && !messageTs && rootTs) {
         try {
           const statusText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
           await slack.setAssistantStatus(channelId, rootTs, statusText);
@@ -230,7 +237,9 @@ export function createSlackAdapters(
               slack.updateMessage(channelId, messageTs, displayText),
             ];
             if (!working) {
-              updates.push(slack.setAssistantStatus(channelId, rootTs, "").catch(() => {}));
+              if (rootTs) {
+                updates.push(slack.setAssistantStatus(channelId, rootTs, "").catch(() => {}));
+              }
             }
             await Promise.all(updates);
           }
@@ -247,10 +256,12 @@ export function createSlackAdapters(
     deleteResponse: async () => {
       updatePromise = updatePromise.then(async () => {
         // Clear assistant status first
-        try {
-          await slack.setAssistantStatus(channelId, rootTs, "");
-        } catch {
-          // Ignore errors clearing status
+        if (rootTs) {
+          try {
+            await slack.setAssistantStatus(channelId, rootTs, "");
+          } catch {
+            // Ignore errors clearing status
+          }
         }
 
         // Delete thread messages first (in reverse order)

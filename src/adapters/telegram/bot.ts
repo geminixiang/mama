@@ -3,6 +3,7 @@ import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
+import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import { createTelegramAdapters } from "./context.js";
 import { escapeTelegramHtml } from "./html.js";
@@ -363,9 +364,12 @@ export class TelegramBot implements Bot {
     const threadTs = replyToId ? String(replyToId) : undefined;
     const conversationKind = chatType === "private" ? "direct" : "shared";
 
-    // Private chats: single session per chat (no per-message splitting)
-    // Groups: per-thread sessions (use reply chain or unique message id)
-    const sessionKey = chatType === "private" ? chatId : `${chatId}:${threadTs ?? msgId}`;
+    const sessionKey = resolveChatSessionKey({
+      conversationId: chatId,
+      conversationKind,
+      messageId: msgId,
+      threadTs,
+    });
 
     return {
       msg,

@@ -113,6 +113,20 @@ describe("respond() — non-threaded (replies to trigger message)", () => {
     expect(updateCall[2]).toContain("line1");
     expect(updateCall[2]).toContain("line2");
   });
+
+  test("synthetic event without a Discord message id posts to the channel", async () => {
+    const bot = makeDiscordBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG") });
+    const event = makeEvent({
+      ts: "event:one-shot-1777454334068.json",
+      thread_ts: undefined,
+      text: "[EVENT:one-shot-1777454334068.json:one-shot:2026-04-29T17:19:15+08:00] run",
+    });
+    const { responseCtx } = createDiscordAdapters(event, bot, /* isEvent= */ true);
+    await responseCtx.respond("hello");
+    expect(bot.postMessage).toHaveBeenCalledWith("CH001", expect.stringContaining("hello"));
+    expect(bot.postReply).not.toHaveBeenCalled();
+    expect(bot.postInThread).not.toHaveBeenCalled();
+  });
 });
 
 describe("respond() — threaded", () => {
@@ -196,6 +210,35 @@ describe("respondDiagnostic()", () => {
       "MSG001",
       expect.stringContaining("**Done bash**: list files"),
     );
+  });
+
+  test("synthetic event: diagnostics after main response reply to bot message", async () => {
+    const bot = makeDiscordBot({ postMessage: vi.fn().mockResolvedValue("BOT_MSG") });
+    const event = makeEvent({
+      ts: "event:one-shot-1777454334068.json",
+      thread_ts: undefined,
+      text: "[EVENT:one-shot-1777454334068.json:one-shot:2026-04-29T17:19:15+08:00] run",
+    });
+    const { responseCtx } = createDiscordAdapters(event, bot, /* isEvent= */ true);
+    await responseCtx.respond("main");
+    vi.clearAllMocks();
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postReply).toHaveBeenCalledWith("CH001", "BOT_MSG", "detail");
+    expect(bot.postMessage).not.toHaveBeenCalled();
+  });
+
+  test("synthetic event: diagnostics before main response post to the channel", async () => {
+    const bot = makeDiscordBot({ postMessage: vi.fn().mockResolvedValue("DIAG_MSG") });
+    const event = makeEvent({
+      ts: "event:one-shot-1777454334068.json",
+      thread_ts: undefined,
+      text: "[EVENT:one-shot-1777454334068.json:one-shot:2026-04-29T17:19:15+08:00] run",
+    });
+    const { responseCtx } = createDiscordAdapters(event, bot, /* isEvent= */ true);
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postMessage).toHaveBeenCalledWith("CH001", "detail");
+    expect(bot.postReply).not.toHaveBeenCalled();
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 });
 
