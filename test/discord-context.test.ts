@@ -46,10 +46,10 @@ function makeEvent(overrides: Partial<DiscordEvent> = {}): DiscordEvent {
 // ============================================================================
 
 describe("session key derivation", () => {
-  test("non-threaded: sessionKey = channel:ts", () => {
+  test("non-threaded: sessionKey = channel", () => {
     const event = makeEvent({ ts: "MSG001", thread_ts: undefined });
     const { message } = createDiscordAdapters(event, makeDiscordBot());
-    expect(message.sessionKey).toBe("CH001:MSG001");
+    expect(message.sessionKey).toBe("CH001");
   });
 
   test("threaded: sessionKey = channel:thread_ts", () => {
@@ -72,6 +72,15 @@ describe("session key derivation", () => {
     expect(m1.sessionKey).toBe("CH001:MSG001");
     expect(m2.sessionKey).toBe("CH001:MSG004");
     expect(m1.sessionKey).not.toBe(m2.sessionKey);
+  });
+
+  test("top-level follow-ups in same channel reuse the same session key", () => {
+    const event1 = makeEvent({ ts: "MSG001", thread_ts: undefined });
+    const event2 = makeEvent({ ts: "MSG002", thread_ts: undefined });
+    const { message: m1 } = createDiscordAdapters(event1, makeDiscordBot());
+    const { message: m2 } = createDiscordAdapters(event2, makeDiscordBot());
+    expect(m1.sessionKey).toBe("CH001");
+    expect(m2.sessionKey).toBe("CH001");
   });
 });
 

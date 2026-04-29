@@ -132,6 +132,45 @@ describe("DiscordBot message routing", () => {
     expect(event.sessionKey).toBe("DM1");
   });
 
+  test("uses a persistent top-level session key for shared channels", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M1",
+        channelId: "C1",
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(handler.handleEvent).toHaveBeenCalled();
+    });
+    const event = vi.mocked(handler.handleEvent).mock.calls[0][0];
+    expect(event.sessionKey).toBe("C1");
+  });
+
+  test("uses reply target as the scoped session key in shared channels", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        reference: { messageId: "M1" },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(handler.handleEvent).toHaveBeenCalled();
+    });
+    const event = vi.mocked(handler.handleEvent).mock.calls[0][0];
+    expect(event.sessionKey).toBe("C1:M1");
+  });
+
   test("logs threadTs for shared channel replies", async () => {
     const bot = new DiscordBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
     const messageHandler = installMessageHandler(bot);

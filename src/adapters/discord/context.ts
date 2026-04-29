@@ -5,6 +5,7 @@ import type {
   PlatformInfo,
 } from "../../adapter.js";
 import * as log from "../../log.js";
+import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatToolArgs, splitText } from "../shared.js";
 import type { DiscordBot, DiscordEvent } from "./bot.js";
 
@@ -64,7 +65,15 @@ export function createDiscordAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`,
+    sessionKey:
+      event.sessionKey ??
+      resolveChatSessionKey({
+        conversationId,
+        conversationKind: event.conversationKind,
+        messageId: event.ts,
+        persistentTopLevel: true,
+        threadTs: event.thread_ts,
+      }),
     conversationKind: event.conversationKind,
     userId: event.user,
     userName: event.userName,

@@ -368,6 +368,7 @@ export class DiscordBot implements Bot {
         conversationId: channelId,
         conversationKind,
         messageId: msgId,
+        persistentTopLevel: true,
         threadTs,
       });
 
