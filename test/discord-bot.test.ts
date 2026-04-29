@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Collection } from "discord.js";
@@ -63,5 +63,91 @@ describe("DiscordBot attachments", () => {
         localPath: expect.stringMatching(/^C123\/attachments\/\d+_clip\.mov$/),
       },
     ]);
+  });
+});
+
+describe("DiscordBot message routing", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-discord-route-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  function installMessageHandler(bot: DiscordBot): (msg: any) => Promise<void> {
+    let messageHandler: ((msg: any) => Promise<void>) | undefined;
+    (bot as any).startupTime = 0;
+    (bot as any).botUserId = "BOT";
+    (bot as any).processAttachments = vi.fn().mockResolvedValue([]);
+    (bot as any).client = {
+      on: vi.fn((event: string, handlerFn: (msg: any) => Promise<void>) => {
+        if (event === "messageCreate") messageHandler = handlerFn;
+      }),
+    };
+    (bot as any).setupEventHandlers();
+    if (!messageHandler) throw new Error("message handler not installed");
+    return messageHandler;
+  }
+
+  function makeDiscordMessage(overrides: Record<string, any> = {}) {
+    return {
+      id: "M1",
+      channelId: "C1",
+      createdTimestamp: Date.now() + 10,
+      createdAt: new Date("2026-04-01T10:00:00.000Z"),
+      content: "<@BOT> hello",
+      author: { id: "U1", username: "alice", bot: false },
+      member: { displayName: "Alice" },
+      channel: { type: 0, isThread: () => false, name: "general" },
+      mentions: { users: { has: (id: string) => id === "BOT" } },
+      reference: undefined,
+      attachments: new Collection(),
+      ...overrides,
+    };
+  }
+
+  test("uses a persistent session key for DMs", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "DMMSG1",
+        channelId: "DM1",
+        content: "hello",
+        channel: { type: 1, isThread: () => false },
+        mentions: { users: { has: () => false } },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(handler.handleEvent).toHaveBeenCalled();
+    });
+    const event = vi.mocked(handler.handleEvent).mock.calls[0][0];
+    expect(event.sessionKey).toBe("DM1");
+  });
+
+  test("logs threadTs for shared channel replies", async () => {
+    const bot = new DiscordBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        reference: { messageId: "M1" },
+      }),
+    );
+
+    const lines = readFileSync(join(workingDir, "C1", "log.jsonl"), "utf-8")
+      .trim()
+      .split("\n");
+    const entry = JSON.parse(lines[0]);
+    expect(entry.threadTs).toBe("M1");
   });
 });

@@ -522,6 +522,7 @@ export class TelegramBot implements Bot {
       this.logToFile(mc.chatId, {
         date: new Date(mc.msg.date * 1000).toISOString(),
         ts: mc.msgId,
+        ...(mc.conversationKind === "shared" && mc.threadTs ? { threadTs: mc.threadTs } : {}),
         user: mc.userId,
         userName: mc.userName,
         text: cleanedText,

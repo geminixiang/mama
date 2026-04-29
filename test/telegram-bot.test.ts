@@ -184,6 +184,75 @@ describe("TelegramBot stop handling", () => {
   });
 });
 
+describe("TelegramBot message logging", () => {
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-telegram-log-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  function installMessageHandler(bot: TelegramBot): (ctx: { message: any }) => Promise<void> {
+    let messageHandler: ((ctx: { message: any }) => Promise<void>) | undefined;
+    (bot as any).startupTime = 0;
+    (bot as any).botUsername = "mama_bot";
+    (bot as any).processAttachments = vi.fn().mockResolvedValue([]);
+    (bot as any).client = {
+      command: vi.fn(),
+      on: vi.fn((event: string, handlerFn: (ctx: { message: any }) => Promise<void>) => {
+        if (event === "message") messageHandler = handlerFn;
+      }),
+    };
+    (bot as any).setupEventHandlers();
+    if (!messageHandler) throw new Error("message handler not installed");
+    return messageHandler;
+  }
+
+  test("logs threadTs for shared chat replies", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler({
+      message: makeMessage({
+        chat: { id: 999, type: "group" },
+        message_id: 60,
+        text: "@mama_bot hello",
+        reply_to_message: { message_id: 50 },
+      }),
+    });
+
+    const lines = readFileSync(join(workingDir, "999", "log.jsonl"), "utf-8")
+      .trim()
+      .split("\n");
+    const entry = JSON.parse(lines[0]);
+    expect(entry.threadTs).toBe("50");
+    expect(entry.text).toBe("hello");
+  });
+
+  test("does not log threadTs for private chat replies", async () => {
+    const bot = new TelegramBot(makeHandler(), { token: "T", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler({
+      message: makeMessage({
+        message_id: 60,
+        text: "hello",
+        reply_to_message: { message_id: 50 },
+      }),
+    });
+
+    const lines = readFileSync(join(workingDir, "123", "log.jsonl"), "utf-8")
+      .trim()
+      .split("\n");
+    const entry = JSON.parse(lines[0]);
+    expect(entry.threadTs).toBeUndefined();
+  });
+});
+
 describe("TelegramBot startup", () => {
   let workingDir: string;
 

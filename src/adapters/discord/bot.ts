@@ -359,7 +359,7 @@ export class DiscordBot implements Bot {
       const isInThread = msg.channel.isThread();
       const referencedMsgId = msg.reference?.messageId;
       const threadTs = isInThread ? msg.channelId : referencedMsgId;
-      const sessionKey = `${channelId}:${threadTs ?? msgId}`;
+      const sessionKey = isDM ? channelId : `${channelId}:${threadTs ?? msgId}`;
 
       const cleanedText = this.stripBotMention(msg.content);
 
@@ -371,6 +371,7 @@ export class DiscordBot implements Bot {
         conversationKind: isDM ? "direct" : "shared",
         ts: msgId,
         thread_ts: threadTs,
+        sessionKey,
         user: userId,
         userName,
         text: cleanedText,
@@ -381,6 +382,7 @@ export class DiscordBot implements Bot {
       this.logToFile(channelId, {
         date: msg.createdAt.toISOString(),
         ts: msgId,
+        ...(!isDM && threadTs ? { threadTs } : {}),
         user: userId,
         userName,
         text: cleanedText,
