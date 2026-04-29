@@ -47,7 +47,7 @@ We actively track the upstream `pi-mom` and plan to:
 - **Multi-platform** — Slack, Telegram, and Discord adapters out of the box
 - **Persistent sessions** — session behavior is adapted per platform instead of forcing one thread model everywhere
 - **Concurrent conversations** — Slack threads, Discord replies/threads, and Telegram reply chains can run independently
-- **Sandbox execution** — run agent commands on host, in a shared container, in a managed per-user container, or in a Firecracker VM
+- **Sandbox execution** — run agent commands on host, in a shared container, in a managed per-user container, or experimentally in a Firecracker VM
 - **Credential vaults** — `/login` stores credentials under `--state-dir` and injects env only into container/image/Firecracker runs
 - **Web session viewer** — users can open a read-only web view of the current session via `session` / `/session`
 - **Persistent memory** — workspace-level and channel-level `MEMORY.md` files
@@ -57,11 +57,11 @@ We actively track the upstream `pi-mom` and plan to:
 
 ## Platform Session Model
 
-| Platform | User Interaction Structure                | `sessionKey` Rule                                                    | Default Session Model                                                                | Special Handling Needed | Notes                                                                                            |
-| -------- | ----------------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------ |
-| Slack    | channel top-level + thread replies        | top-level: `channelId`; thread: `channelId:threadTs`                 | channel keeps one persistent session; thread forks from channel into its own session | High                    | channel -> thread inherits context via fork; thread -> channel does not merge back automatically |
-| Discord  | normal messages, replies, thread channels | `channelId:threadTsOrMsgId`                                          | replies / thread channels naturally map to isolated sessions                         | Low                     | no aliasing layer needed; session identity is determined directly from the Discord event         |
-| Telegram | private chats, group replies              | private chat: `chatId`; group reply chain: `chatId:replyToIdOrMsgId` | private chats use one long session; groups split by reply chain                      | Medium                  | Telegram has no native thread model; group sessions are modeled from reply chains                |
+| Platform | User Interaction Structure                        | `sessionKey` Rule                                                                 | Default Session Model                                                                       | Special Handling Needed | Notes                                                                                            |
+| -------- | ------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------ |
+| Slack    | channel top-level + thread replies                | top-level / DM: `conversationId`; thread: `conversationId:threadTs`               | top-level channel and DM sessions persist; each Slack thread forks into its own session     | High                    | thread inherits parent context at fork time only; branch changes do not merge back automatically |
+| Discord  | server mentions, replies, thread channels, DMs    | DM: `channelId`; shared top-level: `channelId:messageId`; reply/thread: rooted id | DMs are one persistent session; shared spaces are scoped per top-level mention or thread    | Medium                  | replies in shared channels continue the root message session; DM replies do not fork             |
+| Telegram | private chats, group mentions, group reply chains | private: `chatId`; shared top-level: `chatId:messageId`; reply chain: root reply  | private chats are one persistent session; shared groups are scoped per mentioned reply root | Medium                  | Telegram has no native thread model; shared sessions are inferred from reply chains              |
 
 ## Requirements
 
@@ -198,7 +198,9 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 
 - **Private chats** — every message is forwarded to the bot automatically.
 - **Group chats** — the bot only responds when `@mentioned` by username.
-- **Reply chains** — replying to a previous message continues the same session.
+- **Private chat session** — one persistent session per DM.
+- **Group top-level mentions** — each mentioned message starts its own scoped session.
+- **Reply chains** — replying to a previous message continues that reply-root session.
 - Say `stop` or `/stop` to cancel a running task.
 
 ---
@@ -218,29 +220,30 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 
 - **Server channels** — the bot responds when `@mentioned`.
 - **DMs** — every message is forwarded automatically.
-- **Threads** — messages inside a Discord thread share a single session.
-- **Reply chains** — replying to a message continues that session.
+- **DM session** — one persistent session per DM channel.
+- **Top-level mentions in shared channels** — each mentioned message starts its own scoped session.
+- **Threads and reply chains** — messages inside the same thread or reply root share a session.
 - Say `stop` or `/stop` to cancel a running task.
 
 ---
 
 ## Options
 
-| Option                                 | Default   | Description                                                       |
-| -------------------------------------- | --------- | ----------------------------------------------------------------- |
-| `--state-dir=<dir>`                    | `~/.mama` | Store settings, credential vaults, and bindings outside workspace |
-| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected          |
-| `--sandbox=container:<name>`           |           | Run commands in an existing shared container                      |
-| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user             |
-| `--sandbox=firecracker:<vm-id>:<path>` |           | Run commands inside a Firecracker microVM                         |
-| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)          |
+| Option                                 | Default   | Description                                                        |
+| -------------------------------------- | --------- | ------------------------------------------------------------------ |
+| `--state-dir=<dir>`                    | `~/.mama` | Store settings, credential vaults, and bindings outside workspace  |
+| `--sandbox=host`                       | ✓         | Run commands directly on host; vault env is not injected           |
+| `--sandbox=container:<name>`           |           | Run commands in an existing shared container                       |
+| `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user              |
+| `--sandbox=firecracker:<vm-id>:<path>` |           | Experimental Firecracker microVM mode (alpha; not recommended yet) |
+| `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)           |
 
 ### Sandbox and Vault Semantics
 
 - `host`: no vault env injection.
 - `container:<name>`: one container maps to one shared vault key: `container-<name>`.
 - `image:<image>`: mama creates one container per resolved vault/user and injects that vault's env and file mounts.
-- `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault.
+- `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault. This mode is still alpha and not recommended for normal deployments yet.
 - `docker:*` is not supported; use `container:*` or `image:*`.
 
 See [docs/sandbox.md](docs/sandbox.md) for the full sandbox/vault behavior matrix.
@@ -304,15 +307,15 @@ mama loads settings from `<state-dir>/settings.json` first, then falls back to `
 }
 ```
 
-| Field           | Default             | Description                                              |
-| --------------- | ------------------- | -------------------------------------------------------- |
-| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)                     |
-| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)                         |
-| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
-| `sessionScope`  | `thread`            | `thread` (per thread/reply chain) or `channel`           |
-| `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
-| `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
-| `sentryDsn`     | unset               | Sentry DSN (preferred over env `SENTRY_DSN`)             |
+| Field           | Default             | Description                                                                                              |
+| --------------- | ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)                                                                     |
+| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)                                                                         |
+| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                                                                        |
+| `sessionScope`  | `thread`            | Legacy compatibility setting. Current session boundaries are platform-defined by adapter/session policy. |
+| `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging)                                                 |
+| `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`                                                            |
+| `sentryDsn`     | unset               | Sentry DSN (preferred over env `SENTRY_DSN`)                                                             |
 
 When `sentryDsn` is set, mama sends Sentry events with sensitive prompt/tool content redacted before upload.
 
@@ -362,16 +365,16 @@ Logs appear in Cloud Logging under **Log name: `mama`**. Console output (stdout)
 ├── SYSTEM.md              # Installed packages / env changes log
 ├── skills/                # Global skills (CLI tools)
 ├── events/                # Scheduled event files
-└── <channel-id>/
-    ├── MEMORY.md          # Channel-specific memory
+└── <conversation-id>/
+    ├── MEMORY.md          # Conversation-specific memory
     ├── log.jsonl          # Full message history
     ├── attachments/       # Downloaded user files
     ├── scratch/           # Agent working directory
-    ├── skills/            # Channel-specific skills
+    ├── skills/            # Conversation-specific skills
     └── sessions/
-        ├── current                      # Pointer for the channel-level session
+        ├── current                      # Pointer for the persistent top-level / direct session
         ├── 2026-04-05T18-04-31-010Z_1d92b3ad.jsonl
-        └── <thread-ts>.jsonl            # Fixed-path thread session
+        └── <session-suffix>.jsonl       # Fixed-path scoped session (thread / reply root)
 ```
 
 ## Container Sandbox
@@ -410,6 +413,8 @@ mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 In this mode mama creates one Docker container per resolved vault/user, attaches each container to its own Docker bridge network for per-user network isolation, mounts the workspace at `/workspace`, injects vault env on execution, mounts any credential files declared in the vault, and stops idle containers automatically.
 
 ## Firecracker Sandbox
+
+Warning: Firecracker support is still in very early alpha. It is useful for experimentation, but it is not yet the recommended sandbox mode for normal development or production use. Prefer `image:<image>` unless you are actively validating Firecracker behavior.
 
 Firecracker provides lightweight VM isolation with the security benefits of a hypervisor. Unlike Docker containers, Firecracker runs a full Linux kernel, providing stronger isolation.
 
@@ -482,13 +487,13 @@ Drop JSON files into `<working-directory>/events/` to trigger the agent:
 
 ```json
 // Immediate — triggers as soon as mama sees the file
-{"type": "immediate", "conversationId": "C0123456789", "conversationKind": "shared", "text": "New deployment finished"}
+{"type": "immediate", "platform": "slack", "conversationId": "C0123456789", "conversationKind": "shared", "text": "New deployment finished"}
 
 // One-shot — triggers once at a specific time
-{"type": "one-shot", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
+{"type": "one-shot", "platform": "telegram", "conversationId": "574247312", "conversationKind": "direct", "text": "Daily standup reminder", "at": "2025-12-15T09:00:00+08:00"}
 
 // Periodic — triggers on a cron schedule
-{"type": "periodic", "conversationId": "C0123456789", "conversationKind": "shared", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
+{"type": "periodic", "platform": "discord", "conversationId": "1498975469343739948", "conversationKind": "shared", "text": "Check inbox", "schedule": "0 9 * * 1-5", "timezone": "Asia/Taipei"}
 ```
 
 ## Skills

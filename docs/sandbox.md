@@ -4,12 +4,12 @@
 
 ## 支援模式
 
-| 模式                                                        | 執行位置              | Vault env injection | Vault key 語意                            | 備註                                                           |
-| ----------------------------------------------------------- | --------------------- | ------------------- | ----------------------------------------- | -------------------------------------------------------------- |
-| `host`                                                      | 宿主機                | 不注入              | 可存，但執行時不用                        | 最適合本機開發；不把 vault env 放進 host process               |
-| `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`                        | one container one vault；多人共用同一 container 就共用該 vault |
-| `image:<image>`                                             | mama 管理的 Docker    | 注入                | binding / direct userId / generated vault | per-user container lifecycle 由 mama 管理                      |
-| `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | binding 優先，再 fallback 到 userId vault | VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`           |
+| 模式                                                        | 執行位置              | Vault env injection | Vault key 語意                            | 備註                                                                               |
+| ----------------------------------------------------------- | --------------------- | ------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
+| `host`                                                      | 宿主機                | 不注入              | 可存，但執行時不用                        | 最適合本機開發；不把 vault env 放進 host process                                   |
+| `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`                        | one container one vault；多人共用同一 container 就共用該 vault                     |
+| `image:<image>`                                             | mama 管理的 Docker    | 注入                | binding / direct userId / generated vault | 目前最推薦的隔離模式；per-user container lifecycle 由 mama 管理                    |
+| `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | binding 優先，再 fallback 到 userId vault | Alpha 超早期；VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`，目前不建議使用 |
 
 `docker:*` 不是可用模式；請改用 `container:*` 或 `image:*`。
 
@@ -209,6 +209,8 @@ vault key 選擇邏輯：
 ---
 
 ## `firecracker:<vm-id>:<host-path>`
+
+警告：Firecracker 支援仍在 alpha 超早期階段。目前僅適合實驗與驗證，不建議作為一般開發或正式環境的主要 sandbox 模式。大多數情況下請優先使用 `image:<image>`。
 
 ```bash
 mama --sandbox=firecracker:192.168.1.100:/home/mama/workspace /home/mama/workspace

@@ -2,6 +2,8 @@
 
 This guide explains how to set up Firecracker microVM for use with mama sandbox mode.
 
+Warning: Firecracker support in mama is still in very early alpha. This guide is kept for experimentation and validation work; it is not the recommended sandbox path for normal development or production use yet. Prefer `image:<image>` unless you are explicitly testing Firecracker.
+
 ## Prerequisites
 
 - Linux host with KVM support
