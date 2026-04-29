@@ -1,11 +1,33 @@
-import type { ChatMessage, ChatResponseContext, PlatformInfo } from "../../adapter.js";
+import type {
+  ChatMessage,
+  ChatResponseContext,
+  ChatToolResult,
+  PlatformInfo,
+} from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatToolArgs, splitText } from "../shared.js";
 import type { DiscordBot, DiscordEvent } from "./bot.js";
 
 export const DISCORD_FORMATTING_GUIDE = `## Discord Formatting (Markdown)
 Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`language\ncode\`\`\`
 Links: [text](url), Spoiler: ||text||
 Keep messages under 2000 characters. Use code blocks for code.`;
+
+// Discord hard limit is 2000 chars; 1900 leaves headroom for working indicator.
+const MAX_LENGTH = 1900;
+
+const formatDiscordContinuation = (partNum: number): string => `*(continued ${partNum})*`;
+
+function formatToolResult(result: ChatToolResult): string {
+  const argsFormatted = formatToolArgs(result.args);
+  const duration = (result.durationMs / 1000).toFixed(1);
+  let text = `**${result.isError ? "Error" : "Done"} ${result.toolName}**`;
+  if (result.label) text += `: ${result.label}`;
+  text += ` (${duration}s)\n`;
+  if (argsFormatted) text += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
+  text += `**Result:**\n\`\`\`\n${result.result}\n\`\`\``;
+  return text;
+}
 
 export function createDiscordAdapters(
   event: DiscordEvent,
@@ -53,15 +75,12 @@ export function createDiscordAdapters(
     users: bot.getAllUsers(),
   };
 
-  // Discord message limit is 2000 chars; use 1900 for safety
-  const MAX_LENGTH = 1900;
-  const truncationNote = "\n\n*(message truncated, ask me to elaborate on specific parts)*";
-
-  function truncate(text: string, limit: number, note: string): string {
-    if (text.length > limit) {
-      return text.substring(0, limit - note.length) + note;
+  async function postDiagnosticMessage(text: string): Promise<string> {
+    stopTyping();
+    if (isThreaded && event.thread_ts) {
+      return bot.postInThread(channelId, event.thread_ts, text);
     }
-    return text;
+    return bot.postReply(channelId, event.ts, text);
   }
 
   const responseCtx: ChatResponseContext = {
@@ -69,10 +88,10 @@ export function createDiscordAdapters(
       updatePromise = updatePromise.then(async () => {
         try {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
-          const displayText = truncate(
+          const [displayText, ...extraParts] = splitText(
             isWorking ? accumulatedText + workingIndicator : accumulatedText,
             MAX_LENGTH,
-            truncationNote,
+            formatDiscordContinuation,
           );
 
           if (messageId !== null) {
@@ -84,6 +103,9 @@ export function createDiscordAdapters(
             } else {
               messageId = await bot.postReply(channelId, event.ts, displayText);
             }
+          }
+          for (const part of extraParts) {
+            await postDiagnosticMessage(part);
           }
 
           if (messageId !== null) {
@@ -99,8 +121,12 @@ export function createDiscordAdapters(
     replaceResponse: async (text: string) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          accumulatedText = truncate(text, MAX_LENGTH, truncationNote);
-          const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+          accumulatedText = text;
+          const [displayText, ...extraParts] = splitText(
+            accumulatedText,
+            MAX_LENGTH,
+            formatDiscordContinuation,
+          );
 
           if (messageId !== null) {
             await bot.updateMessageRaw(channelId, messageId, displayText);
@@ -112,6 +138,9 @@ export function createDiscordAdapters(
               messageId = await bot.postReply(channelId, event.ts, displayText);
             }
           }
+          for (const part of extraParts) {
+            await postDiagnosticMessage(part);
+          }
         } catch (err) {
           log.logWarning(
             "Discord replaceResponse error",
@@ -122,8 +151,26 @@ export function createDiscordAdapters(
       await updatePromise;
     },
 
-    // Discord threads not used here — discard thread-only messages (e.g. usage summary)
-    respondInThread: async (_text: string) => {},
+    respondDiagnostic: async (text: string, options?: { style?: "muted" | "error" }) => {
+      updatePromise = updatePromise.then(async () => {
+        try {
+          const prefix = options?.style === "error" ? "*Error:* " : "";
+          for (const part of splitText(`${prefix}${text}`, MAX_LENGTH, formatDiscordContinuation)) {
+            await postDiagnosticMessage(part);
+          }
+        } catch (err) {
+          log.logWarning(
+            "Discord respondDiagnostic error",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
+      });
+      await updatePromise;
+    },
+
+    respondToolResult: async (result: ChatToolResult) => {
+      await responseCtx.respondDiagnostic(formatToolResult(result));
+    },
 
     setTyping: async (isTyping: boolean) => {
       if (isTyping && typingInterval === null) {
@@ -143,7 +190,11 @@ export function createDiscordAdapters(
           isWorking = working;
           if (!working) stopTyping();
           if (messageId !== null) {
-            const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
+            const [displayText] = splitText(
+              isWorking ? accumulatedText + workingIndicator : accumulatedText,
+              MAX_LENGTH,
+              formatDiscordContinuation,
+            );
             await bot.updateMessageRaw(channelId, messageId, displayText);
           }
         } catch (err) {

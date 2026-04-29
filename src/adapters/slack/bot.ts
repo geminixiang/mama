@@ -10,6 +10,7 @@ import type {
   BotHandler,
   ChatMessage,
   ChatResponseContext,
+  ChatToolResult,
   ConversationKind,
   PlatformInfo,
 } from "../../adapter.js";
@@ -131,7 +132,7 @@ export interface SlackContext {
   users: UserInfo[];
   respond: (text: string, shouldLog?: boolean) => Promise<void>;
   replaceMessage: (text: string) => Promise<void>;
-  respondInThread: (text: string) => Promise<void>;
+  respondDiagnostic: (text: string) => Promise<void>;
   setTyping: (isTyping: boolean) => Promise<void>;
   uploadFile: (filePath: string, title?: string) => Promise<void>;
   setWorking: (working: boolean) => Promise<void>;
@@ -663,9 +664,15 @@ export class SlackBot implements Bot {
         const messageTs = await this.postMessage(conversationId, responseText);
         this.logBotResponse(conversationId, responseText, messageTs);
       },
-      respondInThread: async (responseText: string) => {
+      respondDiagnostic: async (responseText: string) => {
         const messageTs = await this.postMessage(conversationId, responseText);
         this.logBotResponse(conversationId, responseText, messageTs);
+      },
+      respondToolResult: async (result: ChatToolResult) => {
+        const duration = (result.durationMs / 1000).toFixed(1);
+        const text = `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`;
+        const messageTs = await this.postMessage(conversationId, text);
+        this.logBotResponse(conversationId, text, messageTs);
       },
       setTyping: async () => {},
       setWorking: async () => {},

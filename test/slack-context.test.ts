@@ -169,10 +169,10 @@ describe("respond() — threaded", () => {
 });
 
 // ============================================================================
-// respondInThread() — thread anchor
+// respondDiagnostic() — thread anchor
 // ============================================================================
 
-describe("respondInThread()", () => {
+describe("respondDiagnostic()", () => {
   test("non-threaded: anchors to event.ts (rootTs), not bot message ts", async () => {
     const postInThreadMock = vi
       .fn()
@@ -182,8 +182,8 @@ describe("respondInThread()", () => {
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("main");
-    await responseCtx.respondInThread("detail");
-    // respondInThread always uses rootTs (event.ts), not the bot reply ts
+    await responseCtx.respondDiagnostic("detail");
+    // respondDiagnostic always uses rootTs (event.ts), not the bot reply ts
     expect(postInThreadMock).toHaveBeenNthCalledWith(
       2,
       "C001",
@@ -198,7 +198,7 @@ describe("respondInThread()", () => {
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("main");
     vi.clearAllMocks();
-    await responseCtx.respondInThread("detail");
+    await responseCtx.respondDiagnostic("detail");
     // Always anchored to rootTs (1000.0001), not the bot message ts
     expect(bot.postInThread).toHaveBeenCalledWith(
       "C001",
@@ -211,12 +211,31 @@ describe("respondInThread()", () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
-    // rootTs is always available (event.ts), so respondInThread posts immediately
-    await responseCtx.respondInThread("detail");
+    // rootTs is always available (event.ts), so respondDiagnostic posts immediately
+    await responseCtx.respondDiagnostic("detail");
     expect(bot.postInThread).toHaveBeenCalledWith(
       "C001",
       "1000.0001",
       expect.stringContaining("detail"),
+    );
+  });
+
+  test("respondToolResult formats and posts adapter-specific diagnostics", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot);
+    await responseCtx.respondToolResult({
+      toolName: "bash",
+      label: "list files",
+      args: { label: "list files", command: "ls" },
+      result: "ok",
+      isError: false,
+      durationMs: 1200,
+    });
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "1000.0001",
+      expect.stringContaining("*✓ bash*: list files"),
     );
   });
 });
@@ -322,6 +341,28 @@ describe("text accumulation", () => {
     expect(postedText.length).toBeLessThan(36000);
     expect(postedText).toContain("message truncated");
   });
+
+  test("replaceResponse posts long final text to diagnostics", async () => {
+    const postInThread = vi.fn().mockResolvedValue("MSG");
+    const bot = makeSlackBot({ postInThread });
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createSlackAdapters(event, bot);
+    const longText = `${"x".repeat(35900)}END`;
+    await responseCtx.replaceResponse(longText);
+    expect(postInThread).toHaveBeenNthCalledWith(
+      1,
+      "C001",
+      "1000.0001",
+      expect.stringContaining("see thread for full response"),
+    );
+    expect(postInThread).toHaveBeenCalledTimes(3);
+    expect(postInThread).toHaveBeenNthCalledWith(
+      3,
+      "C001",
+      "1000.0001",
+      expect.stringContaining("END"),
+    );
+  });
 });
 
 // ============================================================================
@@ -334,12 +375,12 @@ describe("deleteResponse()", () => {
       postInThread: vi
         .fn()
         .mockResolvedValueOnce("MAIN") // from respond()
-        .mockResolvedValueOnce("THREAD1"), // from respondInThread()
+        .mockResolvedValueOnce("THREAD1"), // from respondDiagnostic()
     });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("main");
-    await responseCtx.respondInThread("detail");
+    await responseCtx.respondDiagnostic("detail");
     await responseCtx.deleteResponse();
     expect(bot.deleteMessage).toHaveBeenCalledWith("C001", "THREAD1");
     expect(bot.deleteMessage).toHaveBeenCalledWith("C001", "MAIN");
@@ -405,25 +446,25 @@ describe("same-thread multi-round follow-up", () => {
     expect(msg1.sessionKey).toBe(msg2.sessionKey);
   });
 
-  test("respondInThread uses correct rootTs for same-thread follow-up", async () => {
+  test("respondDiagnostic uses correct rootTs for same-thread follow-up", async () => {
     const bot = makeSlackBot({
       postInThread: vi.fn().mockResolvedValue("T002"),
     });
     const event = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
     const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respondInThread("reply");
+    await responseCtx.respondDiagnostic("reply");
     expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", expect.any(String));
   });
 
-  test("multiple respondInThread calls should all go to same thread", async () => {
+  test("multiple respondDiagnostic calls should all go to same thread", async () => {
     const bot = makeSlackBot({
       postInThread: vi.fn().mockResolvedValue("T002"),
     });
     const event = makeEvent({ ts: "1000.0002", thread_ts: "1000.0001" });
     const { responseCtx } = createSlackAdapters(event, bot);
-    await responseCtx.respondInThread("reply 1");
-    await responseCtx.respondInThread("reply 2");
-    await responseCtx.respondInThread("reply 3");
+    await responseCtx.respondDiagnostic("reply 1");
+    await responseCtx.respondDiagnostic("reply 2");
+    await responseCtx.respondDiagnostic("reply 3");
     expect(bot.postInThread).toHaveBeenCalledTimes(3);
     // All calls should use same rootTs
     expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", expect.any(String));

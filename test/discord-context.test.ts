@@ -145,36 +145,57 @@ describe("respond() — threaded", () => {
 });
 
 // ============================================================================
-// respondInThread()
+// respondDiagnostic()
 // ============================================================================
 
-describe("respondInThread()", () => {
-  // Discord threads not used here — respondInThread is a no-op
-  test("non-threaded: does nothing", async () => {
+describe("respondDiagnostic()", () => {
+  test("non-threaded: posts as a reply to the trigger message", async () => {
     const bot = makeDiscordBot({ postReply: vi.fn().mockResolvedValue("BOT_MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("main");
-    await responseCtx.respondInThread("detail");
+    vi.clearAllMocks();
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postReply).toHaveBeenCalledWith("CH001", "MSG001", "detail");
     expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
-  test("threaded: does nothing", async () => {
+  test("threaded: posts in the platform thread", async () => {
     const bot = makeDiscordBot({ postInThread: vi.fn().mockResolvedValue("THREAD_MSG") });
     const event = makeEvent({ ts: "MSG003", thread_ts: "THREAD001" });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("main");
     vi.clearAllMocks();
-    await responseCtx.respondInThread("detail");
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postInThread).toHaveBeenCalledWith("CH001", "THREAD001", "detail");
   });
 
-  test("non-threaded: does nothing if no main message posted yet", async () => {
+  test("non-threaded: can post before a main message exists", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
-    await responseCtx.respondInThread("detail");
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postReply).toHaveBeenCalledWith("CH001", "MSG001", "detail");
     expect(bot.postInThread).not.toHaveBeenCalled();
+  });
+
+  test("respondToolResult formats and posts diagnostics", async () => {
+    const bot = makeDiscordBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createDiscordAdapters(event, bot);
+    await responseCtx.respondToolResult({
+      toolName: "bash",
+      label: "list files",
+      args: { label: "list files", command: "ls" },
+      result: "ok",
+      isError: false,
+      durationMs: 1200,
+    });
+    expect(bot.postReply).toHaveBeenCalledWith(
+      "CH001",
+      "MSG001",
+      expect.stringContaining("**Done bash**: list files"),
+    );
   });
 });
 
@@ -294,21 +315,22 @@ describe("replaceResponse()", () => {
 });
 
 // ============================================================================
-// Text truncation
+// Text splitting
 // ============================================================================
 
-describe("text truncation", () => {
-  test("long text is truncated at 1900 chars with a note", async () => {
+describe("text splitting", () => {
+  test("long text is split at 1900 chars", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("x".repeat(2100));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBeLessThanOrEqual(1900);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
+    expect(bot.postReply).toHaveBeenCalledTimes(2);
   });
 
-  test("text exactly at 1900 chars is not truncated when not working", async () => {
+  test("text exactly at 1900 chars is not split when not working", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
@@ -316,17 +338,19 @@ describe("text truncation", () => {
     await responseCtx.respond("x".repeat(1900));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBe(1900);
-    expect(posted).not.toContain("truncated");
+    expect(posted).not.toContain("continued");
+    expect(bot.postReply).toHaveBeenCalledTimes(1);
   });
 
-  test("text at 1901 chars is truncated", async () => {
+  test("text at 1901 chars is split", async () => {
     const bot = makeDiscordBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createDiscordAdapters(event, bot);
     await responseCtx.respond("x".repeat(1901));
     const posted = vi.mocked(bot.postReply).mock.calls[0][2] as string;
     expect(posted.length).toBeLessThanOrEqual(1900);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
+    expect(bot.postReply).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -18,6 +18,7 @@ import { join } from "path";
 import type {
   ChatMessage,
   ChatResponseContext,
+  ChatToolResult,
   ConversationKind,
   PlatformInfo,
 } from "./adapter.js";
@@ -372,6 +373,14 @@ function truncate(text: string, maxLen: number): string {
   return `${text.substring(0, maxLen - 3)}...`;
 }
 
+// Tools whose output is interesting in the structured session log but too noisy
+// to surface as a per-tool diagnostic to the user.
+const QUIET_TOOLS = new Set(["read", "write", "edit"]);
+
+// Cap raw tool output before handing it to adapters. Bash output can be MB; without
+// this each adapter's splitter would fan it out into many sequential platform posts.
+const TOOL_RESULT_DIAGNOSTIC_CAP = 8000;
+
 function extractToolResultText(result: unknown): string {
   if (typeof result === "string") {
     return result;
@@ -396,35 +405,6 @@ function extractToolResultText(result: unknown): string {
   }
 
   return JSON.stringify(result);
-}
-
-function formatToolArgsForSlack(_toolName: string, args: Record<string, unknown>): string {
-  const lines: string[] = [];
-
-  for (const [key, value] of Object.entries(args)) {
-    if (key === "label") continue;
-
-    if (key === "path" && typeof value === "string") {
-      const offset = args.offset as number | undefined;
-      const limit = args.limit as number | undefined;
-      if (offset !== undefined && limit !== undefined) {
-        lines.push(`${value}:${offset}-${offset + limit}`);
-      } else {
-        lines.push(value);
-      }
-      continue;
-    }
-
-    if (key === "offset" || key === "limit") continue;
-
-    if (typeof value === "string") {
-      lines.push(value);
-    } else {
-      lines.push(JSON.stringify(value));
-    }
-  }
-
-  return lines.join("\n");
 }
 
 // ============================================================================
@@ -613,12 +593,6 @@ export async function createRunner(
     } | null,
     queue: null as {
       enqueue(fn: () => Promise<void>, errorContext: string): void;
-      enqueueMessage(
-        text: string,
-        target: "main" | "thread",
-        errorContext: string,
-        doLog?: boolean,
-      ): void;
     } | null,
     pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
     totalUsage: {
@@ -662,8 +636,6 @@ export async function createRunner(
         label,
         agentEvent.args as Record<string, unknown>,
       );
-      // Tool labels are omitted from the main message to reduce Slack noise.
-      // Tool execution details are still posted to the thread (see tool_execution_end).
     } else if (event.type === "tool_execution_end") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
       const resultStr = extractToolResultText(agentEvent.result);
@@ -699,23 +671,16 @@ export async function createRunner(
         log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
       }
 
-      // Post args + result to thread
-      const label = pending?.args ? (pending.args as { label?: string }).label : undefined;
-      const argsFormatted = pending
-        ? formatToolArgsForSlack(agentEvent.toolName, pending.args as Record<string, unknown>)
-        : "(args not found)";
-      const duration = (durationMs / 1000).toFixed(1);
-      let threadMessage = `*${agentEvent.isError ? "✗" : "✓"} ${agentEvent.toolName}*`;
-      if (label) threadMessage += `: ${label}`;
-      threadMessage += ` (${duration}s)\n`;
-      if (argsFormatted) threadMessage += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
-      threadMessage += `*Result:*\n\`\`\`\n${resultStr}\n\`\`\``;
-
-      // Only post thread details for tools with meaningful output (bash, attach).
-      // Skip read/write/edit to reduce Slack noise — their results are in the log.
-      const quietTools = new Set(["read", "write", "edit"]);
-      if (!quietTools.has(agentEvent.toolName)) {
-        queue.enqueueMessage(threadMessage, "thread", "tool result thread", false);
+      if (!QUIET_TOOLS.has(agentEvent.toolName)) {
+        const toolResult: ChatToolResult = {
+          toolName: agentEvent.toolName,
+          label: pending?.args ? (pending.args as { label?: string }).label : undefined,
+          args: pending?.args as Record<string, unknown> | undefined,
+          result: truncate(resultStr, TOOL_RESULT_DIAGNOSTIC_CAP),
+          isError: agentEvent.isError,
+          durationMs,
+        };
+        queue.enqueue(() => responseCtx.respondToolResult(toolResult), "tool result diagnostic");
       }
 
       if (agentEvent.isError) {
@@ -814,17 +779,16 @@ export async function createRunner(
 
         for (const thinking of thinkingParts) {
           log.logThinking(logCtx, thinking);
-          queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-          queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
+          queue.enqueue(() => responseCtx.respond(`_${thinking}_`), "thinking main");
+          queue.enqueue(
+            () => responseCtx.respondDiagnostic(`_${thinking}_`),
+            "thinking diagnostic",
+          );
         }
 
         if (text.trim()) {
           log.logResponse(logCtx, text);
-          queue.enqueueMessage(text, "main", "response main");
-          // Only overflow to thread for texts that will be truncated in main
-          if (text.length > SLACK_MAX_LENGTH) {
-            queue.enqueueMessage(text, "thread", "response thread", false);
-          }
+          queue.enqueue(() => responseCtx.respond(text), "response main");
         }
       }
     } else if (event.type === "compaction_start") {
@@ -850,23 +814,6 @@ export async function createRunner(
       );
     }
   });
-
-  // Message limit constant
-  const SLACK_MAX_LENGTH = 40000;
-  const splitForSlack = (text: string): string[] => {
-    if (text.length <= SLACK_MAX_LENGTH) return [text];
-    const parts: string[] = [];
-    let remaining = text;
-    let partNum = 1;
-    while (remaining.length > 0) {
-      const chunk = remaining.substring(0, SLACK_MAX_LENGTH - 50);
-      remaining = remaining.substring(SLACK_MAX_LENGTH - 50);
-      const suffix = remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
-      parts.push(chunk + suffix);
-      partNum++;
-    }
-    return parts;
-  };
 
   return {
     async run(
@@ -986,31 +933,12 @@ export async function createRunner(
               const errMsg = err instanceof Error ? err.message : String(err);
               log.logWarning(`API error (${errorContext})`, errMsg);
               try {
-                // Split long error messages to avoid msg_too_long
-                const errParts = splitForSlack(`_Error: ${errMsg}_`);
-                for (const part of errParts) {
-                  await responseCtx.respondInThread(part);
-                }
+                await responseCtx.respondDiagnostic(`Error: ${errMsg}`, { style: "error" });
               } catch {
                 // Ignore
               }
             }
           });
-        },
-        enqueueMessage(
-          text: string,
-          target: "main" | "thread",
-          errorContext: string,
-          _doLog = true,
-        ): void {
-          const parts = splitForSlack(text);
-          for (const part of parts) {
-            this.enqueue(
-              () =>
-                target === "main" ? responseCtx.respond(part) : responseCtx.respondInThread(part),
-              errorContext,
-            );
-          }
         },
       };
 
@@ -1091,11 +1019,9 @@ export async function createRunner(
       if (runState.stopReason === "error" && runState.errorMessage) {
         try {
           await responseCtx.replaceResponse("_Sorry, something went wrong_");
-          // Split long error messages to avoid msg_too_long
-          const errorParts = splitForSlack(`_Error: ${runState.errorMessage}_`);
-          for (const part of errorParts) {
-            await responseCtx.respondInThread(part);
-          }
+          await responseCtx.respondDiagnostic(`Error: ${runState.errorMessage}`, {
+            style: "error",
+          });
         } catch (err) {
           const errMsg = err instanceof Error ? err.message : String(err);
           log.logWarning("Failed to post error message", errMsg);
@@ -1121,11 +1047,7 @@ export async function createRunner(
           }
         } else if (finalText.trim()) {
           try {
-            const mainText =
-              finalText.length > SLACK_MAX_LENGTH
-                ? `${finalText.substring(0, SLACK_MAX_LENGTH - 50)}\n\n_(see thread for full response)_`
-                : finalText;
-            await responseCtx.replaceResponse(mainText);
+            await responseCtx.replaceResponse(finalText);
           } catch (err) {
             const errMsg = err instanceof Error ? err.message : String(err);
             log.logWarning("Failed to replace message with final text", errMsg);
@@ -1186,14 +1108,10 @@ export async function createRunner(
           contextTokens,
           contextWindow,
         );
-        // Split long summaries to avoid msg_too_long
-        const summaryParts = splitForSlack(summary);
-        for (const part of summaryParts) {
-          runState.queue!.enqueue(
-            () => responseCtx.respondInThread(part, { style: "muted" }),
-            "usage summary",
-          );
-        }
+        runState.queue!.enqueue(
+          () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
+          "usage summary",
+        );
         await queueChain;
       }
 

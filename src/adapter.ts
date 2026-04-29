@@ -11,10 +11,20 @@ export interface ChatMessage {
   threadTs?: string;
 }
 
+export interface ChatToolResult {
+  toolName: string;
+  label?: string;
+  args?: Record<string, unknown>;
+  result: string;
+  isError: boolean;
+  durationMs: number;
+}
+
 export interface ChatResponseContext {
   respond(text: string): Promise<void>;
   replaceResponse(text: string): Promise<void>;
-  respondInThread(text: string, options?: { style?: "muted" }): Promise<void>;
+  respondDiagnostic(text: string, options?: { style?: "muted" | "error" }): Promise<void>;
+  respondToolResult(result: ChatToolResult): Promise<void>;
   setTyping(isTyping: boolean): Promise<void>;
   setWorking(working: boolean): Promise<void>;
   uploadFile(filePath: string, title?: string): Promise<void>;

@@ -157,36 +157,57 @@ describe("respond() — threaded (reply to parent message)", () => {
 });
 
 // ============================================================================
-// respondInThread()
+// respondDiagnostic()
 // ============================================================================
 
-describe("respondInThread()", () => {
-  // Telegram has no threads — respondInThread is a no-op
-  test("non-threaded: does nothing", async () => {
+describe("respondDiagnostic()", () => {
+  test("non-threaded: posts a regular diagnostic message", async () => {
     const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("main");
-    await responseCtx.respondInThread("detail");
+    vi.clearAllMocks();
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, "detail");
     expect(bot.postReply).not.toHaveBeenCalled();
   });
 
-  test("threaded: does nothing", async () => {
+  test("threaded: still posts diagnostics as regular chat messages", async () => {
     const bot = makeTelegramBot({ postReply: vi.fn().mockResolvedValue(3001) });
     const event = makeEvent({ ts: "1003", thread_ts: "1001" });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("main");
     vi.clearAllMocks();
-    await responseCtx.respondInThread("detail");
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, "detail");
     expect(bot.postReply).not.toHaveBeenCalled();
   });
 
-  test("non-threaded: does nothing if no main message posted yet", async () => {
+  test("non-threaded: can post before a main message exists", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
-    await responseCtx.respondInThread("detail");
+    await responseCtx.respondDiagnostic("detail");
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(123456, "detail");
     expect(bot.postReply).not.toHaveBeenCalled();
+  });
+
+  test("respondToolResult formats and posts diagnostics", async () => {
+    const bot = makeTelegramBot();
+    const event = makeEvent({ thread_ts: undefined });
+    const { responseCtx } = createTelegramAdapters(event, bot);
+    await responseCtx.respondToolResult({
+      toolName: "bash",
+      label: "list files",
+      args: { label: "list files", command: "ls" },
+      result: "ok",
+      isError: false,
+      durationMs: 1200,
+    });
+    expect(bot.postMessageRaw).toHaveBeenCalledWith(
+      123456,
+      expect.stringContaining("Done bash: list files"),
+    );
   });
 });
 
@@ -287,7 +308,7 @@ describe("replaceResponse()", () => {
     expect(updateCall[2]).toContain("replacement");
   });
 
-  test("replaceResponse truncates long text", async () => {
+  test("replaceResponse splits long text into continuation messages", async () => {
     const bot = makeTelegramBot({ postMessageRaw: vi.fn().mockResolvedValue(2001) });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
@@ -295,7 +316,8 @@ describe("replaceResponse()", () => {
     await responseCtx.replaceResponse("x".repeat(4000));
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
     expect(posted.length).toBeLessThanOrEqual(3800);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
+    expect(bot.postMessageRaw).toHaveBeenCalledTimes(2);
   });
 
   test("replaceResponse converts HTML tables into Telegram-safe pre blocks", async () => {
@@ -316,18 +338,19 @@ describe("replaceResponse()", () => {
 // Text truncation
 // ============================================================================
 
-describe("text truncation", () => {
-  test("long text is truncated at 3800 chars with a note", async () => {
+describe("text splitting", () => {
+  test("long text is split at 3800 chars", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("x".repeat(4000));
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
     expect(posted.length).toBeLessThanOrEqual(3800);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
+    expect(bot.postMessageRaw).toHaveBeenCalledTimes(2);
   });
 
-  test("text exactly at 3800 chars is not truncated when not working", async () => {
+  test("text exactly at 3800 chars is not split when not working", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
@@ -335,17 +358,19 @@ describe("text truncation", () => {
     await responseCtx.respond("x".repeat(3800));
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
     expect(posted.length).toBe(3800);
-    expect(posted).not.toContain("truncated");
+    expect(posted).not.toContain("continued");
+    expect(bot.postMessageRaw).toHaveBeenCalledTimes(1);
   });
 
-  test("text at 3801 chars is truncated", async () => {
+  test("text at 3801 chars is split", async () => {
     const bot = makeTelegramBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createTelegramAdapters(event, bot);
     await responseCtx.respond("x".repeat(3801));
     const posted = vi.mocked(bot.postMessageRaw).mock.calls[0][1] as string;
     expect(posted.length).toBeLessThanOrEqual(3800);
-    expect(posted).toContain("truncated");
+    expect(posted).toContain("continued");
+    expect(bot.postMessageRaw).toHaveBeenCalledTimes(2);
   });
 });
 

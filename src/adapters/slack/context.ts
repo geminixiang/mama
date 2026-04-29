@@ -1,11 +1,36 @@
-import type { ChatMessage, ChatResponseContext, PlatformInfo } from "../../adapter.js";
+import type {
+  ChatMessage,
+  ChatResponseContext,
+  ChatToolResult,
+  PlatformInfo,
+} from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatToolArgs, splitText } from "../shared.js";
 import type { SlackBot, SlackEvent } from "./bot.js";
 import { resolveSlackRootTs, resolveSlackSessionKey } from "./session.js";
 
 export const SLACK_FORMATTING_GUIDE = `## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
 Do NOT use **double asterisks** or [markdown](links).`;
+
+const MAX_MAIN_LENGTH = 35000; // Slack hard limit is 40k
+const MAX_THREAD_LENGTH = 20000;
+const TRUNCATION_NOTE_INCREMENTAL =
+  "\n\n_(message truncated, ask me to elaborate on specific parts)_";
+const TRUNCATION_NOTE_FINAL = "\n\n_(see thread for full response)_";
+
+const formatSlackContinuation = (partNum: number): string => `_(continued ${partNum})_`;
+
+function formatSlackToolResult(result: ChatToolResult): string {
+  const argsFormatted = formatToolArgs(result.args);
+  const duration = (result.durationMs / 1000).toFixed(1);
+  let text = `*${result.isError ? "✗" : "✓"} ${result.toolName}*`;
+  if (result.label) text += `: ${result.label}`;
+  text += ` (${duration}s)\n`;
+  if (argsFormatted) text += `\`\`\`\n${argsFormatted}\n\`\`\`\n`;
+  text += `*Result:*\n\`\`\`\n${result.result}\n\`\`\``;
+  return text;
+}
 
 export function createSlackAdapters(
   event: SlackEvent,
@@ -48,6 +73,32 @@ export function createSlackAdapters(
     return slack.postInThread(channelId, event.ts, text);
   };
 
+  const postDiagnosticDirect = async (
+    text: string,
+    options?: { style?: "muted" | "error" },
+  ): Promise<void> => {
+    const threadAnchor = rootTs;
+    if (!threadAnchor) return;
+
+    for (const part of splitText(text, MAX_THREAD_LENGTH, formatSlackContinuation)) {
+      if (options?.style === "muted") {
+        const CONTEXT_TEXT_LIMIT = 3000;
+        const blockText =
+          part.length > CONTEXT_TEXT_LIMIT
+            ? part.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
+            : part;
+        const ts = await slack.postInThreadBlocks(channelId, threadAnchor, part, [
+          { type: "context", elements: [{ type: "mrkdwn", text: blockText }] },
+        ]);
+        threadMessageTs.push(ts);
+      } else {
+        const diagnosticText = options?.style === "error" ? `_${part}_` : part;
+        const ts = await slack.postInThread(channelId, threadAnchor, diagnosticText);
+        threadMessageTs.push(ts);
+      }
+    }
+  };
+
   const message: ChatMessage = {
     id: event.ts,
     sessionKey: event.sessionKey ?? resolveSlackSessionKey(conversationId, event.thread_ts),
@@ -77,13 +128,10 @@ export function createSlackAdapters(
         try {
           accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
 
-          // Truncate accumulated text if too long (Slack limit is 40K, we use 35K for safety)
-          const MAX_MAIN_LENGTH = 35000;
-          const truncationNote = "\n\n_(message truncated, ask me to elaborate on specific parts)_";
           if (accumulatedText.length > MAX_MAIN_LENGTH) {
             accumulatedText =
-              accumulatedText.substring(0, MAX_MAIN_LENGTH - truncationNote.length) +
-              truncationNote;
+              accumulatedText.substring(0, MAX_MAIN_LENGTH - TRUNCATION_NOTE_INCREMENTAL.length) +
+              TRUNCATION_NOTE_INCREMENTAL;
           }
 
           const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
@@ -110,15 +158,11 @@ export function createSlackAdapters(
     replaceResponse: async (text: string) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          // Replace the accumulated text entirely, with truncation
-          const MAX_MAIN_LENGTH = 35000;
-          const truncationNote = "\n\n_(message truncated, ask me to elaborate on specific parts)_";
-          if (text.length > MAX_MAIN_LENGTH) {
-            accumulatedText =
-              text.substring(0, MAX_MAIN_LENGTH - truncationNote.length) + truncationNote;
-          } else {
-            accumulatedText = text;
-          }
+          const overflowed = text.length > MAX_MAIN_LENGTH;
+          accumulatedText = overflowed
+            ? text.substring(0, MAX_MAIN_LENGTH - TRUNCATION_NOTE_FINAL.length) +
+              TRUNCATION_NOTE_FINAL
+            : text;
 
           const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
@@ -128,6 +172,10 @@ export function createSlackAdapters(
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
+          }
+
+          if (overflowed) {
+            await postDiagnosticDirect(text);
           }
         } catch (err) {
           log.logWarning(
@@ -139,43 +187,22 @@ export function createSlackAdapters(
       await updatePromise;
     },
 
-    respondInThread: async (text: string, options?: { style?: "muted" }) => {
+    respondDiagnostic: async (text: string, options?: { style?: "muted" | "error" }) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          // Always anchor to the thread root (event.thread_ts ?? event.ts)
-          const threadAnchor = rootTs;
-          if (threadAnchor) {
-            // Truncate thread messages if too long (20K limit for safety)
-            const MAX_THREAD_LENGTH = 20000;
-            let threadText = text;
-            if (threadText.length > MAX_THREAD_LENGTH) {
-              threadText = `${threadText.substring(0, MAX_THREAD_LENGTH - 50)}\n\n_(truncated)_`;
-            }
-
-            // Use context block for muted style (small gray text like Slack's Home tab)
-            if (options?.style === "muted") {
-              const CONTEXT_TEXT_LIMIT = 3000;
-              const blockText =
-                threadText.length > CONTEXT_TEXT_LIMIT
-                  ? threadText.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
-                  : threadText;
-              const ts = await slack.postInThreadBlocks(channelId, threadAnchor, threadText, [
-                { type: "context", elements: [{ type: "mrkdwn", text: blockText }] },
-              ]);
-              threadMessageTs.push(ts);
-            } else {
-              const ts = await slack.postInThread(channelId, threadAnchor, threadText);
-              threadMessageTs.push(ts);
-            }
-          }
+          await postDiagnosticDirect(text, options);
         } catch (err) {
           log.logWarning(
-            "Slack respondInThread error",
+            "Slack respondDiagnostic error",
             err instanceof Error ? err.message : String(err),
           );
         }
       });
       await updatePromise;
+    },
+
+    respondToolResult: async (result: ChatToolResult) => {
+      await responseCtx.respondDiagnostic(formatSlackToolResult(result));
     },
 
     setTyping: async (isTyping: boolean) => {

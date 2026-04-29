@@ -1,5 +1,11 @@
-import type { ChatMessage, ChatResponseContext, PlatformInfo } from "../../adapter.js";
+import type {
+  ChatMessage,
+  ChatResponseContext,
+  ChatToolResult,
+  PlatformInfo,
+} from "../../adapter.js";
 import * as log from "../../log.js";
+import { formatToolArgs, splitText } from "../shared.js";
 import { sanitizeTelegramHtml } from "./html.js";
 import type { TelegramBot, TelegramEvent } from "./bot.js";
 
@@ -8,6 +14,11 @@ Bold: <b>text</b>, Italic: <i>text</i>, Code: <code>code</code>, Pre: <pre>code<
 Links: <a href="url">text</a>
 Do NOT use Markdown asterisks or backtick syntax.
 Do NOT use <table> tags — they are unsupported. Use <pre> with ASCII art for tables instead.`;
+
+// Telegram message length limit is 4096 chars; 3800 leaves headroom for HTML escapes.
+const MAX_LENGTH = 3800;
+
+const formatTelegramContinuation = (partNum: number): string => `(continued ${partNum})`;
 
 async function notifyError(
   bot: TelegramBot,
@@ -22,6 +33,13 @@ async function notifyError(
   } catch {
     // ignore secondary failure
   }
+}
+
+function formatToolResult(result: ChatToolResult): string {
+  const argsFormatted = formatToolArgs(result.args);
+  const duration = (result.durationMs / 1000).toFixed(1);
+  const title = `${result.isError ? "Error" : "Done"} ${result.toolName}${result.label ? `: ${result.label}` : ""} (${duration}s)`;
+  return [title, argsFormatted, result.result].filter(Boolean).join("\n\n");
 }
 
 export function createTelegramAdapters(
@@ -67,15 +85,8 @@ export function createTelegramAdapters(
     users: [],
   };
 
-  // Telegram message length limit is 4096 chars; use 3800 for safety
-  const MAX_LENGTH = 3800;
-  const truncationNote = "\n\n<i>(message truncated, ask me to elaborate on specific parts)</i>";
-
-  function truncate(text: string, limit: number, note: string): string {
-    if (text.length > limit) {
-      return text.substring(0, limit - note.length) + note;
-    }
-    return text;
+  async function sendContinuation(text: string): Promise<void> {
+    await bot.postMessageRaw(chatId, text);
   }
 
   async function sendOrUpdate(displayText: string): Promise<void> {
@@ -94,8 +105,15 @@ export function createTelegramAdapters(
         try {
           const sanitized = sanitizeTelegramHtml(text);
           accumulatedText = accumulatedText ? `${accumulatedText}\n${sanitized}` : sanitized;
-          const displayText = truncate(accumulatedText, MAX_LENGTH, truncationNote);
-          await sendOrUpdate(displayText);
+          const [firstPart, ...extraParts] = splitText(
+            accumulatedText,
+            MAX_LENGTH,
+            formatTelegramContinuation,
+          );
+          await sendOrUpdate(firstPart);
+          for (const part of extraParts) {
+            await sendContinuation(part);
+          }
           if (messageId !== null) {
             bot.logBotResponse(conversationId, text, String(messageId));
           }
@@ -109,8 +127,16 @@ export function createTelegramAdapters(
     replaceResponse: async (text: string) => {
       updatePromise = updatePromise.then(async () => {
         try {
-          accumulatedText = truncate(sanitizeTelegramHtml(text), MAX_LENGTH, truncationNote);
-          await sendOrUpdate(accumulatedText);
+          accumulatedText = sanitizeTelegramHtml(text);
+          const [firstPart, ...extraParts] = splitText(
+            accumulatedText,
+            MAX_LENGTH,
+            formatTelegramContinuation,
+          );
+          await sendOrUpdate(firstPart);
+          for (const part of extraParts) {
+            await sendContinuation(part);
+          }
         } catch (err) {
           await notifyError(bot, chatId, "replaceResponse", err);
         }
@@ -118,8 +144,27 @@ export function createTelegramAdapters(
       await updatePromise;
     },
 
-    // Telegram has no threads — discard thread-only messages (e.g. usage summary)
-    respondInThread: async (_text: string) => {},
+    respondDiagnostic: async (text: string, options?: { style?: "muted" | "error" }) => {
+      updatePromise = updatePromise.then(async () => {
+        try {
+          const prefix = options?.style === "error" ? "Error: " : "";
+          for (const part of splitText(
+            sanitizeTelegramHtml(`${prefix}${text}`),
+            MAX_LENGTH,
+            formatTelegramContinuation,
+          )) {
+            await sendContinuation(part);
+          }
+        } catch (err) {
+          await notifyError(bot, chatId, "respondDiagnostic", err);
+        }
+      });
+      await updatePromise;
+    },
+
+    respondToolResult: async (result: ChatToolResult) => {
+      await responseCtx.respondDiagnostic(formatToolResult(result));
+    },
 
     setTyping: async (isTyping: boolean) => {
       if (isTyping && typingInterval === null) {
