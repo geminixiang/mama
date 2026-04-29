@@ -379,12 +379,39 @@ export class DiscordBot implements Bot {
     return text.replace(new RegExp(`<@!?${this.botUserId}>`, "g"), "").trim();
   }
 
+  private resolveConversationContext(input: {
+    channelId: string;
+    inGuild: boolean;
+    isThread: boolean;
+    parentChannelId?: string | null;
+    referencedMsgId?: string;
+  }): { conversationId: string; threadTs?: string } {
+    if (!input.inGuild) {
+      return {
+        conversationId: input.channelId,
+        threadTs: input.referencedMsgId,
+      };
+    }
+
+    if (input.isThread) {
+      return {
+        conversationId: input.parentChannelId ?? input.channelId,
+        threadTs: input.channelId,
+      };
+    }
+
+    return {
+      conversationId: input.channelId,
+      threadTs: input.referencedMsgId,
+    };
+  }
+
   private createSessionSlashAdapters(
     interaction: ChatInputCommandInteraction,
     commandText: string,
     sessionKey: string,
+    conversationId: string,
   ): BotAdapters {
-    const conversationId = interaction.channelId;
     const isDM = !interaction.inGuild();
     const userId = interaction.user.id;
     const userName = interaction.user.username;
@@ -444,10 +471,16 @@ export class DiscordBot implements Bot {
     this.client.on(Events.InteractionCreate, async (interaction) => {
       if (!interaction.isChatInputCommand() || interaction.commandName !== "session") return;
 
-      const conversationId = interaction.channelId;
       const isDM = !interaction.inGuild();
-      const isInThread = interaction.channel?.isThread() ?? false;
-      const threadTs = isInThread ? conversationId : undefined;
+      const { conversationId, threadTs } = this.resolveConversationContext({
+        channelId: interaction.channelId,
+        inGuild: interaction.inGuild(),
+        isThread: interaction.channel?.isThread() ?? false,
+        parentChannelId:
+          interaction.channel && "parentId" in interaction.channel
+            ? interaction.channel.parentId
+            : null,
+      });
       const sessionKey = resolveChatSessionKey({
         conversationId,
         conversationKind: isDM ? "direct" : "shared",
@@ -480,7 +513,12 @@ export class DiscordBot implements Bot {
         attachments: [],
       };
 
-      const adapters = this.createSessionSlashAdapters(interaction, commandText, sessionKey);
+      const adapters = this.createSessionSlashAdapters(
+        interaction,
+        commandText,
+        sessionKey,
+        conversationId,
+      );
       try {
         await this.handler.handleEvent(event, this, adapters, false);
       } catch (err) {
@@ -510,7 +548,13 @@ export class DiscordBot implements Bot {
       // Shared-channel top-level messages require a mention. Thread/reply follow-ups do not.
       if (!isDM && !isMentioned && !isThreadReply) return;
 
-      const channelId = msg.channelId;
+      const { conversationId, threadTs } = this.resolveConversationContext({
+        channelId: msg.channelId,
+        inGuild: !isDM,
+        isThread: isInThread,
+        parentChannelId: "parentId" in msg.channel ? msg.channel.parentId : null,
+        referencedMsgId,
+      });
       const userId = msg.author.id;
       const userName = msg.author.username;
       const msgId = msg.id;
@@ -523,16 +567,14 @@ export class DiscordBot implements Bot {
       });
 
       // Track channel
-      if (!this.channels.has(channelId) && "name" in msg.channel) {
+      if (!this.channels.has(conversationId) && "name" in msg.channel) {
         const ch = msg.channel as TextChannel | NewsChannel;
-        this.channels.set(channelId, { id: channelId, name: ch.name });
+        this.channels.set(conversationId, { id: conversationId, name: ch.name });
       }
 
-      // Thread: if this message is in a thread (has parentId) or is a reply
-      const threadTs = isInThread ? msg.channelId : referencedMsgId;
       const conversationKind = isDM ? "direct" : "shared";
       const sessionKey = resolveChatSessionKey({
-        conversationId: channelId,
+        conversationId,
         conversationKind,
         messageId: msgId,
         persistentTopLevel: true,
@@ -541,11 +583,15 @@ export class DiscordBot implements Bot {
 
       const cleanedText = this.stripBotMention(msg.content);
 
-      const processedAttachments = await this.processAttachments(channelId, msg.attachments, msgId);
+      const processedAttachments = await this.processAttachments(
+        conversationId,
+        msg.attachments,
+        msgId,
+      );
 
       const event: DiscordEvent = {
         type: isDM ? "dm" : "mention",
-        conversationId: channelId,
+        conversationId,
         conversationKind,
         ts: msgId,
         thread_ts: threadTs,
@@ -557,7 +603,7 @@ export class DiscordBot implements Bot {
       };
 
       // Log message
-      this.logToFile(channelId, {
+      this.logToFile(conversationId, {
         date: msg.createdAt.toISOString(),
         ts: msgId,
         ...(!isDM && threadTs ? { threadTs } : {}),
@@ -570,11 +616,11 @@ export class DiscordBot implements Bot {
 
       // Handle stop command
       if (cleanedText.toLowerCase() === "stop" || cleanedText.toLowerCase() === "/stop") {
-        const stopTarget = this.resolveStopTarget(channelId, sessionKey, threadTs);
+        const stopTarget = this.resolveStopTarget(conversationId, sessionKey, threadTs);
         if (stopTarget) {
-          this.handler.handleStop(stopTarget, channelId, this);
+          this.handler.handleStop(stopTarget, conversationId, this);
         } else {
-          await this.postMessage(channelId, formatNothingRunning("discord"));
+          await this.postMessage(conversationId, formatNothingRunning("discord"));
         }
         return;
       }

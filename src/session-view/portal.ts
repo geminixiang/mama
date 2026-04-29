@@ -153,14 +153,24 @@ function renderForkLinks(relations: SessionViewRelation[] | undefined, token: st
     .join("")}</div>`;
 }
 
-export function parseUserBody(raw: string): { username: string | null; content: string } {
+export function parseUserBody(raw: string): {
+  username: string | null;
+  threadTs: string | null;
+  content: string;
+} {
   // [timestamp] [username] [in-thread:ts]: content
-  let m = raw.match(/^\[[^\]]+\]\s*\[([^\]]+)\](?:\s*\[in-thread:[^\]]+\])?:\s*([\s\S]*)$/);
-  if (m) return { username: m[1], content: m[2] };
+  let m = raw.match(
+    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s*\[([^\]]+)\](?:\s*\[in-thread:([^\]]+)\])?:\s*([\s\S]*)$/,
+  );
+  if (m) {
+    return { username: m[1], threadTs: m[2] ?? null, content: m[3] };
+  }
   // [username] [in-thread:ts]: content
-  m = raw.match(/^\[([^\]]+)\](?:\s*\[in-thread:[^\]]+\])?:\s*([\s\S]*)$/);
-  if (m) return { username: m[1], content: m[2] };
-  return { username: null, content: raw };
+  m = raw.match(/^\[([^\]]+)\](?:\s*\[in-thread:([^\]]+)\])?:\s*([\s\S]*)$/);
+  if (m) {
+    return { username: m[1], threadTs: m[2] ?? null, content: m[3] };
+  }
+  return { username: null, threadTs: null, content: raw };
 }
 
 function renderItem(item: SessionViewItem, token?: string): string {
@@ -189,14 +199,18 @@ function renderItem(item: SessionViewItem, token?: string): string {
   const time = item.meta ? `<time class="msg-time">${esc(formatDate(item.meta))}</time>` : "";
 
   if (item.kind === "user") {
-    const { username, content } = item.body
+    const { username, threadTs, content } = item.body
       ? parseUserBody(item.body)
-      : { username: null, content: "" };
+      : { username: null, threadTs: null, content: "" };
     const initial = username ? esc(username.slice(0, 2).toUpperCase()) : "U";
     const body = content ? `<pre class="msg-body">${esc(content)}</pre>` : "";
+    const threadBadge = threadTs
+      ? `<div class="thread-badge" title="Thread ${esc(threadTs)}">Thread · <code>${esc(threadTs)}</code></div>`
+      : "";
     const forks = renderForkLinks(item.forks, token ?? "");
     return `<div class="msg-row msg-user">
   <div class="user-bubble">
+    ${threadBadge}
     ${body}
     ${forks}
     ${time}
@@ -556,6 +570,29 @@ const styles = `
     background: var(--user-bg);
     color: var(--user-text);
     box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  }
+
+  .thread-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.22);
+    color: var(--user-text);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+
+  .thread-badge code {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.66rem;
+    background: rgba(255,255,255,0.16);
+    padding: 1px 6px;
+    border-radius: 999px;
+    color: inherit;
   }
 
   .msg-user .msg-body {

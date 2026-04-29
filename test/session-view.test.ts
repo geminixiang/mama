@@ -154,7 +154,24 @@ describe("parseUserBody", () => {
       ),
     ).toEqual({
       username: "geminixiang",
+      threadTs: "1777386320.800769",
       content: "hello from thread",
+    });
+  });
+
+  test("parses thread markers from non-timestamped user messages", () => {
+    expect(parseUserBody("[alice] [in-thread:M1]: discord thread reply")).toEqual({
+      username: "alice",
+      threadTs: "M1",
+      content: "discord thread reply",
+    });
+  });
+
+  test("returns null threadTs for top-level user messages", () => {
+    expect(parseUserBody("[alice]: top level")).toEqual({
+      username: "alice",
+      threadTs: null,
+      content: "top level",
     });
   });
 });

@@ -183,6 +183,37 @@ describe("DiscordBot message routing", () => {
     expect(event.sessionKey).toBe("C1:M1");
   });
 
+  test("uses parent channel as conversationId for Discord thread channels", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "THREAD1",
+        content: "thread message",
+        mentions: { users: { has: () => false } },
+        channel: {
+          type: 11,
+          isThread: () => true,
+          parentId: "C1",
+          name: "thread-topic",
+        },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(handler.handleEvent).toHaveBeenCalled();
+    });
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C1",
+      sessionKey: "C1:THREAD1",
+      thread_ts: "THREAD1",
+      text: "thread message",
+    });
+  });
+
   test("shared-channel replies trigger without a mention", async () => {
     const handler = makeHandler();
     const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
@@ -342,6 +373,40 @@ describe("DiscordBot message routing", () => {
     expect(reply).toHaveBeenCalledWith({
       content: "session link",
       ephemeral: true,
+    });
+  });
+
+  test("/session slash command in a Discord thread uses parent channel conversationId", async () => {
+    const handler = makeHandler();
+    handler.handleEvent = vi.fn(async (_event, _bot, adapters) => {
+      await adapters.responseCtx.respond("session link");
+    });
+
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const interactionHandler = installInteractionHandler(bot);
+
+    await interactionHandler({
+      isChatInputCommand: () => true,
+      commandName: "session",
+      channelId: "THREAD1",
+      inGuild: () => true,
+      channel: { isThread: () => true, parentId: "C1" },
+      id: "I2",
+      createdTimestamp: Date.now(),
+      user: { id: "U1", username: "alice" },
+      replied: false,
+      deferred: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn(),
+      editReply: vi.fn(),
+    });
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C1",
+      sessionKey: "C1:THREAD1",
+      thread_ts: "THREAD1",
+      text: "/session",
     });
   });
 });
