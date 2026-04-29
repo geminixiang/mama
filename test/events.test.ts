@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -104,6 +104,78 @@ describe("EventsWatcher platform routing", () => {
     ).toThrow(/Missing required field 'platform'/);
   });
 
+  test("ignores transient missing-file signals so scheduled events stay active", async () => {
+    const { bot } = makeBot("slack");
+    const watcher = new EventsWatcher(eventsDir, { slack: bot }) as any;
+    const filename = "reminder.json";
+    const filePath = join(eventsDir, filename);
+
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        type: "one-shot",
+        platform: "slack",
+        conversationId: "D123",
+        conversationKind: "direct",
+        text: "wake up",
+        at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+
+    await watcher.handleFile(filename);
+    expect(watcher.timers.has(filename)).toBe(true);
+
+    watcher.sleep = vi.fn(async () => {
+      if (!existsSync(filePath)) {
+        writeFileSync(
+          filePath,
+          JSON.stringify({
+            type: "one-shot",
+            platform: "slack",
+            conversationId: "D123",
+            conversationKind: "direct",
+            text: "wake up",
+            at: new Date(Date.now() + 60_000).toISOString(),
+          }),
+        );
+      }
+    });
+
+    rmSync(filePath, { force: true });
+    await watcher.handleDelete(filename);
+
+    expect(watcher.timers.has(filename)).toBe(true);
+    expect(watcher.knownFiles.has(filename)).toBe(true);
+  });
+
+  test("keeps a scheduled one-shot timer even if the file truly disappears", async () => {
+    const { bot } = makeBot("slack");
+    const watcher = new EventsWatcher(eventsDir, { slack: bot }) as any;
+    const filename = "reminder.json";
+    const filePath = join(eventsDir, filename);
+
+    writeFileSync(
+      filePath,
+      JSON.stringify({
+        type: "one-shot",
+        platform: "slack",
+        conversationId: "D123",
+        conversationKind: "direct",
+        text: "wake up",
+        at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    );
+
+    await watcher.handleFile(filename);
+    expect(watcher.timers.has(filename)).toBe(true);
+
+    rmSync(filePath, { force: true });
+    await watcher.handleDelete(filename);
+
+    expect(watcher.timers.has(filename)).toBe(true);
+    expect(watcher.knownFiles.has(filename)).toBe(true);
+  });
+
   test("routes synthetic events to the explicitly requested platform", () => {
     const { bot: slackBot, enqueueEvent: enqueueSlack } = makeBot("slack");
     const { bot: discordBot, enqueueEvent: enqueueDiscord } = makeBot("discord");
@@ -119,6 +191,8 @@ describe("EventsWatcher platform routing", () => {
       conversationKind: "shared",
       text: "Deploy in 10 minutes",
       userId: "U123",
+      sessionKey: "CH-42:THREAD-1",
+      threadTs: "THREAD-1",
     });
 
     expect(enqueueSlack).not.toHaveBeenCalled();
@@ -130,7 +204,8 @@ describe("EventsWatcher platform routing", () => {
       user: "U123",
       text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
       ts: "event:deploy-reminder.json",
-      sessionKey: "CH-42",
+      thread_ts: "THREAD-1",
+      sessionKey: "CH-42:THREAD-1",
     });
   });
 });

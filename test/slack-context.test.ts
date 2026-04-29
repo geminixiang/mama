@@ -94,6 +94,36 @@ describe("respond() — non-threaded", () => {
     expect(bot.postMessage).not.toHaveBeenCalled();
   });
 
+  test("synthetic event posts top-level instead of using an invalid thread root", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({
+      ts: "event:deploy-reminder.json",
+      text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy now",
+      thread_ts: undefined,
+    });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respond("done");
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("done"));
+    expect(bot.postInThread).not.toHaveBeenCalled();
+  });
+
+  test("synthetic event in a Slack thread replies inside the original thread", async () => {
+    const bot = makeSlackBot();
+    const event = makeEvent({
+      ts: "event:deploy-reminder.json",
+      text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy now",
+      thread_ts: "1000.0001",
+      sessionKey: "C001:1000.0001",
+    });
+    const { responseCtx } = createSlackAdapters(event, bot, true);
+    await responseCtx.respond("done");
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "1000.0001",
+      expect.stringContaining("done"),
+    );
+  });
+
   test("subsequent calls update the same message", async () => {
     const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG1") });
     const event = makeEvent({ thread_ts: undefined });

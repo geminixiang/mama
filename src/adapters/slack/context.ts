@@ -33,8 +33,18 @@ export function createSlackAdapters(
   const rootTs = resolveSlackRootTs(event.ts, event.thread_ts);
   const isThreaded = !!event.thread_ts;
 
-  /** Post first reply in-thread under the user's message, creating a thread if none exists */
+  /**
+   * Post the first visible reply.
+   * Normal Slack messages reply in-thread under the triggering user message.
+   * Synthetic event messages have no real Slack root ts, so they must post top-level.
+   */
   const postFirstMessage = async (text: string): Promise<string> => {
+    if (isEvent) {
+      if (event.thread_ts) {
+        return slack.postInThread(channelId, event.thread_ts, text);
+      }
+      return slack.postMessage(channelId, text);
+    }
     return slack.postInThread(channelId, event.ts, text);
   };
 

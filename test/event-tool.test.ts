@@ -23,7 +23,7 @@ describe("createEventTool", () => {
     return dir;
   }
 
-  test("writes immediate event payload with current context and sanitized filename", async () => {
+  test("writes top-level Slack event payload without threadTs", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -32,6 +32,7 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
+      sessionKey: "C123",
     });
 
     const result = await tool.execute("call-1", {
@@ -51,11 +52,46 @@ describe("createEventTool", () => {
       conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
+      sessionKey: "C123",
     });
     expect(result.content[0]?.type).toBe("text");
     expect(result.content[0]?.text).toContain(
       "Queued immediate event deploy-prod-1700000000000.json",
     );
+  });
+
+  test("writes threaded Slack event payload with threadTs", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000001);
+    const workspaceDir = makeWorkspace();
+    const { tool, setEventContext } = createEventTool(workspaceDir);
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      sessionKey: "C123:1000.0001",
+      threadTs: "1000.0001",
+    });
+
+    await tool.execute("call-1", {
+      label: "deploy",
+      type: "immediate",
+      text: "Check deployment status",
+    });
+
+    const eventsDir = join(workspaceDir, "events");
+    const files = readdirSync(eventsDir);
+    expect(files).toEqual(["immediate-1700000000001.json"]);
+    expect(JSON.parse(readFileSync(join(eventsDir, files[0]), "utf-8"))).toEqual({
+      type: "immediate",
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      text: "Check deployment status",
+      sessionKey: "C123:1000.0001",
+      threadTs: "1000.0001",
+    });
   });
 
   test("requires event context before execution", async () => {
@@ -71,6 +107,75 @@ describe("createEventTool", () => {
     ).rejects.toThrow("Event context not configured");
   });
 
+  test("one-shot event strips sessionKey and threadTs even when set in context", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000200);
+    const workspaceDir = makeWorkspace();
+    const { tool, setEventContext } = createEventTool(workspaceDir);
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      sessionKey: "C123:1000.0001",
+      threadTs: "1000.0001",
+    });
+
+    await tool.execute("call-1", {
+      label: "dentist",
+      type: "one-shot",
+      text: "Dentist tomorrow",
+      at: "2025-12-15T09:00:00+01:00",
+    });
+
+    const eventsDir = join(workspaceDir, "events");
+    const files = readdirSync(eventsDir);
+    expect(JSON.parse(readFileSync(join(eventsDir, files[0]), "utf-8"))).toEqual({
+      type: "one-shot",
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      text: "Dentist tomorrow",
+      at: "2025-12-15T09:00:00+01:00",
+    });
+  });
+
+  test("periodic event strips threadTs but keeps sessionKey when in a thread", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000300);
+    const workspaceDir = makeWorkspace();
+    const { tool, setEventContext } = createEventTool(workspaceDir);
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      sessionKey: "C123:1000.0001",
+      threadTs: "1000.0001",
+    });
+
+    await tool.execute("call-1", {
+      label: "inbox",
+      type: "periodic",
+      text: "Check inbox",
+      schedule: "0 9 * * 1-5",
+      timezone: "Asia/Taipei",
+    });
+
+    const eventsDir = join(workspaceDir, "events");
+    const files = readdirSync(eventsDir);
+    expect(JSON.parse(readFileSync(join(eventsDir, files[0]), "utf-8"))).toEqual({
+      type: "periodic",
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+      text: "Check inbox",
+      schedule: "0 9 * * 1-5",
+      timezone: "Asia/Taipei",
+      sessionKey: "C123:1000.0001",
+    });
+  });
+
   test("one-shot events require at", async () => {
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -79,6 +184,8 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
+      sessionKey: "C123",
+      threadTs: "1000.0001",
     });
 
     await expect(
@@ -98,6 +205,7 @@ describe("createEventTool", () => {
       conversationId: "D123",
       conversationKind: "direct",
       userId: "U456",
+      sessionKey: "D123",
     });
 
     await expect(
@@ -128,6 +236,7 @@ describe("createEventTool", () => {
       conversationId: "999",
       conversationKind: "direct",
       userId: "U789",
+      sessionKey: "999",
     });
 
     const result = await tool.execute("call-1", {
@@ -150,6 +259,7 @@ describe("createEventTool", () => {
       text: "Check inbox",
       schedule: "0 9 * * 1-5",
       timezone: "Asia/Taipei",
+      sessionKey: "999",
     });
     expect(result.content[0]?.text).toContain(
       "Scheduled periodic event periodic-1700000000100.json",

@@ -26,6 +26,10 @@ export interface ImmediateEvent {
   /** Creator userId — routes tool execution to that user's vault selection when fired. */
   userId?: string;
   text: string;
+  /** Determines which AgentRunner handles the event. */
+  sessionKey?: string;
+  /** Sub-conversation target (Slack thread ts, Discord thread id, Telegram reply-to id). */
+  threadTs?: string;
 }
 
 export interface OneShotEvent {
@@ -36,6 +40,7 @@ export interface OneShotEvent {
   userId?: string;
   text: string;
   at: string; // ISO 8601 with timezone offset
+  // No sessionKey or threadTs: reminders fire as top-level messages regardless of where they were created.
 }
 
 export interface PeriodicEvent {
@@ -47,6 +52,9 @@ export interface PeriodicEvent {
   text: string;
   schedule: string; // cron syntax
   timezone: string; // IANA timezone
+  /** Determines which AgentRunner handles the event. */
+  sessionKey?: string;
+  // No threadTs: recurring events always fire as top-level messages.
 }
 
 export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -72,6 +80,7 @@ const RETRY_BASE_MS = 100;
 
 export class EventsWatcher {
   private timers: Map<string, NodeJS.Timeout> = new Map();
+  private timerEventTypes: Map<string, "one-shot"> = new Map();
   private crons: Map<string, Cron> = new Map();
   private debounceTimers: Map<string, NodeJS.Timeout> = new Map();
   private startTime: number;
@@ -100,8 +109,11 @@ export class EventsWatcher {
     this.scanExisting();
 
     // Watch for changes
-    this.watcher = watch(this.eventsDir, (_eventType, filename) => {
+    this.watcher = watch(this.eventsDir, (eventType, filename) => {
       if (!filename || !filename.endsWith(".json")) return;
+      log.logInfo(
+        `Events watcher fs event: ${String(eventType)} ${filename} (exists=${existsSync(join(this.eventsDir, filename))})`,
+      );
       this.debounce(filename, () => this.handleFileChange(filename));
     });
 
@@ -129,6 +141,7 @@ export class EventsWatcher {
       clearTimeout(timer);
     }
     this.timers.clear();
+    this.timerEventTypes.clear();
 
     // Cancel all cron jobs
     for (const cron of this.crons.values()) {
@@ -201,36 +214,62 @@ export class EventsWatcher {
 
   private handleFileChange(filename: string): void {
     const filePath = join(this.eventsDir, filename);
+    const exists = existsSync(filePath);
+    const known = this.knownFiles.has(filename);
+    log.logInfo(`Handling event file change: ${filename} (exists=${exists}, known=${known})`);
 
-    if (!existsSync(filePath)) {
-      // File was deleted
-      this.handleDelete(filename);
-    } else if (this.knownFiles.has(filename)) {
+    if (!exists) {
+      // fs.watch can briefly report a file as missing during create/rename churn.
+      // Confirm deletion before canceling scheduled events.
+      void this.handleDelete(filename);
+    } else if (known) {
       // File was modified - cancel existing and re-schedule
-      this.cancelScheduled(filename);
-      this.handleFile(filename);
+      this.cancelScheduled(filename, "file-modified");
+      void this.handleFile(filename);
     } else {
       // New file
-      this.handleFile(filename);
+      void this.handleFile(filename);
     }
   }
 
-  private handleDelete(filename: string): void {
+  private async handleDelete(filename: string): Promise<void> {
     if (!this.knownFiles.has(filename)) return;
 
+    const filePath = join(this.eventsDir, filename);
+    for (let i = 0; i < MAX_RETRIES; i++) {
+      const delay = RETRY_BASE_MS * 2 ** i;
+      await this.sleep(delay);
+      const exists = existsSync(filePath);
+      log.logInfo(`Confirming event deletion: ${filename} after ${delay}ms (exists=${exists})`);
+      if (exists) {
+        return;
+      }
+    }
+
+    if (this.timerEventTypes.get(filename) === "one-shot" && this.timers.has(filename)) {
+      log.logInfo(
+        `Ignoring deleted one-shot file after scheduling: ${filename} (timer remains active)`,
+      );
+      return;
+    }
+
     log.logInfo(`Event file deleted: ${filename}`);
-    this.cancelScheduled(filename);
+    this.cancelScheduled(filename, "confirmed-delete");
     this.knownFiles.delete(filename);
   }
 
-  private cancelScheduled(filename: string): void {
+  private cancelScheduled(filename: string, reason = "unspecified"): void {
     const timer = this.timers.get(filename);
+    const cron = this.crons.get(filename);
+    log.logInfo(
+      `Canceling scheduled event: ${filename} (reason=${reason}, timer=${Boolean(timer)}, cron=${Boolean(cron)})`,
+    );
     if (timer) {
       clearTimeout(timer);
       this.timers.delete(filename);
+      this.timerEventTypes.delete(filename);
     }
 
-    const cron = this.crons.get(filename);
     if (cron) {
       cron.stop();
       this.crons.delete(filename);
@@ -239,6 +278,7 @@ export class EventsWatcher {
 
   private async handleFile(filename: string): Promise<void> {
     const filePath = join(this.eventsDir, filename);
+    log.logInfo(`Loading event file: ${filename} from ${filePath}`);
 
     // Parse with retries
     let event: MamaEvent | null = null;
@@ -262,11 +302,14 @@ export class EventsWatcher {
         `Failed to parse event file after ${MAX_RETRIES} retries: ${filename}`,
         lastError?.message,
       );
-      this.deleteFile(filename);
+      this.deleteFile(filename, "parse-failed");
       return;
     }
 
     this.knownFiles.add(filename);
+    log.logInfo(
+      `Parsed event file: ${filename} (${event.type} for ${event.platform}/${event.conversationId})`,
+    );
 
     // Schedule based on type
     switch (event.type) {
@@ -302,6 +345,8 @@ export class EventsWatcher {
       data.conversationKind,
     );
     const userId = typeof data.userId === "string" ? data.userId : undefined;
+    const sessionKey = typeof data.sessionKey === "string" ? data.sessionKey : undefined;
+    const threadTs = typeof data.threadTs === "string" ? data.threadTs : undefined;
 
     switch (data.type) {
       case "immediate":
@@ -312,6 +357,8 @@ export class EventsWatcher {
           conversationKind,
           userId,
           text: data.text,
+          sessionKey,
+          threadTs,
         };
 
       case "one-shot":
@@ -344,6 +391,7 @@ export class EventsWatcher {
           text: data.text,
           schedule: data.schedule,
           timezone: data.timezone,
+          sessionKey,
         };
 
       default:
@@ -401,7 +449,7 @@ export class EventsWatcher {
       const stat = statSync(filePath);
       if (stat.mtimeMs < this.startTime) {
         log.logInfo(`Stale immediate event, deleting: ${filename}`);
-        this.deleteFile(filename);
+        this.deleteFile(filename, "stale-immediate");
         return;
       }
     } catch {
@@ -420,20 +468,25 @@ export class EventsWatcher {
     if (atTime <= now) {
       // Past - delete without executing
       log.logInfo(`One-shot event in the past, deleting: ${filename}`);
-      this.deleteFile(filename);
+      this.deleteFile(filename, "one-shot-in-past");
       return;
     }
 
     const delay = atTime - now;
-    log.logInfo(`Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s`);
+    log.logInfo(
+      `Scheduling one-shot event: ${filename} in ${Math.round(delay / 1000)}s (at=${event.at}, now=${new Date(now).toISOString()})`,
+    );
 
     const timer = setTimeout(() => {
       this.timers.delete(filename);
+      this.timerEventTypes.delete(filename);
       log.logInfo(`Executing one-shot event: ${filename}`);
       this.execute(filename, event);
     }, delay);
 
     this.timers.set(filename, timer);
+    this.timerEventTypes.set(filename, "one-shot");
+    log.logInfo(`Stored one-shot timer: ${filename} (active timers=${this.timers.size})`);
   }
 
   private handlePeriodic(filename: string, event: PeriodicEvent): void {
@@ -451,7 +504,7 @@ export class EventsWatcher {
       );
     } catch (err) {
       log.logWarning(`Invalid cron schedule for ${filename}: ${event.schedule}`, String(err));
-      this.deleteFile(filename);
+      this.deleteFile(filename, "invalid-cron");
     }
   }
 
@@ -476,7 +529,7 @@ export class EventsWatcher {
     if (!bot) {
       log.logWarning(`No bot configured for event platform '${event.platform}'`, filename);
       if (deleteAfter) {
-        this.deleteFile(filename);
+        this.deleteFile(filename, "missing-bot");
       }
       return;
     }
@@ -484,6 +537,7 @@ export class EventsWatcher {
     // Create synthetic BotEvent. Keep a stable conversation session key so recurring
     // reminders share context, but use a unique synthetic message id because
     // some adapters treat ts/message id as a reply target.
+    const scopedEvent = event as { sessionKey?: string; threadTs?: string };
     const syntheticEvent: BotEvent = {
       type: "mention",
       conversationId: event.conversationId,
@@ -491,7 +545,8 @@ export class EventsWatcher {
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,
-      sessionKey: event.conversationId,
+      thread_ts: scopedEvent.threadTs,
+      sessionKey: scopedEvent.sessionKey ?? event.conversationId,
     };
 
     // Enqueue for processing
@@ -499,18 +554,19 @@ export class EventsWatcher {
 
     if (enqueued && deleteAfter) {
       // Delete file after successful enqueue (immediate and one-shot)
-      this.deleteFile(filename);
+      this.deleteFile(filename, "executed-and-enqueued");
     } else if (!enqueued) {
       log.logWarning(`Event queue full, discarded: ${filename}`);
       // Still delete immediate/one-shot even if discarded
       if (deleteAfter) {
-        this.deleteFile(filename);
+        this.deleteFile(filename, "queue-full-discarded");
       }
     }
   }
 
-  private deleteFile(filename: string): void {
+  private deleteFile(filename: string, reason = "unspecified"): void {
     const filePath = join(this.eventsDir, filename);
+    log.logInfo(`Deleting event file: ${filename} (reason=${reason})`);
     try {
       unlinkSync(filePath);
     } catch (err) {
