@@ -78,6 +78,9 @@ export function createDiscordAdapters(
     formattingGuide: DISCORD_FORMATTING_GUIDE,
     channels: bot.getAllChannels(),
     users: bot.getAllUsers(),
+    diagnostics: {
+      showUsageSummary: false,
+    },
   };
 
   async function postDiagnosticMessage(text: string): Promise<string> {

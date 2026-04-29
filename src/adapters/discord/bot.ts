@@ -144,6 +144,9 @@ export class DiscordBot implements Bot {
         "## Discord Formatting (Markdown)\nBold: **text**, Italic: *text*, Code: `code`, Block: ```language\ncode```\nLinks: [text](url)",
       channels: this.getAllChannels(),
       users: this.getAllUsers(),
+      diagnostics: {
+        showUsageSummary: false,
+      },
     };
   }
 

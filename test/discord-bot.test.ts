@@ -150,4 +150,10 @@ describe("DiscordBot message routing", () => {
     const entry = JSON.parse(lines[0]);
     expect(entry.threadTs).toBe("M1");
   });
+
+  test("platform info defaults to hiding usage summary", () => {
+    const bot = new DiscordBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
+
+    expect(bot.getPlatformInfo().diagnostics?.showUsageSummary).toBe(false);
+  });
 });
