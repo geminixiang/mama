@@ -171,6 +171,49 @@ describe("DiscordBot message routing", () => {
     expect(event.sessionKey).toBe("C1:M1");
   });
 
+  test("shared-channel replies trigger without a mention", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        content: "reply without mention",
+        mentions: { users: { has: () => false } },
+        reference: { messageId: "M1" },
+      }),
+    );
+
+    await vi.waitFor(() => {
+      expect(handler.handleEvent).toHaveBeenCalled();
+    });
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C1",
+      sessionKey: "C1:M1",
+      text: "reply without mention",
+      thread_ts: "M1",
+    });
+  });
+
+  test("shared-channel top-level messages still require a mention", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        content: "top-level without mention",
+        mentions: { users: { has: () => false } },
+      }),
+    );
+
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+  });
+
   test("queues shared top-level follow-up messages instead of posting already-working", async () => {
     const handler = makeHandler();
     vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "C1");

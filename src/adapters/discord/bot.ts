@@ -356,10 +356,13 @@ export class DiscordBot implements Bot {
       if (msg.createdTimestamp < this.startupTime) return;
       // Skip bot messages
       if (msg.author.bot) return;
-      // Skip if bot isn't mentioned and it's not a DM
       const isDM = msg.channel.type === 1; // ChannelType.DM = 1
+      const isInThread = msg.channel.isThread();
+      const referencedMsgId = msg.reference?.messageId;
+      const isThreadReply = isInThread || !!referencedMsgId;
       const isMentioned = msg.mentions.users.has(this.botUserId ?? "");
-      if (!isDM && !isMentioned) return;
+      // Shared-channel top-level messages require a mention. Thread/reply follow-ups do not.
+      if (!isDM && !isMentioned && !isThreadReply) return;
 
       const channelId = msg.channelId;
       const userId = msg.author.id;
@@ -380,8 +383,6 @@ export class DiscordBot implements Bot {
       }
 
       // Thread: if this message is in a thread (has parentId) or is a reply
-      const isInThread = msg.channel.isThread();
-      const referencedMsgId = msg.reference?.messageId;
       const threadTs = isInThread ? msg.channelId : referencedMsgId;
       const conversationKind = isDM ? "direct" : "shared";
       const sessionKey = resolveChatSessionKey({

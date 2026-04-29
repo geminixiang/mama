@@ -917,7 +917,9 @@ export class SlackBot implements Bot {
         return;
       }
 
-      const dmSessionKey = isDM ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
+      const isSharedThreadReply = !isDM && !!e.thread_ts;
+      const sessionKey =
+        isDM || isSharedThreadReply ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
@@ -929,7 +931,7 @@ export class SlackBot implements Bot {
         user: e.user,
         text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
         files: e.files,
-        sessionKey: dmSessionKey,
+        sessionKey,
       };
 
       const attachmentsPromise = this.logUserMessage(slackEvent);
@@ -962,9 +964,10 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // Only trigger handler for DMs
-      if (isDM) {
-        const dmSessionKey = slackEvent.sessionKey!;
+      // Trigger handler for DMs and bare replies inside shared-channel threads.
+      if (isDM || isSharedThreadReply) {
+        const activeSessionKey =
+          slackEvent.sessionKey ?? resolveSlackSessionKey(e.channel, e.thread_ts);
         // Check for stop command - execute immediately, don't queue!
         if (slackEvent.text.toLowerCase().trim() === "stop") {
           const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
@@ -980,7 +983,7 @@ export class SlackBot implements Bot {
           return;
         }
 
-        this.getQueue(this.resolveQueueKey(e.channel, dmSessionKey)).enqueue(async () => {
+        this.getQueue(this.resolveQueueKey(e.channel, activeSessionKey)).enqueue(async () => {
           slackEvent.attachments = await attachmentsPromise;
           const adapters = createSlackAdapters(slackEvent, this, false);
           return this.handler.handleEvent(

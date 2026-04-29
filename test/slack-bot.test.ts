@@ -292,6 +292,73 @@ describe("SlackBot queues follow-up messages", () => {
     expect(handler.handleEvent).not.toHaveBeenCalled();
   });
 
+  test("shared-channel bare thread replies trigger without a mention", async () => {
+    const handler = makeHandler();
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let messageHandler:
+      | ((payload: {
+          event: {
+            text?: string;
+            channel: string;
+            user?: string;
+            ts: string;
+            thread_ts?: string;
+            channel_type?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockReturnValue([]);
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "message") messageHandler = fn as typeof messageHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const queue = (bot as any).getQueue("C123");
+    queue.processing = true;
+    const ack = vi.fn();
+
+    messageHandler?.({
+      event: {
+        text: "thread follow-up",
+        channel: "C123",
+        user: "U123",
+        ts: "1001.0003",
+        thread_ts: "1000.0001",
+        channel_type: "channel",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    queue.processing = false;
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C123",
+      sessionKey: "C123:1000.0001",
+      text: "thread follow-up",
+      thread_ts: "1000.0001",
+    });
+  });
+
   test("DM follow-up messages are queued while the top-level DM session is running", async () => {
     const handler = makeHandler();
     vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "D123");
