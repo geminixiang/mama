@@ -287,11 +287,7 @@ function normalizePortalBaseUrl(): string | undefined {
 }
 
 function isPrivateConversation(event: BotEvent): boolean {
-  return (
-    event.conversationKind === "direct" ||
-    event.type === "dm" ||
-    event.sessionKey === event.conversationId
-  );
+  return event.conversationKind === "direct" || event.type === "dm";
 }
 
 function ensureLoginVault(platform: string, platformUserId: string): string {
@@ -383,15 +379,35 @@ async function handleSessionViewCommand(
   platformUserId: string,
   conversationId: string,
   sessionKey: string,
+  bot: Bot,
   responseCtx: BotAdapters["responseCtx"],
   commandText: string,
   privateConversation: boolean,
 ): Promise<boolean> {
   if (!parseSessionViewCommand(commandText)) return false;
 
-  if (!privateConversation) {
-    await replyWithContext(
-      responseCtx,
+  const allowSharedPrivateDelivery = platform === "slack" || platform === "discord";
+  const sendSessionViewReply = async (text: string): Promise<void> => {
+    if (privateConversation) {
+      await replyWithContext(responseCtx, text);
+      return;
+    }
+
+    if (platform === "slack" && bot instanceof SlackBotClass) {
+      await bot.postEphemeral(conversationId, platformUserId, text);
+      return;
+    }
+
+    if (platform === "discord" && bot instanceof DiscordBot) {
+      await bot.sendDirectMessage(platformUserId, text);
+      return;
+    }
+
+    await replyWithContext(responseCtx, text);
+  };
+
+  if (!privateConversation && !allowSharedPrivateDelivery) {
+    await sendSessionViewReply(
       "為了保護對話內容，`/session` 目前只能在與機器人的私訊 / DM 中使用。",
     );
     return true;
@@ -399,8 +415,7 @@ async function handleSessionViewCommand(
 
   const baseUrl = normalizePortalBaseUrl();
   if (!baseUrl) {
-    await replyWithContext(
-      responseCtx,
+    await sendSessionViewReply(
       "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
     );
     return true;
@@ -408,8 +423,7 @@ async function handleSessionViewCommand(
 
   const sessionFile = resolveExistingSessionFile(workingDir, conversationId, sessionKey);
   if (!sessionFile) {
-    await replyWithContext(
-      responseCtx,
+    await sendSessionViewReply(
       "目前還沒有可查看的 session。先和機器人對話一次，建立 session 後再試。",
     );
     return true;
@@ -423,10 +437,8 @@ async function handleSessionViewCommand(
     sessionFile,
   );
 
-  await replyWithContext(
-    responseCtx,
-    `Open this read-only session link (expires in 24 hours):\n${baseUrl}/session?token=${token.token}`,
-  );
+  const linkText = `Open this read-only session link (expires in 24 hours):\n${baseUrl}/session?token=${token.token}`;
+  await sendSessionViewReply(linkText);
   return true;
 }
 
@@ -646,6 +658,7 @@ const handler: BotHandler = {
       event.user,
       conversationId,
       sessionKey,
+      bot,
       adapters.responseCtx,
       event.text,
       privateConversation,

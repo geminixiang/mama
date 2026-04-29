@@ -93,6 +93,18 @@ describe("DiscordBot message routing", () => {
     return messageHandler;
   }
 
+  function installInteractionHandler(bot: DiscordBot): (interaction: any) => Promise<void> {
+    let interactionHandler: ((interaction: any) => Promise<void>) | undefined;
+    (bot as any).client = {
+      on: vi.fn((event: string, handlerFn: (payload: any) => Promise<void>) => {
+        if (event === "interactionCreate") interactionHandler = handlerFn;
+      }),
+    };
+    (bot as any).setupEventHandlers();
+    if (!interactionHandler) throw new Error("interaction handler not installed");
+    return interactionHandler;
+  }
+
   function makeDiscordMessage(overrides: Record<string, any> = {}) {
     return {
       id: "M1",
@@ -290,5 +302,46 @@ describe("DiscordBot message routing", () => {
     const bot = new DiscordBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
 
     expect(bot.getPlatformInfo().diagnostics?.showUsageSummary).toBe(false);
+  });
+
+  test("/session slash command in shared channels replies ephemerally", async () => {
+    const handler = makeHandler();
+    handler.handleEvent = vi.fn(async (_event, _bot, adapters) => {
+      await adapters.responseCtx.respond("session link");
+    });
+
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const interactionHandler = installInteractionHandler(bot);
+
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await interactionHandler({
+      isChatInputCommand: () => true,
+      commandName: "session",
+      channelId: "C1",
+      inGuild: () => true,
+      channel: { isThread: () => false },
+      id: "I1",
+      createdTimestamp: Date.now(),
+      user: { id: "U1", username: "alice" },
+      replied: false,
+      deferred: false,
+      reply,
+      followUp: vi.fn(),
+      editReply: vi.fn(),
+    });
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      type: "dm",
+      conversationId: "C1",
+      conversationKind: "shared",
+      sessionKey: "C1",
+      text: "/session",
+    });
+    expect(reply).toHaveBeenCalledWith({
+      content: "session link",
+      ephemeral: true,
+    });
   });
 });

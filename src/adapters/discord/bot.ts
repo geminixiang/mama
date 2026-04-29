@@ -3,6 +3,7 @@ import {
   Events,
   GatewayIntentBits,
   Partials,
+  type ChatInputCommandInteraction,
   type Collection,
   type Message,
   type Attachment,
@@ -14,7 +15,16 @@ import {
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 
-import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
+import type {
+  Bot,
+  BotAdapters,
+  BotEvent,
+  BotHandler,
+  ChatMessage,
+  ChatResponseContext,
+  ChatToolResult,
+  PlatformInfo,
+} from "../../adapter.js";
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatNothingRunning } from "../../ui-copy.js";
@@ -96,13 +106,26 @@ export class DiscordBot implements Bot {
 
   async start(): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      this.client.once(Events.ClientReady, (readyClient) => {
+      this.client.once(Events.ClientReady, async (readyClient) => {
         this.botUserId = readyClient.user.id;
         this.startupTime = Date.now();
         log.logConnected();
         log.logInfo(`Discord bot started as ${readyClient.user.tag}`);
         this.loadCachedGuildData();
         this.setupEventHandlers();
+        try {
+          await readyClient.application.commands.set([
+            {
+              name: "session",
+              description: "Open the current session in the web viewer",
+            },
+          ]);
+        } catch (err) {
+          log.logWarning(
+            "Failed to register Discord slash commands",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
         resolve();
       });
       this.client.once(Events.Error, reject);
@@ -205,6 +228,12 @@ export class DiscordBot implements Bot {
     const fileName = title ?? basename(filePath);
     const fileContent = readFileSync(filePath);
     await ch.send({ files: [{ attachment: fileContent, name: fileName }] });
+  }
+
+  async sendDirectMessage(userId: string, text: string): Promise<string> {
+    const user = await this.client.users.fetch(userId);
+    const msg = await user.send(text);
+    return msg.id;
   }
 
   getAllChannels(): { id: string; name: string }[] {
@@ -350,7 +379,124 @@ export class DiscordBot implements Bot {
     return text.replace(new RegExp(`<@!?${this.botUserId}>`, "g"), "").trim();
   }
 
+  private createSessionSlashAdapters(
+    interaction: ChatInputCommandInteraction,
+    commandText: string,
+    sessionKey: string,
+  ): BotAdapters {
+    const conversationId = interaction.channelId;
+    const isDM = !interaction.inGuild();
+    const userId = interaction.user.id;
+    const userName = interaction.user.username;
+    const platform = this.getPlatformInfo();
+    const shouldUseEphemeral = !isDM;
+
+    const message: ChatMessage = {
+      id: interaction.id,
+      sessionKey,
+      conversationKind: isDM ? "direct" : "shared",
+      userId,
+      userName,
+      text: commandText,
+      attachments: [],
+    };
+
+    const respondPrivately = async (text: string, replace = false): Promise<void> => {
+      if (interaction.replied || interaction.deferred) {
+        if (replace) {
+          await interaction.editReply({ content: text });
+        } else {
+          await interaction.followUp({ content: text, ephemeral: shouldUseEphemeral });
+        }
+        return;
+      }
+
+      await interaction.reply({ content: text, ephemeral: shouldUseEphemeral });
+    };
+
+    const responseCtx: ChatResponseContext = {
+      respond: async (text: string) => {
+        await respondPrivately(text);
+      },
+      replaceResponse: async (text: string) => {
+        await respondPrivately(text, true);
+      },
+      respondDiagnostic: async (text: string) => {
+        await respondPrivately(text);
+      },
+      respondToolResult: async (result: ChatToolResult) => {
+        const duration = (result.durationMs / 1000).toFixed(1);
+        const formatted = `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`;
+        await respondPrivately(formatted);
+      },
+      setTyping: async () => {},
+      setWorking: async () => {},
+      uploadFile: async (filePath: string, title?: string) => {
+        await this.uploadFile(conversationId, filePath, title);
+      },
+      deleteResponse: async () => {},
+    };
+
+    return { message, responseCtx, platform };
+  }
+
   private setupEventHandlers(): void {
+    this.client.on(Events.InteractionCreate, async (interaction) => {
+      if (!interaction.isChatInputCommand() || interaction.commandName !== "session") return;
+
+      const conversationId = interaction.channelId;
+      const isDM = !interaction.inGuild();
+      const isInThread = interaction.channel?.isThread() ?? false;
+      const threadTs = isInThread ? conversationId : undefined;
+      const sessionKey = resolveChatSessionKey({
+        conversationId,
+        conversationKind: isDM ? "direct" : "shared",
+        messageId: interaction.id,
+        persistentTopLevel: true,
+        threadTs,
+      });
+      const commandText = "/session";
+
+      this.logToFile(conversationId, {
+        date: new Date(interaction.createdTimestamp).toISOString(),
+        ts: interaction.id,
+        ...(threadTs ? { threadTs } : {}),
+        user: interaction.user.id,
+        userName: interaction.user.username,
+        text: commandText,
+        attachments: [],
+        isBot: false,
+      });
+
+      const event: BotEvent = {
+        type: "dm",
+        conversationId,
+        conversationKind: isDM ? "direct" : "shared",
+        ts: interaction.id,
+        thread_ts: threadTs,
+        sessionKey,
+        user: interaction.user.id,
+        text: commandText,
+        attachments: [],
+      };
+
+      const adapters = this.createSessionSlashAdapters(interaction, commandText, sessionKey);
+      try {
+        await this.handler.handleEvent(event, this, adapters, false);
+      } catch (err) {
+        log.logWarning(
+          "Discord slash command error",
+          err instanceof Error ? err.message : String(err),
+        );
+        if (!interaction.replied && !interaction.deferred) {
+          await interaction.reply({
+            content: "Session command failed. Please try again later.",
+            ephemeral: !isDM,
+          });
+        }
+      }
+    });
+
     this.client.on(Events.MessageCreate, async (msg: Message) => {
       // Skip messages from before startup
       if (msg.createdTimestamp < this.startupTime) return;

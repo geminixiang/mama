@@ -157,6 +157,54 @@ describe("SlackBot slash commands", () => {
       text: "為了避免誤清除共享上下文，/pi-new 目前只能在與 mama 的私訊中使用。",
     });
   });
+
+  test("/pi-session in a shared channel returns the link ephemerally", async () => {
+    const handler = makeHandler();
+    handler.handleEvent = vi.fn(async (_event, _bot, adapters) => {
+      await adapters.responseCtx.respond("session link");
+    });
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    const postEphemeral = vi.fn().mockResolvedValue(undefined);
+    (bot as any).webClient = {
+      chat: {
+        postEphemeral,
+        postMessage: vi.fn().mockResolvedValue({ ts: "3000.0002" }),
+        update: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    (bot as any).users = new Map([
+      ["U123", { id: "U123", userName: "alice", displayName: "Alice" }],
+    ]);
+
+    await (bot as any).routeSlashSessionCommand({
+      command: "/pi-session",
+      channel_id: "C123",
+      user_id: "U123",
+      user_name: "alice",
+    });
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      type: "dm",
+      conversationId: "C123",
+      conversationKind: "shared",
+      sessionKey: "C123",
+      text: "/pi-session",
+    });
+    expect(postEphemeral).toHaveBeenCalledWith({
+      channel: "C123",
+      user: "U123",
+      text: "session link",
+    });
+  });
 });
 
 describe("SlackBot queues follow-up messages", () => {

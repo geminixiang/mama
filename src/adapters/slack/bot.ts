@@ -692,6 +692,70 @@ export class SlackBot implements Bot {
     };
   }
 
+  private createPrivateSessionCommandAdapters(
+    conversationId: string,
+    userId: string,
+    userName: string | undefined,
+    text: string,
+    ts: string,
+    options: { ephemeralChannelId?: string },
+  ): BotAdapters {
+    const message: ChatMessage = {
+      id: ts,
+      sessionKey: conversationId,
+      conversationKind: options.ephemeralChannelId ? "shared" : "direct",
+      userId,
+      userName,
+      text,
+      attachments: [],
+    };
+
+    let hasResponded = false;
+
+    const respondPrivately = async (responseText: string) => {
+      if (options.ephemeralChannelId) {
+        await this.postEphemeral(options.ephemeralChannelId, userId, responseText);
+        return;
+      }
+
+      const messageTs = await this.postMessage(conversationId, responseText);
+      this.logBotResponse(conversationId, responseText, messageTs);
+    };
+
+    const responseCtx: ChatResponseContext = {
+      respond: async (responseText: string) => {
+        hasResponded = true;
+        await respondPrivately(responseText);
+      },
+      replaceResponse: async (responseText: string) => {
+        if (!hasResponded) {
+          hasResponded = true;
+        }
+        await respondPrivately(responseText);
+      },
+      respondDiagnostic: async (responseText: string) => {
+        await respondPrivately(responseText);
+      },
+      respondToolResult: async (result: ChatToolResult) => {
+        const duration = (result.durationMs / 1000).toFixed(1);
+        const formatted = `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`;
+        await respondPrivately(formatted);
+      },
+      setTyping: async () => {},
+      setWorking: async () => {},
+      uploadFile: async (filePath: string, title?: string) => {
+        await this.uploadFile(conversationId, filePath, title);
+      },
+      deleteResponse: async () => {},
+    };
+
+    return {
+      message,
+      responseCtx,
+      platform: this.getPlatformInfo(),
+    };
+  }
+
   private createSlashCommandBot(conversationId: string, threadTs?: string): Bot {
     return {
       start: async () => {},
@@ -799,6 +863,53 @@ export class SlackBot implements Bot {
 
     const commandBot = this.createSlashCommandBot(conversationId);
     await this.handler.handleNew(conversationId, conversationId, commandBot);
+  }
+
+  private async routeSlashSessionCommand(payload: {
+    command: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const conversationId = payload.channel_id;
+    const isDirectMessage = conversationId.startsWith("D");
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+    const commandText = payload.command;
+
+    this.logToFile(conversationId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: commandText,
+      attachments: [],
+      isBot: false,
+    });
+
+    const sessionKey = conversationId;
+    const event: BotEvent = {
+      type: "dm",
+      conversationId,
+      conversationKind: isDirectMessage ? "direct" : "shared",
+      ts: eventTs,
+      user: payload.user_id,
+      text: commandText,
+      attachments: [],
+      sessionKey,
+    };
+
+    const adapters = this.createPrivateSessionCommandAdapters(
+      conversationId,
+      payload.user_id,
+      userName,
+      commandText,
+      eventTs,
+      isDirectMessage ? {} : { ephemeralChannelId: conversationId },
+    );
+
+    await this.handler.handleEvent(event, this, adapters, false);
   }
 
   private setupEventHandlers(): void {
@@ -1033,7 +1144,14 @@ export class SlackBot implements Bot {
                 user_id: payload.user_id,
                 user_name: payload.user_name,
               })
-            : null;
+            : payload.command === "/pi-session"
+              ? this.routeSlashSessionCommand({
+                  command: payload.command,
+                  channel_id: payload.channel_id,
+                  user_id: payload.user_id,
+                  user_name: payload.user_name,
+                })
+              : null;
 
       if (!handlerPromise) {
         return;
