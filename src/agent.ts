@@ -23,11 +23,7 @@ import type {
   PlatformInfo,
 } from "./adapter.js";
 import { loadAgentConfig } from "./config.js";
-import {
-  createMamaSettingsManager,
-  syncLogToSessionManager,
-  type ConversationLogMessage,
-} from "./context.js";
+import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { UserBindingStore } from "./bindings.js";
@@ -35,8 +31,13 @@ import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
-import { extractSessionSuffix, extractSessionUuid, openManagedSession } from "./session-store.js";
-import { resolveSlackSessionScope } from "./adapters/slack/branch-manager.js";
+import {
+  extractSessionSuffix,
+  extractSessionUuid,
+  openManagedSession,
+  type ResolvedSessionScope,
+  type ThreadRootMessage,
+} from "./session-store.js";
 import { createMamaTools } from "./tools/index.js";
 import * as Sentry from "@sentry/node";
 
@@ -63,7 +64,7 @@ function getImageMimeType(filename: string): string | undefined {
   return IMAGE_MIME_TYPES[filename.toLowerCase().split(".").pop() || ""];
 }
 
-function buildThreadSessionName(message: ConversationLogMessage | null): string | undefined {
+function buildThreadSessionName(message: ThreadRootMessage | null): string | undefined {
   const text = message?.text?.trim();
   if (!text) return undefined;
   const userLabel = message?.userName || message?.user || "unknown";
@@ -196,8 +197,8 @@ function buildSystemPrompt(
 - For older human-readable history beyond your context, search \`log.jsonl\` (contains user messages and your final responses, but not tool results).
 - Structured session history with tool results lives in \`${conversationPath}/sessions/\`.
 - The active top-level session is selected by \`${conversationPath}/sessions/current\`, which points to a timestamped \`.jsonl\` file in the same directory.
-- Slack thread/branch sessions use fixed files at \`${conversationPath}/sessions/<root_message_ts>.jsonl\` (for example \`${conversationPath}/sessions/1777386320.800769.jsonl\`).
-- User messages include a \`[in-thread:TS]\` marker when sent from within a Slack thread (TS is the root message timestamp). Without this marker, the message is a top-level channel message.
+- Scoped/thread sessions use fixed files at \`${conversationPath}/sessions/<scope_id>.jsonl\` (for example \`${conversationPath}/sessions/1777386320.800769.jsonl\`).
+- User messages include a \`[in-thread:TS]\` marker when sent from within a platform thread/reply (TS is the thread or parent message identifier). Without this marker, the message is a top-level conversation message.
 
 ${platform.formattingGuide}
 
@@ -221,7 +222,7 @@ ${workspacePath}/
     ├── sessions/                # Structured session history used for context reconstruction
     │   ├── current              # Active top-level session pointer
     │   ├── <timestamp>_<id>.jsonl  # Top-level session files
-    │   └── <root_message_ts>.jsonl # Slack thread/branch session files
+    │   └── <scope_id>.jsonl        # Scoped thread/reply session files
     ├── attachments/             # User-shared files
     ├── scratch/                 # Your working directory
     └── skills/                  # Conversation-specific tools
@@ -424,6 +425,7 @@ export async function createRunner(
   conversationId: string,
   conversationDir: string,
   workspaceDir: string,
+  sessionScope: ResolvedSessionScope,
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
@@ -477,7 +479,7 @@ export async function createRunner(
   const memory = await getMemory(conversationDir);
   const skills = loadMamaSkills(conversationDir, workspacePath);
   const emptyPlatform: PlatformInfo = {
-    name: "slack",
+    name: "chat",
     formattingGuide: "",
     channels: [],
     users: [],
@@ -493,15 +495,12 @@ export async function createRunner(
     skills,
   );
 
-  // Create session manager and settings manager
-  // Slack top-level sessions use {conversationDir}/sessions/current.
-  // Slack branch sessions use fixed files: {conversationDir}/sessions/{rootTs}.jsonl
+  // Create session manager and settings manager. Top-level/private sessions
+  // use the conversation's current pointer; scoped sessions use fixed files.
+  // Platform-specific branch/fork behavior is resolved before runner creation.
   const isThread = sessionKey.includes(":");
   const rootTs = extractSessionSuffix(sessionKey);
-  const { sessionDir, contextFile, threadRootMessage } = await resolveSlackSessionScope({
-    conversationDir,
-    sessionKey,
-  });
+  const { sessionDir, contextFile, threadRootMessage } = sessionScope;
   const sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
   const threadSessionName = buildThreadSessionName(threadRootMessage);
   if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
@@ -509,7 +508,6 @@ export async function createRunner(
   }
 
   const sessionUuid = extractSessionUuid(contextFile);
-  // Used for Slack thread filtering — for non-Slack platforms this is effectively a no-op
   const settingsManager = createMamaSettingsManager(join(conversationDir, ".."));
 
   // Create AuthStorage and ModelRegistry

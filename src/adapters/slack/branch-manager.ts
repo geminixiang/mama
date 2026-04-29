@@ -8,6 +8,7 @@ import {
   getThreadSessionFile,
   resolveChannelSessionFile,
   resolveManagedSessionFile,
+  type ResolvedSessionScope,
   ThreadRootNotFoundError,
   tryResolveThreadSession,
   type ThreadRootMessage,
@@ -23,11 +24,7 @@ export interface SlackBranchBootstrapWaitOptions {
   pollMs?: number;
 }
 
-export interface SlackResolvedSessionScope {
-  sessionDir: string;
-  contextFile: string;
-  threadRootMessage: ConversationLogMessage | null;
-}
+export type SlackResolvedSessionScope = ResolvedSessionScope;
 
 export interface ResolveSlackSessionScopeOptions {
   conversationDir: string;
@@ -77,14 +74,14 @@ async function forkThreadSessionFromRootWithRetry(
 function createThreadSessionFromRootOrEmpty(
   threadFile: string,
   conversationDir: string,
-  threadRootMessage: ConversationLogMessage | null,
+  threadRootMessage: ThreadRootMessage | null,
   parentSession?: string,
 ): string {
   if (threadRootMessage) {
     return createThreadSessionFileFromRootMessage(
       threadFile,
       conversationDir,
-      buildThreadRootSeed(threadRootMessage),
+      threadRootMessage,
       parentSession,
     );
   }
@@ -145,7 +142,8 @@ export async function resolveSlackSessionScope(
   }
 
   const rootTs = extractSessionSuffix(sessionKey);
-  const threadRootMessage = await findLogMessageById(conversationDir, rootTs);
+  const threadRootLogMessage = await findLogMessageById(conversationDir, rootTs);
+  const threadRootMessage = threadRootLogMessage ? buildThreadRootSeed(threadRootLogMessage) : null;
   const threadFile = getThreadSessionFile(conversationDir, sessionKey);
   const existing = tryResolveThreadSession(threadFile);
   if (existing) {
@@ -171,7 +169,7 @@ export async function resolveSlackSessionScope(
           conversationSource,
           threadFile,
           conversationDir,
-          threadRootMessage,
+          threadRootLogMessage!,
           sleep,
           retryCount,
           retryDelayMs,

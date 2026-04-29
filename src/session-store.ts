@@ -17,6 +17,17 @@ export interface ThreadRootMessage {
   loggedAt?: number;
 }
 
+export interface ResolvedSessionScope {
+  sessionDir: string;
+  contextFile: string;
+  threadRootMessage: ThreadRootMessage | null;
+}
+
+export interface ResolveGenericSessionScopeOptions {
+  conversationDir: string;
+  sessionKey: string;
+}
+
 interface SessionMessageEntryLike {
   type: string;
   id: string;
@@ -156,6 +167,35 @@ function writeSessionHeader(sessionFile: string, cwd: string, sessionId = random
  */
 export function getThreadSessionFile(channelDir: string, sessionKey: string): string {
   return join(getChannelSessionDir(channelDir), `${extractSessionSuffix(sessionKey)}.jsonl`);
+}
+
+/**
+ * Resolve the default session scope for platforms without Slack-style branch forking.
+ * Top-level/private sessions use the conversation's current pointer. Threaded or
+ * per-message sessions use a fixed file derived from the session key suffix.
+ */
+export function resolveGenericSessionScope(
+  options: ResolveGenericSessionScopeOptions,
+): ResolvedSessionScope {
+  const { conversationDir, sessionKey } = options;
+  const sessionDir = getChannelSessionDir(conversationDir);
+
+  if (!sessionKey.includes(":")) {
+    return {
+      sessionDir,
+      contextFile: resolveManagedSessionFile(sessionDir, conversationDir),
+      threadRootMessage: null,
+    };
+  }
+
+  const threadFile = getThreadSessionFile(conversationDir, sessionKey);
+  return {
+    sessionDir,
+    contextFile:
+      tryResolveThreadSession(threadFile) ??
+      createManagedSessionFileAtPath(threadFile, conversationDir),
+    threadRootMessage: null,
+  };
 }
 
 function hasSessionHeader(sessionFile: string): boolean {

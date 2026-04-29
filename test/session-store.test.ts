@@ -14,6 +14,7 @@ import {
   getThreadSessionFile,
   openManagedSession,
   resolveChannelSessionFile,
+  resolveGenericSessionScope,
   resolveManagedSessionFile,
   resolveSessionFile,
   ThreadRootNotFoundError,
@@ -153,6 +154,39 @@ describe("resolveChannelSessionFile", () => {
     const sessionDir = getChannelSessionDir(channelDir);
     const created = createManagedSessionFile(sessionDir, channelDir);
     expect(resolveChannelSessionFile(channelDir)).toBe(created);
+  });
+});
+
+describe("resolveGenericSessionScope", () => {
+  test("top-level sessions use the current session pointer", () => {
+    const first = resolveGenericSessionScope({ conversationDir: channelDir, sessionKey: "D123" });
+    const second = resolveGenericSessionScope({ conversationDir: channelDir, sessionKey: "D123" });
+
+    expect(first.sessionDir).toBe(getChannelSessionDir(channelDir));
+    expect(first.contextFile).toBe(second.contextFile);
+    expect(first.threadRootMessage).toBeNull();
+    expect(readFileSync(first.contextFile, "utf-8")).toContain(`"cwd":"${channelDir}"`);
+  });
+
+  test("scoped sessions use a fixed file without forking channel history", () => {
+    const sessionDir = getChannelSessionDir(channelDir);
+    const channelFile = createManagedSessionFile(sessionDir, channelDir);
+    const channelSM = openManagedSession(channelFile, sessionDir, channelDir);
+    channelSM.appendMessage(makeUserMessage("channel history"));
+
+    const first = resolveGenericSessionScope({
+      conversationDir: channelDir,
+      sessionKey: "C123:message-1",
+    });
+    const second = resolveGenericSessionScope({
+      conversationDir: channelDir,
+      sessionKey: "C123:message-1",
+    });
+
+    expect(first.contextFile).toBe(getThreadSessionFile(channelDir, "C123:message-1"));
+    expect(second.contextFile).toBe(first.contextFile);
+    expect(first.threadRootMessage).toBeNull();
+    expect(readFileSync(first.contextFile, "utf-8")).not.toContain("channel history");
   });
 });
 

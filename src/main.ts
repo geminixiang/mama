@@ -17,6 +17,8 @@ import {
   createManagedSessionFileAtPath,
   getChannelSessionDir,
   getThreadSessionFile,
+  resolveGenericSessionScope,
+  type ResolvedSessionScope,
 } from "./session-store.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
@@ -42,6 +44,7 @@ import { ChannelStore } from "./store.js";
 import { formatNothingRunning, formatStopped, formatStopping } from "./ui-copy.js";
 import {
   hasMaterializedSlackBranchSession,
+  resolveSlackSessionScope,
   waitForSlackBranchBootstrap,
 } from "./adapters/slack/branch-manager.js";
 import * as Sentry from "@sentry/node";
@@ -462,11 +465,27 @@ if (provisioner) {
   setInterval(() => provisioner.stopIdle(IMAGE_IDLE_TIMEOUT_MS), IMAGE_IDLE_TIMEOUT_MS).unref();
 }
 
-async function getState(conversationId: string, sessionKey?: string): Promise<ConversationState> {
+async function resolveSessionScope(
+  platformName: string,
+  conversationDir: string,
+  sessionKey: string,
+): Promise<ResolvedSessionScope> {
+  if (platformName === "slack") {
+    return resolveSlackSessionScope({ conversationDir, sessionKey });
+  }
+  return resolveGenericSessionScope({ conversationDir, sessionKey });
+}
+
+async function getState(
+  conversationId: string,
+  platformName: string,
+  sessionKey?: string,
+): Promise<ConversationState> {
   const key = sessionKey ?? conversationId;
   let state = conversationStates.get(key);
   if (!state) {
     const conversationDir = join(workingDir, conversationId);
+    const sessionScope = await resolveSessionScope(platformName, conversationDir, key);
     state = {
       running: false,
       runner: await createRunner(
@@ -475,6 +494,7 @@ async function getState(conversationId: string, sessionKey?: string): Promise<Co
         conversationId,
         conversationDir,
         workingDir,
+        sessionScope,
         vaultManager,
         bindingStore,
         provisioner,
@@ -648,7 +668,7 @@ const handler: BotHandler = {
       );
     }
 
-    const state = await getState(conversationId, sessionKey);
+    const state = await getState(conversationId, adapters.platform.name, sessionKey);
 
     // Start run
     state.running = true;
