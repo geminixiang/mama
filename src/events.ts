@@ -18,12 +18,7 @@ import * as log from "./log.js";
 // Event Types
 // ============================================================================
 
-interface ScopedEventFields {
-  sessionKey?: string;
-  threadTs?: string;
-}
-
-export interface ImmediateEvent extends ScopedEventFields {
+export interface ImmediateEvent {
   type: "immediate";
   platform: string;
   conversationId: string;
@@ -31,9 +26,13 @@ export interface ImmediateEvent extends ScopedEventFields {
   /** Creator userId — routes tool execution to that user's vault selection when fired. */
   userId?: string;
   text: string;
+  /** Determines which AgentRunner handles the event. */
+  sessionKey?: string;
+  /** Sub-conversation target (Slack thread ts, Discord thread id, Telegram reply-to id). */
+  threadTs?: string;
 }
 
-export interface OneShotEvent extends ScopedEventFields {
+export interface OneShotEvent {
   type: "one-shot";
   platform: string;
   conversationId: string;
@@ -41,9 +40,10 @@ export interface OneShotEvent extends ScopedEventFields {
   userId?: string;
   text: string;
   at: string; // ISO 8601 with timezone offset
+  // No sessionKey or threadTs: reminders fire as top-level messages regardless of where they were created.
 }
 
-export interface PeriodicEvent extends ScopedEventFields {
+export interface PeriodicEvent {
   type: "periodic";
   platform: string;
   conversationId: string;
@@ -52,6 +52,9 @@ export interface PeriodicEvent extends ScopedEventFields {
   text: string;
   schedule: string; // cron syntax
   timezone: string; // IANA timezone
+  /** Determines which AgentRunner handles the event. */
+  sessionKey?: string;
+  // No threadTs: recurring events always fire as top-level messages.
 }
 
 export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -370,8 +373,6 @@ export class EventsWatcher {
           userId,
           text: data.text,
           at: data.at,
-          sessionKey,
-          threadTs,
         };
 
       case "periodic":
@@ -391,7 +392,6 @@ export class EventsWatcher {
           schedule: data.schedule,
           timezone: data.timezone,
           sessionKey,
-          threadTs,
         };
 
       default:
@@ -537,6 +537,7 @@ export class EventsWatcher {
     // Create synthetic BotEvent. Keep a stable conversation session key so recurring
     // reminders share context, but use a unique synthetic message id because
     // some adapters treat ts/message id as a reply target.
+    const scopedEvent = event as { sessionKey?: string; threadTs?: string };
     const syntheticEvent: BotEvent = {
       type: "mention",
       conversationId: event.conversationId,
@@ -544,8 +545,8 @@ export class EventsWatcher {
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,
-      thread_ts: event.threadTs,
-      sessionKey: event.sessionKey ?? event.conversationId,
+      thread_ts: scopedEvent.threadTs,
+      sessionKey: scopedEvent.sessionKey ?? event.conversationId,
     };
 
     // Enqueue for processing

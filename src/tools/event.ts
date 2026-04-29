@@ -1,7 +1,8 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { Type } from "@sinclair/typebox";
+import * as log from "../log.js";
 
 const eventSchema = Type.Object({
   label: Type.String({
@@ -69,8 +70,6 @@ type EventPayload =
       userId: string;
       text: string;
       at: string;
-      sessionKey?: string;
-      threadTs?: string;
     }
   | {
       type: "periodic";
@@ -82,7 +81,6 @@ type EventPayload =
       schedule: string;
       timezone: string;
       sessionKey?: string;
-      threadTs?: string;
     };
 
 export function createEventTool(workspaceDir: string): {
@@ -113,7 +111,21 @@ export function createEventTool(workspaceDir: string): {
       const prefix = sanitizeFileSegment(params.filenamePrefix || payload.type || "event");
       const filename = `${prefix}-${Date.now()}.json`;
       const filePath = join(eventsDir, filename);
-      await writeFile(filePath, JSON.stringify(payload) + "\n", "utf-8");
+      const content = JSON.stringify(payload) + "\n";
+
+      log.logInfo(
+        `Writing event file: ${filePath} (type=${payload.type}, platform=${payload.platform}, conversation=${payload.conversationId})`,
+      );
+      await writeFile(filePath, content, "utf-8");
+
+      try {
+        const fileStat = await stat(filePath);
+        log.logInfo(
+          `Wrote event file: ${filePath} (${fileStat.size} bytes, mtime=${fileStat.mtime.toISOString()})`,
+        );
+      } catch (err) {
+        log.logWarning(`Event file missing immediately after write: ${filePath}`, String(err));
+      }
 
       return {
         content: [
@@ -147,18 +159,22 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
     conversationKind: context.conversationKind,
     userId: context.userId,
     text: params.text,
-    sessionKey: context.sessionKey,
-    ...(context.threadTs ? { threadTs: context.threadTs } : {}),
   };
 
   if (params.type === "immediate") {
-    return { ...base, type: "immediate" };
+    return {
+      ...base,
+      type: "immediate",
+      sessionKey: context.sessionKey,
+      ...(context.threadTs ? { threadTs: context.threadTs } : {}),
+    };
   }
 
   if (params.type === "one-shot") {
     if (!params.at) {
       throw new Error("`at` is required for one-shot events");
     }
+    // No sessionKey or threadTs: reminders should fire as top-level messages, not buried in old threads
     return { ...base, type: "one-shot", at: params.at };
   }
 
@@ -168,11 +184,13 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
   if (!params.timezone) {
     throw new Error("`timezone` is required for periodic events");
   }
+  // No threadTs: periodic events should always be top-level; keep sessionKey for task context
   return {
     ...base,
     type: "periodic",
     schedule: params.schedule,
     timezone: params.timezone,
+    sessionKey: context.sessionKey,
   };
 }
 

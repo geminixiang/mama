@@ -938,7 +938,10 @@ export async function createRunner(
         conversationKind: message.conversationKind,
         userId: message.userId,
         sessionKey: message.sessionKey,
-        threadTs: platform.name === "slack" ? (message.threadTs ?? message.id) : message.threadTs,
+        // For Slack scheduled events, preserve thread targeting only when the
+        // request was created inside an existing thread. Top-level reminders
+        // should come back as top-level messages.
+        threadTs: message.threadTs,
       });
 
       // Set up file upload function
