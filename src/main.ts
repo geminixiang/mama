@@ -29,7 +29,11 @@ import { parseSessionViewCommand } from "./session-view/command.js";
 import { resolveExistingSessionFile } from "./session-view/service.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
 import { DockerContainerManager } from "./provisioner.js";
-import { loadAgentConfig } from "./config.js";
+import {
+  loadAgentConfig,
+  loadConversationConfig,
+  saveConversationConfig,
+} from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import {
@@ -427,6 +431,62 @@ async function handleSessionViewCommand(
   return true;
 }
 
+function parseModelCommand(
+  text: string,
+):
+  | { action: "get" }
+  | { action: "set"; model: string }
+  | { action: "reset" }
+  | null {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^\/model(?:\s+(.+))?$/i);
+  if (!match) return null;
+  const arg = match[1]?.trim();
+  if (!arg) return { action: "get" };
+  if (arg.toLowerCase() === "reset") return { action: "reset" };
+  return { action: "set", model: arg };
+}
+
+async function handleModelCommand(
+  conversationId: string,
+  sessionKey: string,
+  responseCtx: BotAdapters["responseCtx"],
+  commandText: string,
+): Promise<boolean> {
+  const parsed = parseModelCommand(commandText);
+  if (!parsed) return false;
+
+  const conversationDir = join(workingDir, conversationId);
+  const convConfig = loadConversationConfig(conversationDir);
+  const globalConfig = loadAgentConfig(workingDir);
+
+  if (parsed.action === "get") {
+    const effectiveModel = convConfig.model ?? globalConfig.model;
+    const note = convConfig.model ? " (conversation override)" : " (global default)";
+    await replyWithContext(responseCtx, `Current model: \`${effectiveModel}\`${note}`);
+    return true;
+  }
+
+  if (parsed.action === "reset") {
+    saveConversationConfig(conversationDir, { model: undefined, provider: undefined });
+    conversationStates.delete(sessionKey);
+    await replyWithContext(
+      responseCtx,
+      `Model reset to global default: \`${globalConfig.model}\`. New runner will be created on next message.`,
+    );
+    return true;
+  }
+
+  // action === "set"
+  saveConversationConfig(conversationDir, { model: parsed.model });
+  conversationStates.delete(sessionKey);
+  await replyWithContext(
+    responseCtx,
+    `Model set to \`${parsed.model}\` for this conversation. New runner will be created on next message.`,
+  );
+  return true;
+}
+
 // ============================================================================
 // State (per conversation)
 // ============================================================================
@@ -467,6 +527,7 @@ async function getState(conversationId: string, sessionKey?: string): Promise<Co
   let state = conversationStates.get(key);
   if (!state) {
     const conversationDir = join(workingDir, conversationId);
+    const convConfig = loadConversationConfig(conversationDir);
     state = {
       running: false,
       runner: await createRunner(
@@ -478,6 +539,7 @@ async function getState(conversationId: string, sessionKey?: string): Promise<Co
         vaultManager,
         bindingStore,
         provisioner,
+        convConfig,
       ),
       stopRequested: false,
       lastAccessedAt: Date.now(),
@@ -631,6 +693,14 @@ const handler: BotHandler = {
       privateConversation,
     );
     if (handledSessionView) return;
+
+    const handledModel = await handleModelCommand(
+      conversationId,
+      sessionKey,
+      adapters.responseCtx,
+      event.text,
+    );
+    if (handledModel) return;
 
     const conversationDir = join(workingDir, conversationId);
     const waitedForParent =

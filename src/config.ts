@@ -152,6 +152,62 @@ export function resolveLinkBaseUrl(): string | undefined {
   return raw.replace(/\/+$/, "");
 }
 
+// ============================================================================
+// Per-conversation config (model override stored in <conversationDir>/config.json)
+// ============================================================================
+
+export interface ConversationConfig {
+  model?: string;
+  provider?: string;
+  thinkingLevel?: string;
+}
+
+export function loadConversationConfig(conversationDir: string): ConversationConfig {
+  const configPath = join(conversationDir, "config.json");
+  if (!existsSync(configPath)) return {};
+  try {
+    const raw = readFileSync(configPath, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") return parsed as ConversationConfig;
+  } catch {
+    // Ignore parse errors
+  }
+  return {};
+}
+
+export function saveConversationConfig(
+  conversationDir: string,
+  config: ConversationConfig,
+): void {
+  const configPath = join(conversationDir, "config.json");
+  let existing: ConversationConfig = {};
+  if (existsSync(configPath)) {
+    try {
+      const raw = readFileSync(configPath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") existing = parsed as ConversationConfig;
+    } catch {
+      // Start fresh if file is malformed
+    }
+  }
+
+  const merged: Record<string, string> = { ...(existing as Record<string, string>) };
+  for (const [k, v] of Object.entries(config)) {
+    if (v === undefined || v === null) {
+      delete merged[k];
+    } else {
+      merged[k] = v;
+    }
+  }
+
+  const dir = dirname(configPath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(configPath, JSON.stringify(merged, null, 2), "utf-8");
+}
+
 export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
   const settingsPath = join(workspaceDir, "settings.json");
 

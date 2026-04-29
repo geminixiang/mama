@@ -21,7 +21,7 @@ import type {
   ConversationKind,
   PlatformInfo,
 } from "./adapter.js";
-import { loadAgentConfig } from "./config.js";
+import { loadAgentConfig, type ConversationConfig } from "./config.js";
 import {
   createMamaSettingsManager,
   syncLogToSessionManager,
@@ -447,8 +447,12 @@ export async function createRunner(
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
+  convConfig?: ConversationConfig,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfig(workspaceDir);
+  if (convConfig?.model) agentConfig.model = convConfig.model;
+  if (convConfig?.provider) agentConfig.provider = convConfig.provider;
+  if (convConfig?.thinkingLevel !== undefined) agentConfig.thinkingLevel = convConfig.thinkingLevel;
 
   // Initialize logger with settings from config
   log.initLogger({
