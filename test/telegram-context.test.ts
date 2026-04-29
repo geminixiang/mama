@@ -417,6 +417,11 @@ describe("platform info", () => {
     expect(platform.formattingGuide).toContain("<b>");
   });
 
+  test("does not show usage summary diagnostics", () => {
+    const { platform } = createTelegramAdapters(makeEvent(), makeTelegramBot());
+    expect(platform.diagnostics?.showUsageSummary).not.toBe(true);
+  });
+
   test("channels and users are empty (Telegram has no guild registry)", () => {
     const { platform } = createTelegramAdapters(makeEvent(), makeTelegramBot());
     expect(platform.channels).toEqual([]);

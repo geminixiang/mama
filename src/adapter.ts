@@ -36,6 +36,9 @@ export interface PlatformInfo {
   formattingGuide: string;
   channels: { id: string; name: string }[];
   users: { id: string; userName: string; displayName: string }[];
+  diagnostics?: {
+    showUsageSummary?: boolean;
+  };
 }
 
 export interface ChatAdapter {

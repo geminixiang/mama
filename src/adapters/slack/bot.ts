@@ -388,6 +388,9 @@ export class SlackBot implements Bot {
         userName: u.userName,
         displayName: u.displayName,
       })),
+      diagnostics: {
+        showUsageSummary: true,
+      },
     };
   }
 

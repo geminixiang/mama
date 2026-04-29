@@ -444,6 +444,11 @@ describe("platform info", () => {
     expect(platform.name).toBe("slack");
   });
 
+  test("opts in to usage summary diagnostics", () => {
+    const { platform } = createSlackAdapters(makeEvent(), makeSlackBot());
+    expect(platform.diagnostics?.showUsageSummary).toBe(true);
+  });
+
   test("channels and users come from SlackBot", () => {
     const bot = makeSlackBot({
       getAllChannels: vi.fn().mockReturnValue([{ id: "C001", name: "general" }]),

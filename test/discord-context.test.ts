@@ -440,6 +440,11 @@ describe("platform info", () => {
     expect(platform.formattingGuide).toContain("**");
   });
 
+  test("does not show usage summary diagnostics", () => {
+    const { platform } = createDiscordAdapters(makeEvent(), makeDiscordBot());
+    expect(platform.diagnostics?.showUsageSummary).not.toBe(true);
+  });
+
   test("channels and users come from DiscordBot", () => {
     const bot = makeDiscordBot({
       getAllChannels: vi.fn().mockReturnValue([{ id: "CH001", name: "general" }]),

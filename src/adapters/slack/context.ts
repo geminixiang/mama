@@ -127,6 +127,9 @@ export function createSlackAdapters(
     users: slack
       .getAllUsers()
       .map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
+    diagnostics: {
+      showUsageSummary: true,
+    },
   };
 
   const responseCtx = {

@@ -1106,11 +1106,13 @@ export async function createRunner(
           contextTokens,
           contextWindow,
         );
-        runState.queue!.enqueue(
-          () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
-          "usage summary",
-        );
-        await queueChain;
+        if (platform.diagnostics?.showUsageSummary === true) {
+          runState.queue!.enqueue(
+            () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
+            "usage summary",
+          );
+          await queueChain;
+        }
       }
 
       // Clear run state
