@@ -17,7 +17,7 @@ import { basename, join } from "path";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
-import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
+import { formatNothingRunning } from "../../ui-copy.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -308,6 +308,26 @@ export class DiscordBot implements Bot {
     return queue;
   }
 
+  private resolveStopTarget(
+    channelId: string,
+    sessionKey: string,
+    threadTs?: string,
+  ): string | null {
+    if (this.handler.isRunning(sessionKey)) return sessionKey;
+
+    if (threadTs) {
+      if (this.handler.isRunning(channelId)) return channelId;
+      return null;
+    }
+
+    const runningInConversation = this.handler
+      .getRunningSessions()
+      .map((session) => session.sessionKey)
+      .filter((key) => key === channelId || key.startsWith(`${channelId}:`));
+
+    return runningInConversation.length === 1 ? runningInConversation[0] : null;
+  }
+
   private loadCachedGuildData(): void {
     for (const guild of this.client.guilds.cache.values()) {
       for (const channel of guild.channels.cache.values()) {
@@ -403,22 +423,19 @@ export class DiscordBot implements Bot {
 
       // Handle stop command
       if (cleanedText.toLowerCase() === "stop" || cleanedText.toLowerCase() === "/stop") {
-        if (this.handler.isRunning(sessionKey)) {
-          this.handler.handleStop(sessionKey, channelId, this);
+        const stopTarget = this.resolveStopTarget(channelId, sessionKey, threadTs);
+        if (stopTarget) {
+          this.handler.handleStop(stopTarget, channelId, this);
         } else {
           await this.postMessage(channelId, formatNothingRunning("discord"));
         }
         return;
       }
 
-      if (this.handler.isRunning(sessionKey)) {
-        await this.postMessage(channelId, formatAlreadyWorking("discord", "stop"));
-      } else {
-        this.getQueue(sessionKey).enqueue(() => {
-          const adapters = createDiscordAdapters(event, this, false);
-          return this.handler.handleEvent(event, this, adapters, false);
-        });
-      }
+      this.getQueue(sessionKey).enqueue(() => {
+        const adapters = createDiscordAdapters(event, this, false);
+        return this.handler.handleEvent(event, this, adapters, false);
+      });
     });
   }
 

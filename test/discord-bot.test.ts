@@ -171,6 +171,59 @@ describe("DiscordBot message routing", () => {
     expect(event.sessionKey).toBe("C1:M1");
   });
 
+  test("queues shared top-level follow-up messages instead of posting already-working", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "C1");
+
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    const queue = (bot as any).getQueue("C1");
+    queue.processing = true;
+    (bot as any).postMessage = vi.fn().mockResolvedValue("BOT_MSG");
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        content: "<@BOT> second request",
+      }),
+    );
+
+    expect((bot as any).postMessage).not.toHaveBeenCalled();
+    expect(queue.size()).toBe(1);
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+
+    queue.processing = false;
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      conversationId: "C1",
+      sessionKey: "C1",
+      text: "second request",
+    });
+  });
+
+  test("stop from a shared-channel reply can stop the running top-level session", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation((sessionKey: string) => sessionKey === "C1");
+
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const messageHandler = installMessageHandler(bot);
+
+    await messageHandler(
+      makeDiscordMessage({
+        id: "M2",
+        channelId: "C1",
+        content: "<@BOT> stop",
+        reference: { messageId: "M1" },
+      }),
+    );
+
+    expect(handler.handleStop).toHaveBeenCalledWith("C1", "C1", bot);
+  });
+
   test("logs threadTs for shared channel replies", async () => {
     const bot = new DiscordBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
     const messageHandler = installMessageHandler(bot);
