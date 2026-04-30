@@ -1,21 +1,9 @@
-import {
-  chmodSync,
-  closeSync,
-  constants as fsConstants,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeSync,
-} from "fs";
-import { randomBytes } from "crypto";
-import { basename, dirname, isAbsolute, join, normalize, sep } from "path";
+import { chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { dirname, isAbsolute, join, normalize, sep } from "path";
 import type { SandboxConfig } from "./sandbox.js";
+import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 const PRIVATE_DIR_MODE = 0o700;
-const PRIVATE_FILE_MODE = 0o600;
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -476,47 +464,6 @@ export class FileVaultManager implements VaultManager {
 function ensurePrivateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIR_MODE });
   chmodSync(path, PRIVATE_DIR_MODE);
-}
-
-/**
- * Write `content` to `targetPath` with mode 0600, even when `targetPath`
- * already exists. Uses O_CREAT|O_EXCL on a temp sibling (so the kernel
- * guarantees permissions at creation, not after a racy chmod) and then
- * rename(2) into place for atomicity. Readers never see a torn write.
- */
-function atomicWritePrivateFile(targetPath: string, content: string): void {
-  const dir = dirname(targetPath);
-  const tmpPath = join(
-    dir,
-    `.${basename(targetPath)}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
-  );
-  const fd = openSync(
-    tmpPath,
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL,
-    PRIVATE_FILE_MODE,
-  );
-  try {
-    writeSync(fd, content);
-  } catch (err) {
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // ignore — original error is more informative
-    }
-    throw err;
-  } finally {
-    closeSync(fd);
-  }
-  try {
-    renameSync(tmpPath, targetPath);
-  } catch (err) {
-    try {
-      unlinkSync(tmpPath);
-    } catch {
-      // ignore
-    }
-    throw err;
-  }
 }
 
 function normalizeVaultRelativePath(relativePath: string): string | undefined {

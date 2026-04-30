@@ -1,13 +1,29 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
-import { ChannelQueue } from "../shared.js";
+import {
+  appendBotResponseLog,
+  appendChannelLog,
+  ChannelQueue,
+  resolveStopTarget,
+  withRetry,
+} from "../shared.js";
 import { createTelegramAdapters } from "./context.js";
 import { escapeTelegramHtml } from "./html.js";
+
+// grammY surfaces Telegram errors as `GrammyError` with `error_code` mirroring
+// the Bot API. 429 is the rate-limit status; the response also includes
+// `parameters.retry_after` but exponential backoff is good enough here.
+function telegramIsRateLimited(err: Error): boolean {
+  return (err as { error_code?: number }).error_code === 429;
+}
+
+const telegramRetry = <T>(fn: () => Promise<T>): Promise<T> =>
+  withRetry(fn, { isRateLimited: telegramIsRateLimited });
 
 // ============================================================================
 // Types
@@ -95,27 +111,29 @@ export class TelegramBot implements Bot {
   }
 
   async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-    try {
-      await this.client.api.editMessageText(parseInt(channel), parseInt(ts), text, {
-        parse_mode: "HTML",
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("message is not modified")) {
-        return;
-      }
-      if (!isTelegramHtmlParseError(msg)) {
-        throw err;
-      }
-      await this.client.api.editMessageText(
-        parseInt(channel),
-        parseInt(ts),
-        escapeTelegramHtml(text),
-        {
+    return telegramRetry(async () => {
+      try {
+        await this.client.api.editMessageText(parseInt(channel), parseInt(ts), text, {
           parse_mode: "HTML",
-        },
-      );
-    }
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("message is not modified")) {
+          return;
+        }
+        if (!isTelegramHtmlParseError(msg)) {
+          throw err;
+        }
+        await this.client.api.editMessageText(
+          parseInt(channel),
+          parseInt(ts),
+          escapeTelegramHtml(text),
+          {
+            parse_mode: "HTML",
+          },
+        );
+      }
+    });
   }
 
   enqueueEvent(event: BotEvent): boolean {
@@ -150,43 +168,49 @@ export class TelegramBot implements Bot {
   // ==========================================================================
 
   async postMessageRaw(chatId: number, text: string): Promise<number> {
-    try {
-      const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
-      return result.message_id;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!isTelegramHtmlParseError(msg)) {
-        throw err;
+    return telegramRetry(async () => {
+      try {
+        const result = await this.client.api.sendMessage(chatId, text, { parse_mode: "HTML" });
+        return result.message_id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!isTelegramHtmlParseError(msg)) {
+          throw err;
+        }
+        const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+          parse_mode: "HTML",
+        });
+        return result.message_id;
       }
-      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
-        parse_mode: "HTML",
-      });
-      return result.message_id;
-    }
+    });
   }
 
   async postPlainMessage(chatId: number, text: string): Promise<void> {
-    await this.client.api.sendMessage(chatId, text);
+    return telegramRetry(async () => {
+      await this.client.api.sendMessage(chatId, text);
+    });
   }
 
   async postReply(chatId: number, replyToMessageId: number, text: string): Promise<number> {
-    try {
-      const result = await this.client.api.sendMessage(chatId, text, {
-        parse_mode: "HTML",
-        reply_parameters: { message_id: replyToMessageId },
-      });
-      return result.message_id;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (!isTelegramHtmlParseError(msg)) {
-        throw err;
+    return telegramRetry(async () => {
+      try {
+        const result = await this.client.api.sendMessage(chatId, text, {
+          parse_mode: "HTML",
+          reply_parameters: { message_id: replyToMessageId },
+        });
+        return result.message_id;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!isTelegramHtmlParseError(msg)) {
+          throw err;
+        }
+        const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
+          parse_mode: "HTML",
+          reply_parameters: { message_id: replyToMessageId },
+        });
+        return result.message_id;
       }
-      const result = await this.client.api.sendMessage(chatId, escapeTelegramHtml(text), {
-        parse_mode: "HTML",
-        reply_parameters: { message_id: replyToMessageId },
-      });
-      return result.message_id;
-    }
+    });
   }
 
   async deleteMessageRaw(chatId: number, messageId: number): Promise<void> {
@@ -198,26 +222,19 @@ export class TelegramBot implements Bot {
   }
 
   async uploadFile(channel: string, filePath: string, title?: string): Promise<void> {
-    const fileName = title ?? basename(filePath);
-    const fileContent = readFileSync(filePath);
-    await this.client.api.sendDocument(parseInt(channel), new InputFile(fileContent, fileName));
+    return telegramRetry(async () => {
+      const fileName = title ?? basename(filePath);
+      const fileContent = readFileSync(filePath);
+      await this.client.api.sendDocument(parseInt(channel), new InputFile(fileContent, fileName));
+    });
   }
 
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channel, entry);
   }
 
   logBotResponse(channel: string, text: string, ts: string): void {
-    this.logToFile(channel, {
-      date: new Date().toISOString(),
-      ts,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    appendBotResponseLog(this.workingDir, channel, text, ts);
   }
 
   /**
@@ -369,18 +386,16 @@ export class TelegramBot implements Bot {
   }
 
   private resolveStopTarget(mc: MessageContext): string | null {
-    if (this.handler.isRunning(mc.sessionKey)) return mc.sessionKey;
-
-    if (this.handler.isRunning(mc.chatId)) return mc.chatId;
-
-    if (mc.chatType === "private") return null;
-
-    const runningInChat = this.handler
-      .getRunningSessions()
-      .map((session) => session.sessionKey)
-      .filter((sessionKey) => sessionKey === mc.chatId || sessionKey.startsWith(`${mc.chatId}:`));
-
-    return runningInChat.length === 1 ? runningInChat[0] : null;
+    return resolveStopTarget({
+      handler: this.handler,
+      conversationId: mc.chatId,
+      sessionKey: mc.sessionKey,
+      // Telegram group sessionKeys are per-message, not per-thread, so the
+      // scoped fallback is the only way to find the actually-running session.
+      // (In private chats there are no scoped sessions, so the fallback is a
+      // harmless no-op.)
+      allowScopedFallback: true,
+    });
   }
 
   private setupEventHandlers(): void {

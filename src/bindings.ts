@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export interface UserBinding {
   platform: "slack" | "discord" | "telegram";
@@ -110,7 +111,7 @@ export class FileUserBindingStore implements UserBindingStore {
   private persist(): void {
     try {
       mkdirSync(dirname(this.configPath), { recursive: true });
-      writeFileSync(this.configPath, JSON.stringify(this.config, null, 2) + "\n", "utf-8");
+      atomicWritePrivateFile(this.configPath, JSON.stringify(this.config, null, 2) + "\n");
     } catch (err) {
       console.error(`bindings: failed to write ${this.configPath}:`, err);
     }

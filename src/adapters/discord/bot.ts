@@ -12,7 +12,7 @@ import {
   type NewsChannel,
   type ThreadChannel,
 } from "discord.js";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, join } from "path";
 
 import type {
@@ -28,8 +28,26 @@ import type {
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatNothingRunning } from "../../ui-copy.js";
-import { ChannelQueue } from "../shared.js";
+import {
+  appendBotResponseLog,
+  appendChannelLog,
+  ChannelQueue,
+  resolveStopTarget,
+  withRetry,
+} from "../shared.js";
 import { createDiscordAdapters } from "./context.js";
+
+// discord.js: DiscordAPIError exposes `.status` (HTTP status) and a `.code`.
+// RateLimitError fires when the internal queue gives up. Both should retry.
+function discordIsRateLimited(err: Error): boolean {
+  if ((err as { status?: number }).status === 429) return true;
+  if ((err as { httpStatus?: number }).httpStatus === 429) return true;
+  if (err.name === "RateLimitError") return true;
+  return false;
+}
+
+const discordRetry = <T>(fn: () => Promise<T>): Promise<T> =>
+  withRetry(fn, { isRateLimited: discordIsRateLimited });
 
 // ============================================================================
 // Types
@@ -102,9 +120,11 @@ export class DiscordBot implements Bot {
   }
 
   async postMessage(channel: string, text: string): Promise<string> {
-    const ch = await this.fetchTextChannel(channel);
-    const msg = await ch.send(text);
-    return msg.id;
+    return discordRetry(async () => {
+      const ch = await this.fetchTextChannel(channel);
+      const msg = await ch.send(text);
+      return msg.id;
+    });
   }
 
   async updateMessage(channel: string, ts: string, text: string): Promise<void> {
@@ -146,16 +166,20 @@ export class DiscordBot implements Bot {
   // ==========================================================================
 
   async updateMessageRaw(channelId: string, messageId: string, text: string): Promise<void> {
-    const ch = await this.fetchTextChannel(channelId);
-    const msg = await ch.messages.fetch(messageId);
-    await msg.edit(text);
+    return discordRetry(async () => {
+      const ch = await this.fetchTextChannel(channelId);
+      const msg = await ch.messages.fetch(messageId);
+      await msg.edit(text);
+    });
   }
 
   async postReply(channelId: string, replyToId: string, text: string): Promise<string> {
-    const ch = await this.fetchTextChannel(channelId);
-    const replyTarget = await ch.messages.fetch(replyToId);
-    const sent = await replyTarget.reply(text);
-    return sent.id;
+    return discordRetry(async () => {
+      const ch = await this.fetchTextChannel(channelId);
+      const replyTarget = await ch.messages.fetch(replyToId);
+      const sent = await replyTarget.reply(text);
+      return sent.id;
+    });
   }
 
   async postInThread(channelId: string, threadOrMessageId: string, text: string): Promise<string> {
@@ -163,8 +187,10 @@ export class DiscordBot implements Bot {
     try {
       const thread = await this.client.channels.fetch(threadOrMessageId);
       if (thread && (thread.isThread() || thread.isTextBased())) {
-        const msg = await (thread as ThreadChannel).send(text);
-        return msg.id;
+        return discordRetry(async () => {
+          const msg = await (thread as ThreadChannel).send(text);
+          return msg.id;
+        });
       }
     } catch {
       // Not a thread channel, treat as message ID for reply
@@ -192,16 +218,20 @@ export class DiscordBot implements Bot {
   }
 
   async uploadFile(channelId: string, filePath: string, title?: string): Promise<void> {
-    const ch = await this.fetchTextChannel(channelId);
-    const fileName = title ?? basename(filePath);
-    const fileContent = readFileSync(filePath);
-    await ch.send({ files: [{ attachment: fileContent, name: fileName }] });
+    return discordRetry(async () => {
+      const ch = await this.fetchTextChannel(channelId);
+      const fileName = title ?? basename(filePath);
+      const fileContent = readFileSync(filePath);
+      await ch.send({ files: [{ attachment: fileContent, name: fileName }] });
+    });
   }
 
   async sendDirectMessage(userId: string, text: string): Promise<string> {
-    const user = await this.client.users.fetch(userId);
-    const msg = await user.send(text);
-    return msg.id;
+    return discordRetry(async () => {
+      const user = await this.client.users.fetch(userId);
+      const msg = await user.send(text);
+      return msg.id;
+    });
   }
 
   getAllChannels(): { id: string; name: string }[] {
@@ -213,20 +243,11 @@ export class DiscordBot implements Bot {
   }
 
   logToFile(channelId: string, entry: object): void {
-    const dir = join(this.workingDir, channelId);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channelId, entry);
   }
 
   logBotResponse(channelId: string, text: string, ts: string): void {
-    this.logToFile(channelId, {
-      date: new Date().toISOString(),
-      ts,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    appendBotResponseLog(this.workingDir, channelId, text, ts);
   }
 
   /**
@@ -305,24 +326,15 @@ export class DiscordBot implements Bot {
     return queue;
   }
 
-  private resolveStopTarget(
-    channelId: string,
-    sessionKey: string,
-    threadTs?: string,
-  ): string | null {
-    if (this.handler.isRunning(sessionKey)) return sessionKey;
-
-    if (threadTs) {
-      if (this.handler.isRunning(channelId)) return channelId;
-      return null;
-    }
-
-    const runningInConversation = this.handler
-      .getRunningSessions()
-      .map((session) => session.sessionKey)
-      .filter((key) => key === channelId || key.startsWith(`${channelId}:`));
-
-    return runningInConversation.length === 1 ? runningInConversation[0] : null;
+  private resolveStopTarget(channelId: string, sessionKey: string): string | null {
+    return resolveStopTarget({
+      handler: this.handler,
+      conversationId: channelId,
+      sessionKey,
+      // Discord thread/reply keys identify a specific session; only top-level
+      // (sessionKey === channelId) gets the scoped guess.
+      allowScopedFallback: sessionKey === channelId,
+    });
   }
 
   private loadCachedGuildData(): void {
@@ -584,7 +596,7 @@ export class DiscordBot implements Bot {
 
       // Handle stop command
       if (cleanedText.toLowerCase() === "stop" || cleanedText.toLowerCase() === "/stop") {
-        const stopTarget = this.resolveStopTarget(conversationId, sessionKey, threadTs);
+        const stopTarget = this.resolveStopTarget(conversationId, sessionKey);
         if (stopTarget) {
           this.handler.handleStop(stopTarget, conversationId, this);
         } else {

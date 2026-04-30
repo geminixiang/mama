@@ -1,6 +1,6 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type {
@@ -18,7 +18,24 @@ import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { PRODUCT_NAME, formatForceStopped, formatNothingRunning } from "../../ui-copy.js";
-import { ChannelQueue, withRetry } from "../shared.js";
+import {
+  appendBotResponseLog,
+  appendChannelLog,
+  ChannelQueue,
+  resolveStopTarget,
+  withRetry,
+} from "../shared.js";
+
+// Slack WebClient errors carry either `code: "rate_limited"` (retry-after) or
+// the legacy `data.error === "rate_limited"` / 429 status shape.
+function slackIsRateLimited(err: Error): boolean {
+  if ((err as { code?: unknown }).code === "rate_limited") return true;
+  const data = (err as { data?: { error?: string; response?: { status?: number } } }).data;
+  return data?.error === "rate_limited" || data?.response?.status === 429;
+}
+
+const slackRetry = <T>(fn: () => Promise<T>): Promise<T> =>
+  withRetry(fn, { isRateLimited: slackIsRateLimited });
 import { createSlackAdapters } from "./context.js";
 import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
 import { resolveSlackSessionKey } from "./session.js";
@@ -160,20 +177,20 @@ export class SlackBot implements Bot {
   }
 
   async postMessage(channel: string, text: string): Promise<string> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       const result = await this.webClient.chat.postMessage({ channel, text });
       return result.ts as string;
     });
   }
 
   async postEphemeral(channel: string, user: string, text: string): Promise<void> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       await this.webClient.chat.postEphemeral({ channel, user, text });
     });
   }
 
   async openDirectMessage(userId: string): Promise<string> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       const result = await this.webClient.conversations.open({ users: userId });
       const channelId = result.channel?.id;
       if (!channelId) {
@@ -184,13 +201,13 @@ export class SlackBot implements Bot {
   }
 
   async updateMessage(channel: string, ts: string, text: string): Promise<void> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       await this.webClient.chat.update({ channel, ts, text });
     });
   }
 
   async deleteMessage(channel: string, ts: string): Promise<void> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       await this.webClient.chat.delete({ channel, ts });
     });
   }
@@ -201,7 +218,7 @@ export class SlackBot implements Bot {
 
   /** Set the status for an assistant thread (shows "thinking" state) */
   async setAssistantStatus(channel: string, threadTs: string, status: string): Promise<void> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       await this.webClient.assistant.threads.setStatus({
         channel_id: channel,
         thread_ts: threadTs,
@@ -211,7 +228,7 @@ export class SlackBot implements Bot {
   }
 
   async postInThread(channel: string, threadTs: string, text: string): Promise<string> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       // Use Block Kit section for long messages to trigger Slack's "Show more" collapsing (~700 chars)
       const SECTION_TEXT_LIMIT = 3000;
       if (text.length > 500) {
@@ -238,7 +255,7 @@ export class SlackBot implements Bot {
     text: string,
     blocks: object[],
   ): Promise<string> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       const result = await this.webClient.chat.postMessage({
         channel,
         thread_ts: threadTs,
@@ -255,7 +272,7 @@ export class SlackBot implements Bot {
     title?: string,
     threadTs?: string,
   ): Promise<void> {
-    return withRetry(async () => {
+    return slackRetry(async () => {
       const fileName = title || basename(filePath);
       const fileContent = readFileSync(filePath);
       await this.webClient.files.uploadV2({
@@ -268,29 +285,12 @@ export class SlackBot implements Bot {
     });
   }
 
-  /**
-   * Log a message to log.jsonl (SYNC)
-   * This is the ONLY place messages are written to log.jsonl
-   */
   logToFile(channel: string, entry: object): void {
-    const dir = join(this.workingDir, channel);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+    appendChannelLog(this.workingDir, channel, entry);
   }
 
-  /**
-   * Log a bot response to log.jsonl
-   */
   logBotResponse(channel: string, text: string, ts: string, threadTs?: string): void {
-    this.logToFile(channel, {
-      date: new Date().toISOString(),
-      ts,
-      threadTs,
-      user: "bot",
-      text,
-      attachments: [],
-      isBot: true,
-    });
+    appendBotResponseLog(this.workingDir, channel, text, ts, threadTs);
   }
 
   getPlatformInfo(): PlatformInfo {
@@ -529,32 +529,14 @@ export class SlackBot implements Bot {
     return { type: "home", blocks };
   }
 
-  /**
-   * Resolve which session key to stop.
-   * When stop is called from a thread, the thread session (channelId:thread_ts) might
-   * not be running — but the channel session (channelId) might be, because the bot's
-   * reply to a top-level mention creates a thread. Check both, prefer thread first.
-   *
-   * For top-level stop requests, fall back to the only running scoped thread session in
-   * this conversation when there is exactly one candidate. This keeps DM/channel stop
-   * useful after thread sessions were introduced without guessing between multiple threads.
-   */
   private resolveStopTarget(channelId: string, threadTs?: string): string | null {
-    if (threadTs) {
-      const threadKey = resolveSlackSessionKey(channelId, threadTs);
-      if (this.handler.isRunning(threadKey)) return threadKey;
-      if (this.handler.isRunning(channelId)) return channelId;
-      return null;
-    }
-
-    if (this.handler.isRunning(channelId)) return channelId;
-
-    const runningInConversation = this.handler
-      .getRunningSessions()
-      .map((session) => session.sessionKey)
-      .filter((sessionKey) => sessionKey.startsWith(`${channelId}:`));
-
-    return runningInConversation.length === 1 ? runningInConversation[0] : null;
+    return resolveStopTarget({
+      handler: this.handler,
+      conversationId: channelId,
+      sessionKey: threadTs ? resolveSlackSessionKey(channelId, threadTs) : undefined,
+      // Slack thread keys are stable; only top-level requests get the scoped guess.
+      allowScopedFallback: !threadTs,
+    });
   }
 
   private createCommandAdapters(

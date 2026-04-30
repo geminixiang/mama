@@ -7,6 +7,9 @@
  * markup wrappers — so it lives here once.
  */
 
+import { appendFileSync, existsSync, mkdirSync } from "fs";
+import { join } from "path";
+import type { BotHandler } from "../adapter.js";
 import * as log from "../log.js";
 
 // ============================================================================
@@ -49,31 +52,30 @@ export class ChannelQueue {
 // Exponential backoff retry utility
 // ============================================================================
 
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelayMs: number = 1000,
-): Promise<T> {
+export interface RetryOptions {
+  /** Predicate that returns true when an error indicates a platform-side rate limit. */
+  isRateLimited: (err: Error) => boolean;
+  maxRetries?: number;
+  baseDelayMs?: number;
+}
+
+/**
+ * Run `fn` and retry with exponential backoff when its error matches
+ * `isRateLimited`. Other errors propagate immediately. Each platform supplies
+ * its own predicate so we don't have to know every SDK's error shape here.
+ */
+export async function withRetry<T>(fn: () => Promise<T>, opts: RetryOptions): Promise<T> {
+  const maxRetries = opts.maxRetries ?? 3;
+  const baseDelayMs = opts.baseDelayMs ?? 1000;
   let lastError: Error | undefined;
+
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
 
-      let isRateLimited = false;
-      if ("code" in lastError && lastError.code === "rate_limited") {
-        isRateLimited = true;
-      }
-      if ("data" in lastError) {
-        const data = (lastError as { data?: { error?: string; response?: { status?: number } } })
-          .data;
-        if (data?.error === "rate_limited" || data?.response?.status === 429) {
-          isRateLimited = true;
-        }
-      }
-
-      if (isRateLimited) {
+      if (opts.isRateLimited(lastError)) {
         const delay = baseDelayMs * Math.pow(2, attempt);
         log.logWarning(
           `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
@@ -114,6 +116,86 @@ export function splitText(
     partNum++;
   }
   return parts;
+}
+
+// ============================================================================
+// Per-conversation log.jsonl appender
+// ============================================================================
+
+/**
+ * Append a JSON-serializable entry to `${workingDir}/${channel}/log.jsonl`,
+ * creating the directory on first use. This is the single write path every
+ * adapter uses for human-readable message history.
+ */
+export function appendChannelLog(workingDir: string, channel: string, entry: object): void {
+  const dir = join(workingDir, channel);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  appendFileSync(join(dir, "log.jsonl"), `${JSON.stringify(entry)}\n`);
+}
+
+/** Convenience for appending the bot's own outbound message. */
+export function appendBotResponseLog(
+  workingDir: string,
+  channel: string,
+  text: string,
+  ts: string,
+  threadTs?: string,
+): void {
+  appendChannelLog(workingDir, channel, {
+    date: new Date().toISOString(),
+    ts,
+    ...(threadTs ? { threadTs } : {}),
+    user: "bot",
+    text,
+    attachments: [],
+    isBot: true,
+  });
+}
+
+// ============================================================================
+// Stop-target resolution
+// ============================================================================
+
+export interface ResolveStopTargetInput {
+  handler: BotHandler;
+  conversationId: string;
+  /** Session key derived from the current message; checked first when present. */
+  sessionKey?: string;
+  /**
+   * When neither sessionKey nor conversationId is running, scan for the only
+   * running scoped session under this conversation as a fallback.
+   *
+   * Callers decide explicitly: Slack/Discord pass `false` from a threaded
+   * context (their thread sessionKeys are stable identifiers — if it doesn't
+   * match, the user meant that specific thread, not a sibling). Telegram
+   * passes `true` because group chats use per-message sessionKeys that don't
+   * actually identify a "thread", so the fallback is the only way `/stop`
+   * works there.
+   */
+  allowScopedFallback: boolean;
+}
+
+/**
+ * Pick which session key a `/stop` should target. Order:
+ *   1. The provided sessionKey, if running.
+ *   2. The bare conversationId, if running.
+ *   3. The single running scoped session under this conversation, if
+ *      `allowScopedFallback` and exactly one exists. Ambiguous → null.
+ */
+export function resolveStopTarget(input: ResolveStopTargetInput): string | null {
+  const { handler, conversationId, sessionKey, allowScopedFallback } = input;
+
+  if (sessionKey && handler.isRunning(sessionKey)) return sessionKey;
+  if (handler.isRunning(conversationId)) return conversationId;
+
+  if (!allowScopedFallback) return null;
+
+  const runningScopes = handler
+    .getRunningSessions()
+    .map((s) => s.sessionKey)
+    .filter((k) => k.startsWith(`${conversationId}:`));
+
+  return runningScopes.length === 1 ? runningScopes[0] : null;
 }
 
 /**

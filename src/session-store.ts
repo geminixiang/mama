@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "fs";
 import { join } from "path";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class ThreadRootNotFoundError extends Error {
   constructor(sessionFile: string) {
@@ -90,6 +91,9 @@ export function extractSessionSuffix(sessionKey: string): string {
 /**
  * Creates an empty timestamped file and updates the "current" pointer.
  * Used only by tests for placeholder-file scenarios.
+ *
+ * Order matters: write the session file first, then atomic-rename the pointer
+ * last so a crash mid-create never leaves "current" pointing at a missing file.
  */
 export function createNewSessionFile(sessionDir: string): string {
   mkdirSync(sessionDir, { recursive: true });
@@ -97,14 +101,15 @@ export function createNewSessionFile(sessionDir: string): string {
   const uuid = randomUUID().slice(0, 8);
   const filename = `${timestamp}_${uuid}.jsonl`;
   const filePath = join(sessionDir, filename);
-  writeFileSync(join(sessionDir, "current"), filename, "utf-8");
-  writeFileSync(filePath, "", "utf-8");
+  atomicWritePrivateFile(filePath, "");
+  atomicWritePrivateFile(join(sessionDir, "current"), filename);
   return filePath;
 }
 
 /**
  * Creates a new persistent session file with a proper SessionManager header and cwd.
- * Also updates the "current" pointer.
+ * Also updates the "current" pointer. Header is written before the pointer flips so a
+ * partial create cannot leave "current" pointing at a missing file.
  */
 export function createManagedSessionFile(sessionDir: string, cwd: string): string {
   mkdirSync(sessionDir, { recursive: true });
@@ -138,7 +143,7 @@ export function openManagedSession(
 function setCurrentPointer(sessionDir: string, sessionFilePath: string): void {
   const filename = sessionFilePath.split("/").pop()!;
   mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(join(sessionDir, "current"), filename, "utf-8");
+  atomicWritePrivateFile(join(sessionDir, "current"), filename);
 }
 
 /**
@@ -159,7 +164,7 @@ function writeSessionHeader(sessionFile: string, cwd: string, sessionId = random
     timestamp: new Date().toISOString(),
     cwd,
   };
-  writeFileSync(sessionFile, `${JSON.stringify(header)}\n`, "utf-8");
+  atomicWritePrivateFile(sessionFile, `${JSON.stringify(header)}\n`);
 }
 
 /**
@@ -387,7 +392,7 @@ export function createThreadSessionFileFromRootMessage(
   };
   const rootText = buildComparableRootMessageText(rootMessage);
   if (!rootText) {
-    writeFileSync(targetSessionFile, `${JSON.stringify(header)}\n`, "utf-8");
+    atomicWritePrivateFile(targetSessionFile, `${JSON.stringify(header)}\n`);
     return targetSessionFile;
   }
 
@@ -403,7 +408,7 @@ export function createThreadSessionFileFromRootMessage(
     },
   };
   const content = [header, rootEntry].map((entry) => JSON.stringify(entry)).join("\n");
-  writeFileSync(targetSessionFile, `${content}\n`, "utf-8");
+  atomicWritePrivateFile(targetSessionFile, `${content}\n`);
   return targetSessionFile;
 }
 
@@ -431,6 +436,6 @@ export function forkThreadSessionFileFromRootMessage(
     parentSession: sourceSessionFile,
   };
   const content = [header, ...snapshotEntries].map((entry) => JSON.stringify(entry)).join("\n");
-  writeFileSync(targetSessionFile, `${content}\n`, "utf-8");
+  atomicWritePrivateFile(targetSessionFile, `${content}\n`);
   return targetSessionFile;
 }

@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export interface AgentConfig {
   provider: string;
@@ -175,5 +176,5 @@ export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfi
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(settingsPath, JSON.stringify(merged, null, 2), "utf-8");
+  atomicWritePrivateFile(settingsPath, JSON.stringify(merged, null, 2));
 }
