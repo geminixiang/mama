@@ -5,6 +5,7 @@ import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
+import { ChannelQueue } from "../shared.js";
 import { createTelegramAdapters } from "./context.js";
 import { escapeTelegramHtml } from "./html.js";
 
@@ -28,39 +29,6 @@ interface MessageContext {
   msgId: string;
   threadTs: string | undefined;
   sessionKey: string;
-}
-
-// ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Telegram queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
 }
 
 // ============================================================================
@@ -341,7 +309,7 @@ export class TelegramBot implements Bot {
   private getQueue(channelId: string): ChannelQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new ChannelQueue("Telegram");
       this.queues.set(channelId, queue);
     }
     return queue;

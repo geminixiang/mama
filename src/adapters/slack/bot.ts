@@ -18,61 +18,10 @@ import type { EventsWatcher } from "../../events.js";
 import * as log from "../../log.js";
 import type { Attachment, ChannelStore } from "../../store.js";
 import { PRODUCT_NAME, formatForceStopped, formatNothingRunning } from "../../ui-copy.js";
+import { ChannelQueue, withRetry } from "../shared.js";
 import { createSlackAdapters } from "./context.js";
 import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
 import { resolveSlackSessionKey } from "./session.js";
-
-// ============================================================================
-// Exponential backoff utility for Slack API calls
-// ============================================================================
-
-/**
- * Retry a function with exponential backoff on rate limit errors.
- */
-async function withRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries: number = 3,
-  baseDelayMs: number = 1000,
-): Promise<T> {
-  let lastError: Error | undefined;
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-
-      // Check for rate limit errors
-      let isRateLimited = false;
-
-      // Check for rate_limited error code (Slack SDK)
-      if ("code" in lastError && lastError.code === "rate_limited") {
-        isRateLimited = true;
-      }
-
-      // Check for rate_limited in error response
-      if ("data" in lastError) {
-        const data = (lastError as { data?: { error?: string; response?: { status?: number } } })
-          .data;
-        if (data?.error === "rate_limited" || data?.response?.status === 429) {
-          isRateLimited = true;
-        }
-      }
-
-      if (isRateLimited) {
-        const delay = baseDelayMs * Math.pow(2, attempt);
-        log.logWarning(
-          `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
-        );
-        await new Promise((resolve) => setTimeout(resolve, delay));
-        continue;
-      }
-
-      // Non-retryable error
-      throw lastError;
-    }
-  }
-  throw lastError;
-}
 
 // ============================================================================
 // Types
@@ -137,39 +86,6 @@ export interface SlackContext {
   uploadFile: (filePath: string, title?: string) => Promise<void>;
   setWorking: (working: boolean) => Promise<void>;
   deleteMessage: () => Promise<void>;
-}
-
-// ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
 }
 
 // ============================================================================
@@ -441,7 +357,7 @@ export class SlackBot implements Bot {
   private getQueue(channelId: string): ChannelQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new ChannelQueue("Slack");
       this.queues.set(channelId, queue);
     }
     return queue;
@@ -641,64 +557,13 @@ export class SlackBot implements Bot {
     return runningInConversation.length === 1 ? runningInConversation[0] : null;
   }
 
-  private createDirectCommandAdapters(
+  private createCommandAdapters(
     conversationId: string,
     userId: string,
     userName: string | undefined,
     text: string,
     ts: string,
-  ): BotAdapters {
-    const message: ChatMessage = {
-      id: ts,
-      sessionKey: conversationId,
-      conversationKind: "direct",
-      userId,
-      userName,
-      text,
-      attachments: [],
-    };
-
-    const responseCtx: ChatResponseContext = {
-      respond: async (responseText: string) => {
-        const messageTs = await this.postMessage(conversationId, responseText);
-        this.logBotResponse(conversationId, responseText, messageTs);
-      },
-      replaceResponse: async (responseText: string) => {
-        const messageTs = await this.postMessage(conversationId, responseText);
-        this.logBotResponse(conversationId, responseText, messageTs);
-      },
-      respondDiagnostic: async (responseText: string) => {
-        const messageTs = await this.postMessage(conversationId, responseText);
-        this.logBotResponse(conversationId, responseText, messageTs);
-      },
-      respondToolResult: async (result: ChatToolResult) => {
-        const duration = (result.durationMs / 1000).toFixed(1);
-        const text = `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`;
-        const messageTs = await this.postMessage(conversationId, text);
-        this.logBotResponse(conversationId, text, messageTs);
-      },
-      setTyping: async () => {},
-      setWorking: async () => {},
-      uploadFile: async (filePath: string, title?: string) => {
-        await this.uploadFile(conversationId, filePath, title);
-      },
-      deleteResponse: async () => {},
-    };
-
-    return {
-      message,
-      responseCtx,
-      platform: this.getPlatformInfo(),
-    };
-  }
-
-  private createPrivateSessionCommandAdapters(
-    conversationId: string,
-    userId: string,
-    userName: string | undefined,
-    text: string,
-    ts: string,
-    options: { ephemeralChannelId?: string },
+    options: { ephemeralChannelId?: string } = {},
   ): BotAdapters {
     const message: ChatMessage = {
       id: ts,
@@ -710,36 +575,24 @@ export class SlackBot implements Bot {
       attachments: [],
     };
 
-    let hasResponded = false;
-
-    const respondPrivately = async (responseText: string) => {
+    const respond = async (responseText: string) => {
       if (options.ephemeralChannelId) {
         await this.postEphemeral(options.ephemeralChannelId, userId, responseText);
         return;
       }
-
       const messageTs = await this.postMessage(conversationId, responseText);
       this.logBotResponse(conversationId, responseText, messageTs);
     };
 
     const responseCtx: ChatResponseContext = {
-      respond: async (responseText: string) => {
-        hasResponded = true;
-        await respondPrivately(responseText);
-      },
-      replaceResponse: async (responseText: string) => {
-        if (!hasResponded) {
-          hasResponded = true;
-        }
-        await respondPrivately(responseText);
-      },
-      respondDiagnostic: async (responseText: string) => {
-        await respondPrivately(responseText);
-      },
+      respond,
+      replaceResponse: respond,
+      respondDiagnostic: respond,
       respondToolResult: async (result: ChatToolResult) => {
         const duration = (result.durationMs / 1000).toFixed(1);
-        const formatted = `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`;
-        await respondPrivately(formatted);
+        await respond(
+          `${result.isError ? "Error" : "Done"} ${result.toolName} (${duration}s)\n${result.result}`,
+        );
       },
       setTyping: async () => {},
       setWorking: async () => {},
@@ -820,7 +673,7 @@ export class SlackBot implements Bot {
       sessionKey: targetChannelId,
     };
 
-    const adapters = this.createDirectCommandAdapters(
+    const adapters = this.createCommandAdapters(
       targetChannelId,
       payload.user_id,
       userName,
@@ -900,7 +753,7 @@ export class SlackBot implements Bot {
       sessionKey,
     };
 
-    const adapters = this.createPrivateSessionCommandAdapters(
+    const adapters = this.createCommandAdapters(
       conversationId,
       payload.user_id,
       userName,

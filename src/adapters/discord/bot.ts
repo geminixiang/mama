@@ -28,6 +28,7 @@ import type {
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
 import { formatNothingRunning } from "../../ui-copy.js";
+import { ChannelQueue } from "../shared.js";
 import { createDiscordAdapters } from "./context.js";
 
 // ============================================================================
@@ -37,39 +38,6 @@ import { createDiscordAdapters } from "./context.js";
 export interface DiscordEvent extends BotEvent {
   type: "mention" | "dm";
   userName?: string;
-}
-
-// ============================================================================
-// Per-channel queue for sequential processing
-// ============================================================================
-
-type QueuedWork = () => Promise<void>;
-
-class ChannelQueue {
-  private queue: QueuedWork[] = [];
-  private processing = false;
-
-  enqueue(work: QueuedWork): void {
-    this.queue.push(work);
-    this.processNext();
-  }
-
-  size(): number {
-    return this.queue.length;
-  }
-
-  private async processNext(): Promise<void> {
-    if (this.processing || this.queue.length === 0) return;
-    this.processing = true;
-    const work = this.queue.shift()!;
-    try {
-      await work();
-    } catch (err) {
-      log.logWarning("Discord queue error", err instanceof Error ? err.message : String(err));
-    }
-    this.processing = false;
-    this.processNext();
-  }
 }
 
 // ============================================================================
@@ -331,7 +299,7 @@ export class DiscordBot implements Bot {
   private getQueue(channelId: string): ChannelQueue {
     let queue = this.queues.get(channelId);
     if (!queue) {
-      queue = new ChannelQueue();
+      queue = new ChannelQueue("Discord");
       this.queues.set(channelId, queue);
     }
     return queue;
