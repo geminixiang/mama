@@ -447,6 +447,8 @@ export async function createRunner(
       sandboxConfig.type === "image")
       ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
       : undefined;
+  // activeExecutor is replaced at the start of each run() call when executionResolver
+  // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
   let activeExecutor: Executor =
     executionResolver !== undefined
       ? createExecutor({ type: "host" })

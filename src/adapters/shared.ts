@@ -7,6 +7,87 @@
  * markup wrappers — so it lives here once.
  */
 
+import * as log from "../log.js";
+
+// ============================================================================
+// Per-channel queue for sequential processing
+// ============================================================================
+
+export class ChannelQueue {
+  private queue: Array<() => Promise<void>> = [];
+  private processing = false;
+
+  constructor(private readonly name: string = "") {}
+
+  enqueue(work: () => Promise<void>): void {
+    this.queue.push(work);
+    this.processNext();
+  }
+
+  size(): number {
+    return this.queue.length;
+  }
+
+  private async processNext(): Promise<void> {
+    if (this.processing || this.queue.length === 0) return;
+    this.processing = true;
+    const work = this.queue.shift()!;
+    try {
+      await work();
+    } catch (err) {
+      log.logWarning(
+        `${this.name ? this.name + " " : ""}queue error`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    this.processing = false;
+    this.processNext();
+  }
+}
+
+// ============================================================================
+// Exponential backoff retry utility
+// ============================================================================
+
+export async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 1000,
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+
+      let isRateLimited = false;
+      if ("code" in lastError && lastError.code === "rate_limited") {
+        isRateLimited = true;
+      }
+      if ("data" in lastError) {
+        const data = (lastError as { data?: { error?: string; response?: { status?: number } } })
+          .data;
+        if (data?.error === "rate_limited" || data?.response?.status === 429) {
+          isRateLimited = true;
+        }
+      }
+
+      if (isRateLimited) {
+        const delay = baseDelayMs * Math.pow(2, attempt);
+        log.logWarning(
+          `Rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        continue;
+      }
+
+      throw lastError;
+    }
+  }
+  throw lastError;
+}
+
 /**
  * Split `text` into chunks no larger than `limit`, appending a continuation
  * marker (e.g. `_(continued 1)_`) at the end of every part except the last.

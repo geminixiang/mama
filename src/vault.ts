@@ -274,12 +274,10 @@ export class FileVaultManager implements VaultManager {
   }
 
   addEntry(key: string, entry: VaultEntry): void {
-    if (!this.config) {
-      this.config = { vaults: {} };
-    }
+    const cfg = (this.config ??= { vaults: {} });
     // Idempotent: skip if already exists
-    if (this.config.vaults[key]) return;
-    this.config.vaults[key] = entry;
+    if (cfg.vaults[key]) return;
+    cfg.vaults[key] = entry;
     this.persistConfig();
   }
 
@@ -288,13 +286,10 @@ export class FileVaultManager implements VaultManager {
       throw new Error(`vault: ensureImageSandboxEntry requires sandbox.type=image for "${key}"`);
     }
 
-    if (!this.config) {
-      this.config = { vaults: {} };
-    }
-
-    const existing = this.config.vaults[key];
+    const cfg = (this.config ??= { vaults: {} });
+    const existing = cfg.vaults[key];
     if (!existing) {
-      this.config.vaults[key] = entry;
+      cfg.vaults[key] = entry;
       this.persistConfig();
       return;
     }
@@ -323,11 +318,9 @@ export class FileVaultManager implements VaultManager {
       changed = true;
     }
 
-    if (!changed) {
-      return;
-    }
+    if (!changed) return;
 
-    this.config.vaults[key] = nextEntry;
+    cfg.vaults[key] = nextEntry;
     this.persistConfig();
   }
 

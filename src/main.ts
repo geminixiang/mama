@@ -276,13 +276,9 @@ const sessionViewTokenStore = new InMemorySessionViewTokenStore();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
 setInterval(() => sessionViewTokenStore.purge(), 5 * 60 * 1000).unref();
 
-function normalizePortalBaseUrl(): string | undefined {
-  if (MOM_LINK_URL) {
-    return MOM_LINK_URL.replace(/\/+$/, "");
-  }
-  if (MOM_LINK_PORT) {
-    return `http://localhost:${MOM_LINK_PORT}`;
-  }
+function portalBaseUrl(): string | undefined {
+  if (MOM_LINK_URL) return MOM_LINK_URL.replace(/\/+$/, "");
+  if (MOM_LINK_PORT) return `http://localhost:${MOM_LINK_PORT}`;
   return undefined;
 }
 
@@ -335,7 +331,7 @@ async function handleLoginCommand(
     return true;
   }
 
-  const baseUrl = normalizePortalBaseUrl();
+  const baseUrl = portalBaseUrl();
   if (!baseUrl) {
     await replyWithContext(
       responseCtx,
@@ -413,7 +409,7 @@ async function handleSessionViewCommand(
     return true;
   }
 
-  const baseUrl = normalizePortalBaseUrl();
+  const baseUrl = portalBaseUrl();
   if (!baseUrl) {
     await sendSessionViewReply(
       "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
