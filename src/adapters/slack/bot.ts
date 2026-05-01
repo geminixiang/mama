@@ -371,6 +371,15 @@ export class SlackBot implements Bot {
       : conversationId;
   }
 
+  private shouldTriggerSharedThreadReply(channelId: string, threadTs?: string): boolean {
+    if (!threadTs) return false;
+
+    const sessionKey = resolveSlackSessionKey(channelId, threadTs);
+    if (this.handler.isRunning(sessionKey)) return true;
+
+    return hasMaterializedSlackBranchSession(join(this.workingDir, channelId), sessionKey);
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private buildHomeView(): { type: "home"; blocks: any[] } {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -863,7 +872,8 @@ export class SlackBot implements Bot {
         return;
       }
 
-      const isSharedThreadReply = !isDM && !!e.thread_ts;
+      const isSharedThreadReply =
+        !isDM && this.shouldTriggerSharedThreadReply(e.channel, e.thread_ts);
       const sessionKey =
         isDM || isSharedThreadReply ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
 
