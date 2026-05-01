@@ -161,35 +161,30 @@ export interface ResolveStopTargetInput {
   conversationId: string;
   /** Session key derived from the current message; checked first when present. */
   sessionKey?: string;
-  /**
-   * When neither sessionKey nor conversationId is running, scan for the only
-   * running scoped session under this conversation as a fallback.
-   *
-   * Callers decide explicitly: Slack/Discord pass `false` from a threaded
-   * context (their thread sessionKeys are stable identifiers — if it doesn't
-   * match, the user meant that specific thread, not a sibling). Telegram
-   * passes `true` because group chats use per-message sessionKeys that don't
-   * actually identify a "thread", so the fallback is the only way `/stop`
-   * works there.
-   */
-  allowScopedFallback: boolean;
 }
 
 /**
- * Pick which session key a `/stop` should target. Order:
+ * Pick which session key a `/stop` should target without applying any
+ * platform-specific fallback policy. Order:
  *   1. The provided sessionKey, if running.
  *   2. The bare conversationId, if running.
- *   3. The single running scoped session under this conversation, if
- *      `allowScopedFallback` and exactly one exists. Ambiguous → null.
  */
 export function resolveStopTarget(input: ResolveStopTargetInput): string | null {
-  const { handler, conversationId, sessionKey, allowScopedFallback } = input;
+  const { handler, conversationId, sessionKey } = input;
 
   if (sessionKey && handler.isRunning(sessionKey)) return sessionKey;
   if (handler.isRunning(conversationId)) return conversationId;
+  return null;
+}
 
-  if (!allowScopedFallback) return null;
-
+/**
+ * Return the single running scoped session for this conversation, or null when
+ * there are zero or multiple matches.
+ */
+export function resolveOnlyScopedStopTarget(
+  handler: BotHandler,
+  conversationId: string,
+): string | null {
   const runningScopes = handler
     .getRunningSessions()
     .map((s) => s.sessionKey)

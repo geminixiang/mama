@@ -9,6 +9,7 @@ import {
   appendBotResponseLog,
   appendChannelLog,
   ChannelQueue,
+  resolveOnlyScopedStopTarget,
   resolveStopTarget,
   withRetry,
 } from "../shared.js";
@@ -386,16 +387,13 @@ export class TelegramBot implements Bot {
   }
 
   private resolveStopTarget(mc: MessageContext): string | null {
-    return resolveStopTarget({
+    const directTarget = resolveStopTarget({
       handler: this.handler,
       conversationId: mc.chatId,
       sessionKey: mc.sessionKey,
-      // Telegram group sessionKeys are per-message, not per-thread, so the
-      // scoped fallback is the only way to find the actually-running session.
-      // (In private chats there are no scoped sessions, so the fallback is a
-      // harmless no-op.)
-      allowScopedFallback: true,
     });
+    if (directTarget) return directTarget;
+    return resolveOnlyScopedStopTarget(this.handler, mc.chatId);
   }
 
   private setupEventHandlers(): void {

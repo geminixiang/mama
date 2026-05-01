@@ -32,6 +32,7 @@ import {
   appendBotResponseLog,
   appendChannelLog,
   ChannelQueue,
+  resolveOnlyScopedStopTarget,
   resolveStopTarget,
   withRetry,
 } from "../shared.js";
@@ -327,14 +328,14 @@ export class DiscordBot implements Bot {
   }
 
   private resolveStopTarget(channelId: string, sessionKey: string): string | null {
-    return resolveStopTarget({
+    const directTarget = resolveStopTarget({
       handler: this.handler,
       conversationId: channelId,
       sessionKey,
-      // Discord thread/reply keys identify a specific session; only top-level
-      // (sessionKey === channelId) gets the scoped guess.
-      allowScopedFallback: sessionKey === channelId,
     });
+    if (directTarget) return directTarget;
+    if (sessionKey !== channelId) return null;
+    return resolveOnlyScopedStopTarget(this.handler, channelId);
   }
 
   private loadCachedGuildData(): void {

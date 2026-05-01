@@ -22,6 +22,7 @@ import {
   appendBotResponseLog,
   appendChannelLog,
   ChannelQueue,
+  resolveOnlyScopedStopTarget,
   resolveStopTarget,
   withRetry,
 } from "../shared.js";
@@ -539,13 +540,14 @@ export class SlackBot implements Bot {
   }
 
   private resolveStopTarget(channelId: string, threadTs?: string): string | null {
-    return resolveStopTarget({
+    const directTarget = resolveStopTarget({
       handler: this.handler,
       conversationId: channelId,
       sessionKey: threadTs ? resolveSlackSessionKey(channelId, threadTs) : undefined,
-      // Slack thread keys are stable; only top-level requests get the scoped guess.
-      allowScopedFallback: !threadTs,
     });
+    if (directTarget) return directTarget;
+    if (threadTs) return null;
+    return resolveOnlyScopedStopTarget(this.handler, channelId);
   }
 
   private createCommandAdapters(
