@@ -287,6 +287,9 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
     isError?: boolean;
     command?: string;
     output?: string;
+    exitCode?: number;
+    cancelled?: boolean;
+    truncated?: boolean;
     stopReason?: string;
     customType?: string;
     summary?: string;
@@ -325,7 +328,12 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
     case "bashExecution": {
       const command = String(message.command ?? "").trim();
       const output = String(message.output ?? "").trim();
-      const body = [command ? `$ ${command}` : "", output].filter(Boolean).join("\n\n");
+      const details = [
+        typeof message.exitCode === "number" ? `[exitCode] ${message.exitCode}` : "",
+        message.cancelled ? `[cancelled] true` : "",
+        message.truncated ? `[truncated] true` : "",
+      ].filter(Boolean);
+      const body = [command ? `$ ${command}` : "", output, ...details].filter(Boolean).join("\n\n");
       return {
         kind: "tool",
         title: "Bash execution",
@@ -397,43 +405,31 @@ function assistantContentToText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
 
-  const textBlocks: string[] = [];
-  const thinkingBlocks: string[] = [];
-  const toolCalls: string[] = [];
-  const otherBlocks: string[] = [];
+  const lines: string[] = [];
 
   for (const block of content) {
     if (!block || typeof block !== "object") continue;
     const value = block as Record<string, unknown>;
     if (value.type === "text" && typeof value.text === "string") {
-      textBlocks.push(value.text);
+      lines.push(value.text);
       continue;
     }
     if (value.type === "thinking" && typeof value.thinking === "string") {
-      thinkingBlocks.push(value.thinking);
+      lines.push(`[thinking]\n${value.thinking}`);
       continue;
     }
     if (value.type === "toolCall") {
       const name = typeof value.name === "string" ? value.name : "tool";
       const args = value.arguments === undefined ? "" : JSON.stringify(value.arguments, null, 2);
-      toolCalls.push([name, args].filter(Boolean).join("\n"));
+      lines.push([`[toolCall] ${name}`, args].filter(Boolean).join("\n"));
       continue;
     }
     if (value.type === "image") {
-      otherBlocks.push(`[image ${String(value.mimeType ?? "unknown")}]`);
+      lines.push(`[image ${String(value.mimeType ?? "unknown")}]`);
     }
   }
 
-  const sections = [
-    textBlocks.join("\n\n").trim(),
-    thinkingBlocks.length > 0
-      ? [`[thinking]`, thinkingBlocks.join("\n\n")].filter(Boolean).join("\n")
-      : "",
-    toolCalls.length > 0 ? [`[tool calls]`, toolCalls.join("\n\n")].filter(Boolean).join("\n") : "",
-    otherBlocks.join("\n"),
-  ].filter(Boolean);
-
-  return sections.join("\n\n");
+  return lines.join("\n\n");
 }
 
 function contentToText(content: unknown): string {

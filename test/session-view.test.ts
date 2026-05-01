@@ -120,6 +120,50 @@ describe("loadSessionViewModel", () => {
     expect(model.forks).toEqual([]);
   });
 
+  test("preserves assistant content block order and bash execution status details", () => {
+    const sessionDir = getChannelSessionDir(conversationDir);
+    const sessionFile = createManagedSessionFile(sessionDir, conversationDir);
+    const sessionManager = openManagedSession(sessionFile, sessionDir, conversationDir);
+
+    sessionManager.appendMessage({
+      role: "assistant",
+      content: [
+        { type: "text", text: "before" },
+        { type: "toolCall", name: "search", arguments: { q: "raw" } },
+        { type: "text", text: "after" },
+      ],
+      api: "openai-responses",
+      provider: "openai",
+      model: "gpt-test",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: nextTimestamp++,
+    } as any);
+    sessionManager.appendMessage({
+      role: "bashExecution",
+      command: "npm test",
+      output: "1 failed",
+      exitCode: 1,
+      cancelled: true,
+      truncated: true,
+      timestamp: nextTimestamp++,
+    } as any);
+
+    const model = loadSessionViewModel(sessionFile);
+
+    expect(model.items[0]?.body).toBe('before\n\n[toolCall] search\n{\n  "q": "raw"\n}\n\nafter');
+    expect(model.items[1]?.body).toContain("[exitCode] 1");
+    expect(model.items[1]?.body).toContain("[cancelled] true");
+    expect(model.items[1]?.body).toContain("[truncated] true");
+  });
+
   test("keeps channel and thread sessions on separate pages while linking them", () => {
     const sessionDir = getChannelSessionDir(conversationDir);
     const channelFile = createManagedSessionFile(sessionDir, conversationDir);
@@ -153,24 +197,30 @@ describe("parseUserBody", () => {
         "[2026-04-29 00:11:10+08:00] [geminixiang] [in-thread:1777386320.800769]: hello from thread",
       ),
     ).toEqual({
+      timestamp: "2026-04-29 00:11:10+08:00",
       username: "geminixiang",
       threadTs: "1777386320.800769",
+      header: "[2026-04-29 00:11:10+08:00] [geminixiang] [in-thread:1777386320.800769]",
       content: "hello from thread",
     });
   });
 
   test("parses thread markers from non-timestamped user messages", () => {
     expect(parseUserBody("[alice] [in-thread:M1]: discord thread reply")).toEqual({
+      timestamp: null,
       username: "alice",
       threadTs: "M1",
+      header: "[alice] [in-thread:M1]",
       content: "discord thread reply",
     });
   });
 
   test("returns null threadTs for top-level user messages", () => {
     expect(parseUserBody("[alice]: top level")).toEqual({
+      timestamp: null,
       username: "alice",
       threadTs: null,
+      header: "[alice]",
       content: "top level",
     });
   });

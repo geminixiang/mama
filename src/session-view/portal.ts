@@ -154,24 +154,44 @@ function renderForkLinks(relations: SessionViewRelation[] | undefined, token: st
 }
 
 export function parseUserBody(raw: string): {
+  timestamp: string | null;
   username: string | null;
   threadTs: string | null;
+  header: string | null;
   content: string;
 } {
   // [timestamp] [username] [in-thread:ts]: content
   let m = raw.match(
-    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s*\[([^\]]+)\](?:\s*\[in-thread:([^\]]+)\])?:\s*([\s\S]*)$/,
+    /^\[([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2})\]\s*\[([^\]]+)\](?:\s*\[in-thread:([^\]]+)\])?:\s*([\s\S]*)$/,
   );
   if (m) {
-    return { username: m[1], threadTs: m[2] ?? null, content: m[3] };
+    const header = [`[${m[1]}]`, `[${m[2]}]`, m[3] ? `[in-thread:${m[3]}]` : ""]
+      .filter(Boolean)
+      .join(" ");
+    return {
+      timestamp: m[1],
+      username: m[2],
+      threadTs: m[3] ?? null,
+      header,
+      content: m[4],
+    };
   }
   // [username] [in-thread:ts]: content
   m = raw.match(/^\[([^\]]+)\](?:\s*\[in-thread:([^\]]+)\])?:\s*([\s\S]*)$/);
   if (m) {
-    return { username: m[1], threadTs: m[2] ?? null, content: m[3] };
+    const header = [`[${m[1]}]`, m[2] ? `[in-thread:${m[2]}]` : ""].filter(Boolean).join(" ");
+    return {
+      timestamp: null,
+      username: m[1],
+      threadTs: m[2] ?? null,
+      header,
+      content: m[3],
+    };
   }
-  return { username: null, threadTs: null, content: raw };
+  return { timestamp: null, username: null, threadTs: null, header: null, content: raw };
 }
+
+type ParsedUserBody = ReturnType<typeof parseUserBody>;
 
 function renderItem(item: SessionViewItem, token?: string): string {
   if (item.kind === "system") {
@@ -199,10 +219,12 @@ function renderItem(item: SessionViewItem, token?: string): string {
   const time = item.meta ? `<time class="msg-time">${esc(formatDate(item.meta))}</time>` : "";
 
   if (item.kind === "user") {
-    const { username, threadTs, content } = item.body
+    const parsed: ParsedUserBody = item.body
       ? parseUserBody(item.body)
-      : { username: null, threadTs: null, content: "" };
+      : { timestamp: null, username: null, threadTs: null, header: null, content: "" };
+    const { username, threadTs, header, content } = parsed;
     const initial = username ? esc(username.slice(0, 2).toUpperCase()) : "U";
+    const rawHeader = header ? `<div class="msg-raw-header">${esc(header)}</div>` : "";
     const body = content ? `<pre class="msg-body">${esc(content)}</pre>` : "";
     const threadBadge = threadTs
       ? `<div class="thread-badge" title="Thread ${esc(threadTs)}">Thread · <code>${esc(threadTs)}</code></div>`
@@ -210,6 +232,7 @@ function renderItem(item: SessionViewItem, token?: string): string {
     const forks = renderForkLinks(item.forks, token ?? "");
     return `<div class="msg-row msg-user">
   <div class="user-bubble">
+    ${rawHeader}
     ${threadBadge}
     ${body}
     ${forks}
@@ -570,6 +593,16 @@ const styles = `
     background: var(--user-bg);
     color: var(--user-text);
     box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  }
+
+  .msg-raw-header {
+    margin-bottom: 8px;
+    color: rgba(250, 250, 250, 0.72);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
   }
 
   .thread-badge {
