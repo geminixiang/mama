@@ -1,6 +1,6 @@
 {
   "name": "@geminixiang/mama",
-  "version": "0.2.0-beta.3",
+  "version": "0.2.0-beta.4",
   "description": "Multi-Agent Mischief Assistant for Slack, Telegram, and Discord",
   "keywords": [
     "agent",
@@ -41,10 +41,10 @@
   "dependencies": {
     "@anthropic-ai/sandbox-runtime": "^0.0.49",
     "@google-cloud/logging": "^11.2.1",
-    "@mariozechner/pi-agent-core": "^0.69.0",
-    "@mariozechner/pi-ai": "^0.69.0",
-    "@mariozechner/pi-coding-agent": "^0.69.0",
-    "@sentry/node": "^10.47.0",
+    "@mariozechner/pi-agent-core": "^0.71.1",
+    "@mariozechner/pi-ai": "^0.71.1",
+    "@mariozechner/pi-coding-agent": "^0.71.1",
+    "@sentry/node": "^10.51.0",
     "@sinclair/typebox": "^0.34.49",
     "@slack/socket-mode": "^2.0.6",
     "@slack/web-api": "^7.15.0",
@@ -53,8 +53,7 @@
     "diff": "^8.0.4",
     "discord.js": "^14.26.2",
     "grammy": "^1.42.0",
-    "pino": "^10.3.1",
-    "playwright": "^1.59.1"
+    "pino": "^10.3.1"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
