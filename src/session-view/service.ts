@@ -189,14 +189,74 @@ function findForkAnchorEntryId(
     sharedCount += 1;
   }
 
-  for (let i = sharedCount - 1; i >= 0; i--) {
-    const entry = parentEntries[i];
-    if (entry?.type === "message" && entry.message.role === "user") {
-      return entry.id;
-    }
+  if (sharedCount > 0) {
+    return parentEntries[sharedCount - 1]?.id;
   }
 
-  return sharedCount > 0 ? parentEntries[sharedCount - 1]?.id : undefined;
+  const childRoot = findComparableUserMessage(childEntries);
+  if (!childRoot) return undefined;
+
+  return findParentAnchorByRootMessage(parentEntries, childRoot);
+}
+
+function findParentAnchorByRootMessage(
+  parentEntries: SessionEntry[],
+  childRoot: ComparableUserMessage,
+): string | undefined {
+  let textMatchId: string | undefined;
+
+  for (const entry of parentEntries) {
+    const comparable = getComparableUserMessage(entry);
+    if (!comparable) continue;
+    if (comparable.normalizedText !== childRoot.normalizedText) continue;
+    if (
+      childRoot.messageTimestamp !== undefined &&
+      comparable.messageTimestamp !== undefined &&
+      comparable.messageTimestamp === childRoot.messageTimestamp
+    ) {
+      return entry.id;
+    }
+    textMatchId ??= entry.id;
+  }
+
+  return textMatchId;
+}
+
+interface ComparableUserMessage {
+  normalizedText: string;
+  messageTimestamp?: number;
+}
+
+function findComparableUserMessage(entries: SessionEntry[]): ComparableUserMessage | null {
+  for (const entry of entries) {
+    const comparable = getComparableUserMessage(entry);
+    if (comparable) return comparable;
+  }
+  return null;
+}
+
+function getComparableUserMessage(entry: SessionEntry): ComparableUserMessage | null {
+  if (entry.type !== "message" || entry.message.role !== "user") return null;
+
+  const body = contentToText(entry.message.content);
+  const normalizedText = normalizeComparableUserText(body);
+  if (!normalizedText) return null;
+
+  const messageTimestamp =
+    typeof entry.message.timestamp === "number" ? entry.message.timestamp : undefined;
+  return { normalizedText, messageTimestamp };
+}
+
+function normalizeComparableUserText(text: string): string {
+  const withoutTimestamp = text.replace(
+    /^\[[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}[+-][0-9]{2}:[0-9]{2}\]\s+(?=\[[^\]]+\](?:\s+\[in-thread:[^\]]+\])?:\s)/,
+    "",
+  );
+  return stripSlackAttachmentBlock(withoutTimestamp).trim();
+}
+
+function stripSlackAttachmentBlock(text: string): string {
+  return text.replace(/\n*<slack_attachments>\n[\s\S]*?\n<\/slack_attachments>\s*$/g, "");
 }
 
 function extractSessionSummary(entries: SessionEntry[]): string | undefined {

@@ -4,9 +4,11 @@ import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { AssistantMessage, UserMessage } from "@mariozechner/pi-ai";
 import {
+  createThreadSessionFileFromRootMessage,
   createManagedSessionFile,
   createManagedSessionFileAtPath,
   forkThreadSessionFile,
+  forkThreadSessionFileFromRootMessage,
   getChannelSessionDir,
   getThreadSessionFile,
   openManagedSession,
@@ -181,12 +183,65 @@ describe("loadSessionViewModel", () => {
     expect(channelModel.items.some((item) => item.body?.includes("thread only"))).toBe(false);
     expect(channelModel.forks).toHaveLength(1);
     expect(channelModel.forks[0]?.fileName).toBe(basename(threadFile));
-    const anchoredItem = channelModel.items.find((item) => item.body?.includes("channel root"));
+    const anchoredItem = channelModel.items.find((item) => item.body?.includes("channel reply"));
     expect(anchoredItem?.forks?.[0]?.fileName).toBe(basename(threadFile));
 
     const threadModel = loadSessionViewModel(threadFile);
     expect(threadModel.parent?.fileName).toBe(basename(channelFile));
     expect(threadModel.items.some((item) => item.body?.includes("thread only"))).toBe(true);
+  });
+
+  test("anchors root-snapshot forks to the last shared entry", () => {
+    const sessionDir = getChannelSessionDir(conversationDir);
+    const channelFile = createManagedSessionFile(sessionDir, conversationDir);
+    const channelSession = openManagedSession(channelFile, sessionDir, conversationDir);
+    channelSession.appendMessage(makeUserMessage("[2026-04-28 18:18:59+08:00] [alice]: first"));
+    channelSession.appendMessage(makeAssistantMessage("first reply"));
+    channelSession.appendMessage(makeUserMessage("[2026-04-28 18:19:03+08:00] [alice]: second"));
+    channelSession.appendMessage(makeAssistantMessage("second reply"));
+
+    const threadFile = getThreadSessionFile(conversationDir, "D123:1000.0002");
+    forkThreadSessionFileFromRootMessage(channelFile, threadFile, conversationDir, {
+      userName: "alice",
+      text: "first",
+      loggedAt: 1,
+    });
+
+    const channelModel = loadSessionViewModel(channelFile);
+    const assistantAnchor = channelModel.items.find((item) => item.body?.includes("first reply"));
+    const userAnchor = channelModel.items.find((item) => item.body?.includes("first"));
+
+    expect(assistantAnchor?.forks?.[0]?.fileName).toBe(basename(threadFile));
+    expect(userAnchor?.forks).toBeUndefined();
+  });
+
+  test("anchors root-only fallback forks by matching the root message in parent", () => {
+    const sessionDir = getChannelSessionDir(conversationDir);
+    const channelFile = createManagedSessionFile(sessionDir, conversationDir);
+    const channelSession = openManagedSession(channelFile, sessionDir, conversationDir);
+    channelSession.appendMessage(
+      makeUserMessage(
+        "[2026-04-28 18:18:59+08:00] [alice]: first\n\n<slack_attachments>\n/tmp/a.txt\n</slack_attachments>",
+      ),
+    );
+    channelSession.appendMessage(makeAssistantMessage("first reply"));
+
+    const threadFile = getThreadSessionFile(conversationDir, "D123:1000.0003");
+    createThreadSessionFileFromRootMessage(
+      threadFile,
+      conversationDir,
+      {
+        userName: "alice",
+        text: "first",
+        loggedAt: 1,
+      },
+      channelFile,
+    );
+
+    const channelModel = loadSessionViewModel(channelFile);
+    const userAnchor = channelModel.items.find((item) => item.body?.includes("first"));
+
+    expect(userAnchor?.forks?.[0]?.fileName).toBe(basename(threadFile));
   });
 });
 
