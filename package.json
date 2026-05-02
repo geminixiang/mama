@@ -39,7 +39,6 @@
     "prepare": "husky"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.49",
     "@google-cloud/logging": "^11.2.1",
     "@mariozechner/pi-agent-core": "^0.71.1",
     "@mariozechner/pi-ai": "^0.71.1",
