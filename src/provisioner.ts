@@ -7,6 +7,22 @@ type ExecFileAsync = typeof execFileAsync;
 
 type ContainerStatus = "running" | "stopped" | "missing";
 
+function isDockerNotFoundError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const stderr = (err as { stderr?: unknown }).stderr;
+  const message = (err as { message?: unknown }).message;
+  const haystack = `${typeof stderr === "string" ? stderr : ""}\n${
+    typeof message === "string" ? message : ""
+  }`.toLowerCase();
+  return (
+    haystack.includes("no such network") ||
+    haystack.includes("no such container") ||
+    haystack.includes("no such object") ||
+    haystack.includes("network not found") ||
+    /error: no such [^\n]+/.test(haystack)
+  );
+}
+
 interface ContainerState {
   status: ContainerStatus;
   lastUsed: number;
@@ -336,21 +352,23 @@ export class DockerContainerManager {
     const networkName = DockerContainerManager.networkName(vaultId);
     try {
       await this.execFileImpl("docker", ["network", "inspect", networkName]);
-    } catch {
-      await this.execFileImpl("docker", [
-        "network",
-        "create",
-        "--driver",
-        "bridge",
-        "--label",
-        DockerContainerManager.MANAGED_LABEL,
-        "--label",
-        DockerContainerManager.IMAGE_MODE_LABEL,
-        "--label",
-        `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
-        networkName,
-      ]);
+      return networkName;
+    } catch (err) {
+      if (!isDockerNotFoundError(err)) throw err;
     }
+    await this.execFileImpl("docker", [
+      "network",
+      "create",
+      "--driver",
+      "bridge",
+      "--label",
+      DockerContainerManager.MANAGED_LABEL,
+      "--label",
+      DockerContainerManager.IMAGE_MODE_LABEL,
+      "--label",
+      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+      networkName,
+    ]);
     return networkName;
   }
 
@@ -363,8 +381,9 @@ export class DockerContainerManager {
         containerName,
       ]);
       return stdout.trim() === "true" ? "running" : "stopped";
-    } catch {
-      return "missing";
+    } catch (err) {
+      if (isDockerNotFoundError(err)) return "missing";
+      throw err;
     }
   }
 

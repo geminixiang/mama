@@ -46,6 +46,15 @@ export function createSlackAdapters(
   platform: PlatformInfo;
 } {
   let messageTs: string | null = null;
+  let assistantStatusFailureWarned = false;
+  const onAssistantStatusError = (label: string, err: unknown): void => {
+    if (assistantStatusFailureWarned) return;
+    assistantStatusFailureWarned = true;
+    log.logWarning(
+      `Slack setAssistantStatus failed (${label}; further occurrences suppressed for this session)`,
+      err instanceof Error ? err.message : String(err),
+    );
+  };
   const threadMessageTs: string[] = [];
   let accumulatedText = "";
   let isWorking = true;
@@ -220,8 +229,9 @@ export function createSlackAdapters(
         try {
           const statusText = eventFilename ? `Starting event: ${eventFilename}` : "Thinking";
           await slack.setAssistantStatus(channelId, rootTs, statusText);
-        } catch {
-          // Assistant API not available — first respond() call will create the message
+        } catch (err) {
+          // Assistant API not available — first respond() call will create the message.
+          onAssistantStatusError("typing", err);
         }
       }
     },
@@ -241,7 +251,11 @@ export function createSlackAdapters(
             ];
             if (!working) {
               if (rootTs) {
-                updates.push(slack.setAssistantStatus(channelId, rootTs, "").catch(() => {}));
+                updates.push(
+                  slack
+                    .setAssistantStatus(channelId, rootTs, "")
+                    .catch((err) => onAssistantStatusError("clear-on-idle", err)),
+                );
               }
             }
             await Promise.all(updates);

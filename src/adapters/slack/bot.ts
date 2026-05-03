@@ -1100,11 +1100,16 @@ export class SlackBot implements Bot {
 
     const content = await readFile(logPath, "utf-8");
     const lines = content.trim().split("\n").filter(Boolean);
-    for (const line of lines) {
+    for (let i = 0; i < lines.length; i++) {
       try {
-        const entry = JSON.parse(line);
+        const entry = JSON.parse(lines[i]);
         if (entry.ts) timestamps.add(entry.ts);
-      } catch {}
+      } catch (err) {
+        log.logWarning(
+          `Skipping malformed log entry at ${logPath}:${i + 1}`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
     }
     return timestamps;
   }

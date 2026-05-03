@@ -19,6 +19,7 @@ import {
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
+import * as log from "./log.js";
 
 // ============================================================================
 // Sync log.jsonl to SessionManager
@@ -130,79 +131,85 @@ export async function syncLogToSessionManager(
 
   const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];
 
-  for (const line of logLines) {
+  for (let lineIdx = 0; lineIdx < logLines.length; lineIdx++) {
+    const line = logLines[lineIdx];
+    let logMsg: ConversationLogMessage;
     try {
-      const logMsg: ConversationLogMessage = JSON.parse(line);
+      logMsg = JSON.parse(line) as ConversationLogMessage;
+    } catch (err) {
+      log.logWarning(
+        `Skipping malformed log entry at ${logFile}:${lineIdx + 1}`,
+        err instanceof Error ? err.message : String(err),
+      );
+      continue;
+    }
 
-      const slackTs = logMsg.ts;
-      const date = logMsg.date;
-      if (!slackTs || !date) continue;
+    const slackTs = logMsg.ts;
+    const date = logMsg.date;
+    if (!slackTs || !date) continue;
 
-      // Skip the current message being processed (will be added via prompt())
-      if (excludeSlackTs && slackTs === excludeSlackTs) continue;
+    // Skip the current message being processed (will be added via prompt())
+    if (excludeSlackTs && slackTs === excludeSlackTs) continue;
 
-      // While queued messages are being processed, newer messages may already be present
-      // in log.jsonl. Do not look ahead into those future messages when building the
-      // current turn's context.
-      if (!isMessageAtOrBeforeCurrent(slackTs, excludeSlackTs)) continue;
+    // While queued messages are being processed, newer messages may already be present
+    // in log.jsonl. Do not look ahead into those future messages when building the
+    // current turn's context.
+    if (!isMessageAtOrBeforeCurrent(slackTs, excludeSlackTs)) continue;
 
-      // Skip bot messages - added through agent flow
-      if (logMsg.isBot) continue;
+    // Skip bot messages - added through agent flow
+    if (logMsg.isBot) continue;
 
-      // Thread filtering: only sync messages belonging to this session's thread
-      if (threadFilter) {
-        if (threadFilter.scope === "top-level") {
-          // Persistent top-level sessions should only ingest top-level messages.
-          // This avoids pulling in unrelated replies from other threads.
-          if (logMsg.threadTs) {
+    // Thread filtering: only sync messages belonging to this session's thread
+    if (threadFilter) {
+      if (threadFilter.scope === "top-level") {
+        // Persistent top-level sessions should only ingest top-level messages.
+        // This avoids pulling in unrelated replies from other threads.
+        if (logMsg.threadTs) {
+          continue;
+        }
+      } else {
+        if (logMsg.threadTs) {
+          // Thread reply: only include if threadTs matches our thread anchor or rootTs
+          if (
+            logMsg.threadTs !== threadFilter.threadTs &&
+            logMsg.threadTs !== threadFilter.rootTs
+          ) {
             continue;
           }
         } else {
-          if (logMsg.threadTs) {
-            // Thread reply: only include if threadTs matches our thread anchor or rootTs
-            if (
-              logMsg.threadTs !== threadFilter.threadTs &&
-              logMsg.threadTs !== threadFilter.rootTs
-            ) {
-              continue;
-            }
-          } else {
-            // Top-level message: only include if it's this session's root message
-            if (slackTs !== threadFilter.rootTs) {
-              continue;
-            }
+          // Top-level message: only include if it's this session's root message
+          if (slackTs !== threadFilter.rootTs) {
+            continue;
           }
         }
       }
-
-      // Build the message text as it would appear in context
-      const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
-      const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
-
-      const msgTime = new Date(date).getTime() || Date.now();
-      const messageKey = `${msgTime}:${messageText}`;
-      if (existingMessageKeys.has(messageKey)) continue;
-      if (hasExistingSessionMessage(existingMessages, msgTime, messageText)) continue;
-
-      // Skip messages outside the time range
-      if (msgTime < range.start || msgTime > range.end) continue;
-
-      const userMessage: UserMessage = {
-        role: "user",
-        content: [{ type: "text", text: messageText }],
-        timestamp: msgTime,
-      };
-
-      newMessages.push({ timestamp: msgTime, message: userMessage });
-      existingMessages.push({
-        timestamp: msgTime,
-        rawText: messageText,
-        normalizedText: normalizeComparableUserText(messageText),
-      });
-      existingMessageKeys.add(messageKey); // Track to avoid duplicates within this sync
-    } catch {
-      // Skip malformed lines
     }
+
+    // Build the message text as it would appear in context
+    const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
+    const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
+
+    const msgTime = new Date(date).getTime() || Date.now();
+    const messageKey = `${msgTime}:${messageText}`;
+    if (existingMessageKeys.has(messageKey)) continue;
+    if (hasExistingSessionMessage(existingMessages, msgTime, messageText)) continue;
+
+    // Skip messages outside the time range
+    if (msgTime < range.start || msgTime > range.end) continue;
+
+    const userMessage: UserMessage = {
+      role: "user",
+      content: [{ type: "text", text: messageText }],
+      timestamp: msgTime,
+    };
+
+    newMessages.push({ timestamp: msgTime, message: userMessage });
+    existingMessages.push({
+      timestamp: msgTime,
+      rawText: messageText,
+      normalizedText: normalizeComparableUserText(messageText),
+    });
+    existingMessageKeys.add(messageKey); // Track to avoid duplicates within this sync
   }
 
   if (newMessages.length === 0) return 0;
@@ -239,13 +246,18 @@ export async function findLogMessageById(
   const logLines = logContent.trim().split("\n").filter(Boolean);
 
   for (let i = logLines.length - 1; i >= 0; i--) {
+    let entry: ConversationLogMessage;
     try {
-      const entry = JSON.parse(logLines[i]) as ConversationLogMessage;
-      if (entry.ts === messageId) {
-        return entry;
-      }
-    } catch {
-      // Skip malformed lines
+      entry = JSON.parse(logLines[i]) as ConversationLogMessage;
+    } catch (err) {
+      log.logWarning(
+        `Skipping malformed log entry at ${logFile}:${i + 1}`,
+        err instanceof Error ? err.message : String(err),
+      );
+      continue;
+    }
+    if (entry.ts === messageId) {
+      return entry;
     }
   }
 

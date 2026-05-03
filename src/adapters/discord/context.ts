@@ -49,6 +49,7 @@ export function createDiscordAdapters(
   const workingIndicator = " ...";
   let updatePromise = Promise.resolve();
   let typingInterval: ReturnType<typeof setInterval> | null = null;
+  let typingFailureWarned = false;
 
   function stopTyping(): void {
     if (typingInterval !== null) {
@@ -200,11 +201,19 @@ export function createDiscordAdapters(
     },
 
     setTyping: async (isTyping: boolean) => {
+      const onTypingError = (err: unknown): void => {
+        if (typingFailureWarned) return;
+        typingFailureWarned = true;
+        log.logWarning(
+          "Discord sendTyping failed (further occurrences suppressed for this session)",
+          err instanceof Error ? err.message : String(err),
+        );
+      };
       if (isTyping && typingInterval === null) {
         // Send immediately and repeat every 8s (Discord clears indicator after ~10s)
-        bot.sendTyping(channelId).catch(() => {});
+        bot.sendTyping(channelId).catch(onTypingError);
         typingInterval = setInterval(() => {
-          bot.sendTyping(channelId).catch(() => {});
+          bot.sendTyping(channelId).catch(onTypingError);
         }, 8000);
       } else if (!isTyping) {
         stopTyping();

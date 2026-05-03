@@ -1,3 +1,5 @@
+import * as log from "../log.js";
+
 export type LoginCredentialKind = "api_key" | "oauth";
 
 export interface OAuthAuthorizedUserFileOutput {
@@ -109,10 +111,23 @@ export function getOAuthServices(): OAuthService[] {
   const builtins = getBuiltinOAuthServices();
   if (!raw) return builtins;
 
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return builtins;
-
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    log.logWarning(
+      "Ignoring MOM_OAUTH_SERVICES_JSON: invalid JSON",
+      err instanceof Error ? err.message : String(err),
+    );
+    return builtins;
+  }
+  if (!Array.isArray(parsed)) {
+    log.logWarning(
+      "Ignoring MOM_OAUTH_SERVICES_JSON: expected a JSON array of OAuth service definitions",
+    );
+    return builtins;
+  }
+  try {
     const custom = parsed
       .map((entry): OAuthService | null => {
         if (!entry || typeof entry !== "object") return null;
@@ -194,7 +209,11 @@ export function getOAuthServices(): OAuthService[] {
     for (const service of builtins) byId.set(service.id, service);
     for (const service of custom) byId.set(service.id, service);
     return [...byId.values()];
-  } catch {
+  } catch (err) {
+    log.logWarning(
+      "Failed to apply MOM_OAUTH_SERVICES_JSON overrides; using builtin OAuth services",
+      err instanceof Error ? err.message : String(err),
+    );
     return builtins;
   }
 }

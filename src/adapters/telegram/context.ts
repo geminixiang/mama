@@ -55,6 +55,7 @@ export function createTelegramAdapters(
   let accumulatedText = "";
   let updatePromise = Promise.resolve();
   let typingInterval: ReturnType<typeof setInterval> | null = null;
+  let typingFailureWarned = false;
 
   function stopTyping() {
     if (typingInterval !== null) {
@@ -167,11 +168,19 @@ export function createTelegramAdapters(
     },
 
     setTyping: async (isTyping: boolean) => {
+      const onTypingError = (err: unknown): void => {
+        if (typingFailureWarned) return;
+        typingFailureWarned = true;
+        log.logWarning(
+          "Telegram sendTyping failed (further occurrences suppressed for this session)",
+          err instanceof Error ? err.message : String(err),
+        );
+      };
       if (isTyping && typingInterval === null) {
         // Send immediately and repeat every 4s (Telegram clears indicator after ~5s)
-        bot.sendTyping(chatId).catch(() => {});
+        bot.sendTyping(chatId).catch(onTypingError);
         typingInterval = setInterval(() => {
-          bot.sendTyping(chatId).catch(() => {});
+          bot.sendTyping(chatId).catch(onTypingError);
         }, 4000);
       } else if (!isTyping) {
         stopTyping();

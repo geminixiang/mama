@@ -29,17 +29,20 @@ function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined 
     return undefined;
   }
 
+  const raw = readFileSync(settingsPath, "utf-8");
+  let parsed: unknown;
   try {
-    const raw = readFileSync(settingsPath, "utf-8");
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === "object") {
-      return parsed as Partial<AgentConfig>;
-    }
-  } catch {
-    // Ignore parse errors, fall through to next candidate
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    throw new Error(`Malformed settings file at ${settingsPath}: ${detail}`);
   }
-
-  return undefined;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(
+      `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
+    );
+  }
+  return parsed as Partial<AgentConfig>;
 }
 
 function getConfiguredStateDir(): string | undefined {
@@ -158,15 +161,22 @@ export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfi
 
   let existing: Partial<AgentConfig> = {};
   if (existsSync(settingsPath)) {
+    const raw = readFileSync(settingsPath, "utf-8");
+    let parsed: unknown;
     try {
-      const raw = readFileSync(settingsPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        existing = parsed as Partial<AgentConfig>;
-      }
-    } catch {
-      // Start fresh if file is malformed
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Refusing to overwrite malformed settings file at ${settingsPath}: ${detail}`,
+      );
     }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(
+        `Refusing to overwrite malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
+      );
+    }
+    existing = parsed as Partial<AgentConfig>;
   }
 
   const merged = { ...existing, ...config };

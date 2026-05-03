@@ -37,7 +37,20 @@ export async function handleSessionViewRequest(
   }
 
   const requestedSession = url.searchParams.get("session");
-  const targetSessionFile = resolveRequestedSessionFile(entry.sessionFile, requestedSession);
+  let targetSessionFile: string | null;
+  try {
+    targetSessionFile = resolveRequestedSessionFile(entry.sessionFile, requestedSession);
+  } catch (error) {
+    log.logWarning(
+      `[${entry.conversationId}] Corrupted session file referenced for ${entry.sessionFile}`,
+      error instanceof Error ? error.message : String(error),
+    );
+    res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(
+      renderStatusPage("Session unavailable", "The selected session file appears to be corrupted."),
+    );
+    return true;
+  }
   if (!targetSessionFile) {
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderStatusPage("Session unavailable", "The selected session link is invalid."));

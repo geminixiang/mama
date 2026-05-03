@@ -100,12 +100,16 @@ describe("loadAgentConfig", () => {
     }
   });
 
-  test("silently ignores malformed settings.json and falls back to defaults", () => {
+  test("throws on malformed settings.json instead of silently falling back", () => {
     const { writeFileSync } = require("node:fs");
     writeFileSync(join(tmpDir, "settings.json"), "{ invalid json }", "utf-8");
-    const config = loadAgentConfig(tmpDir);
-    expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(() => loadAgentConfig(tmpDir)).toThrow(/Malformed settings file/);
+  });
+
+  test("throws on settings.json whose top-level value is not an object", () => {
+    const { writeFileSync } = require("node:fs");
+    writeFileSync(join(tmpDir, "settings.json"), "[]", "utf-8");
+    expect(() => loadAgentConfig(tmpDir)).toThrow(/expected a JSON object/);
   });
 });
 

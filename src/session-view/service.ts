@@ -12,6 +12,7 @@ import {
   resolveChannelSessionFile,
   tryResolveThreadSession,
 } from "../session-store.js";
+import * as log from "../log.js";
 
 export interface SessionViewItem {
   kind: "user" | "assistant" | "tool" | "system";
@@ -126,11 +127,20 @@ export function resolveRequestedSessionFile(
   const candidate = join(dirname(resolvedBase), fileName);
   if (!existsSync(candidate)) return null;
 
+  let sm: SessionManager;
   try {
-    return SessionManager.open(candidate).getHeader() ? candidate : null;
-  } catch {
-    return null;
+    sm = SessionManager.open(candidate);
+  } catch (err) {
+    throw new Error(
+      `Session file is corrupted: ${candidate}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
+  if (!sm.getHeader()) {
+    throw new Error(`Session file is missing a valid header: ${candidate}`);
+  }
+  return candidate;
 }
 
 function listRelatedSessionFiles(sessionFile: string): string[] {
@@ -147,33 +157,43 @@ function buildSessionRelation(
   kind: "parent" | "fork",
   expectedParent?: string,
 ): SessionViewRelation | null {
+  let sm: SessionManager;
   try {
-    const sm = SessionManager.open(sessionFile);
-    const header = sm.getHeader();
-    if (!header) return null;
-    if (kind === "fork" && resolve(header.parentSession ?? "") !== expectedParent) {
-      return null;
-    }
-
-    const entries = sm.getEntries();
-    const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
-    const anchorEntryId =
-      kind === "fork" && expectedParent
-        ? findForkAnchorEntryId(SessionManager.open(expectedParent).getEntries(), entries)
-        : undefined;
-    return {
-      kind,
-      fileName: basename(sessionFile),
-      sessionId: header.id,
-      title: sm.getSessionName() || `Session ${header.id.slice(0, 8)}`,
-      updatedAt,
-      entryCount: entries.length,
-      summary: extractSessionSummary(entries),
-      anchorEntryId,
-    };
-  } catch {
+    sm = SessionManager.open(sessionFile);
+  } catch (err) {
+    log.logWarning(
+      `Skipping corrupted session file while building ${kind} relation: ${sessionFile}`,
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
+  const header = sm.getHeader();
+  if (!header) {
+    log.logWarning(
+      `Skipping session file with missing header while building ${kind} relation: ${sessionFile}`,
+    );
+    return null;
+  }
+  if (kind === "fork" && resolve(header.parentSession ?? "") !== expectedParent) {
+    return null;
+  }
+
+  const entries = sm.getEntries();
+  const updatedAt = entries.at(-1)?.timestamp ?? header.timestamp;
+  const anchorEntryId =
+    kind === "fork" && expectedParent
+      ? findForkAnchorEntryId(SessionManager.open(expectedParent).getEntries(), entries)
+      : undefined;
+  return {
+    kind,
+    fileName: basename(sessionFile),
+    sessionId: header.id,
+    title: sm.getSessionName() || `Session ${header.id.slice(0, 8)}`,
+    updatedAt,
+    entryCount: entries.length,
+    summary: extractSessionSummary(entries),
+    anchorEntryId,
+  };
 }
 
 function findForkAnchorEntryId(
