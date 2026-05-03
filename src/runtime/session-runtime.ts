@@ -1,6 +1,4 @@
 import type { Bot, BotAdapters, BotEvent, BotHandler, RunningSession } from "../adapter.js";
-import { SlackBot as SlackBotClass } from "../adapters/slack/index.js";
-import { DiscordBot } from "../adapters/discord/index.js";
 import {
   hasMaterializedSlackBranchSession,
   resolveSlackSessionScope,
@@ -8,8 +6,8 @@ import {
 } from "../adapters/slack/branch-manager.js";
 import { type AgentRunner, createRunner } from "../agent.js";
 import type { UserBindingStore } from "../bindings.js";
+import { createDefaultCommandRegistry } from "../commands/index.js";
 import * as log from "../log.js";
-import { parseLoginCommand } from "../login/index.js";
 import { DockerContainerManager } from "../provisioner.js";
 import type { SandboxConfig } from "../sandbox.js";
 import {
@@ -21,15 +19,8 @@ import {
   type ResolvedSessionScope,
 } from "../session-store.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "../sentry.js";
-import { parseSessionViewCommand } from "../session-view/command.js";
-import { resolveExistingSessionFile } from "../session-view/service.js";
 import { formatNothingRunning, formatStopped, formatStopping } from "../ui-copy.js";
 import type { VaultManager } from "../vault.js";
-import {
-  createManagedVaultEntry,
-  ensureSandboxVaultEntry,
-  resolveActorVaultKey,
-} from "../vault-routing.js";
 import * as Sentry from "@sentry/node";
 import { join } from "path";
 
@@ -103,6 +94,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 class MamaSessionRuntime implements SessionRuntime {
   private readonly conversationStates = new Map<string, ConversationState>();
   private readonly inFlightRuns = new Set<Promise<void>>();
+  private readonly commandRegistry = createDefaultCommandRegistry();
   private isShuttingDown = false;
 
   constructor(private readonly options: SessionRuntimeOptions) {}
@@ -193,27 +185,18 @@ class MamaSessionRuntime implements SessionRuntime {
 
     const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
     const privateConversation = isPrivateConversation(event);
-    const handledLogin = await this.handleLoginCommand(
-      adapters.platform.name,
-      event.user,
-      conversationId,
-      adapters.responseCtx,
-      event.text,
-      privateConversation,
-    );
-    if (handledLogin) return;
-
-    const handledSessionView = await this.handleSessionViewCommand(
-      adapters.platform.name,
-      event.user,
+    const handledCommand = await this.commandRegistry.handle({
+      bot,
+      responseCtx: adapters.responseCtx,
+      platform: adapters.platform.name,
+      platformUserId: event.user,
       conversationId,
       sessionKey,
-      bot,
-      adapters.responseCtx,
-      event.text,
+      commandText: event.text,
       privateConversation,
-    );
-    if (handledSessionView) return;
+      services: this.options,
+    });
+    if (handledCommand) return;
 
     const conversationDir = join(this.options.workingDir, conversationId);
     const waitedForParent =
@@ -429,170 +412,6 @@ class MamaSessionRuntime implements SessionRuntime {
         this.conversationStates.delete(idleSessions[i].key);
       }
     }
-  }
-
-  private ensureLoginVault(platform: string, platformUserId: string): string {
-    const vaultId = resolveActorVaultKey(
-      this.options.sandbox,
-      this.options.vaultManager,
-      this.options.bindingStore,
-      platform,
-      platformUserId,
-    );
-
-    ensureSandboxVaultEntry(
-      this.options.sandbox,
-      this.options.vaultManager,
-      platform,
-      platformUserId,
-      vaultId,
-    );
-    if (this.options.sandbox.type !== "container" && this.options.sandbox.type !== "image") {
-      this.options.vaultManager.addEntry(
-        vaultId,
-        createManagedVaultEntry(platform, platformUserId, vaultId),
-      );
-    }
-
-    return vaultId;
-  }
-
-  private async replyWithContext(
-    responseCtx: BotAdapters["responseCtx"],
-    text: string,
-  ): Promise<void> {
-    await responseCtx.setTyping(false);
-    await responseCtx.setWorking(false);
-    await responseCtx.respond(text);
-  }
-
-  private async handleLoginCommand(
-    platform: string,
-    platformUserId: string,
-    conversationId: string,
-    responseCtx: BotAdapters["responseCtx"],
-    commandText: string,
-    privateConversation: boolean,
-  ): Promise<boolean> {
-    const parsed = parseLoginCommand(commandText);
-    if (!parsed) return false;
-
-    if (!privateConversation) {
-      await this.replyWithContext(
-        responseCtx,
-        "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
-      );
-      return true;
-    }
-
-    if (!this.options.portalBaseUrl) {
-      await this.replyWithContext(
-        responseCtx,
-        "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
-      );
-      return true;
-    }
-
-    let vaultId: string;
-    try {
-      vaultId = this.ensureLoginVault(platform, platformUserId);
-    } catch (error) {
-      log.logWarning(
-        `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
-        error instanceof Error ? error.message : String(error),
-      );
-      await this.replyWithContext(
-        responseCtx,
-        "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
-      );
-      return true;
-    }
-
-    const token = this.options.linkTokenStore.create(
-      platform as "slack" | "discord" | "telegram",
-      platformUserId,
-      conversationId,
-      vaultId,
-      "",
-    );
-    const vaultLabel =
-      this.options.sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
-    await this.replyWithContext(
-      responseCtx,
-      `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${this.options.portalBaseUrl}/link?token=${token.token}`,
-    );
-    return true;
-  }
-
-  private async handleSessionViewCommand(
-    platform: string,
-    platformUserId: string,
-    conversationId: string,
-    sessionKey: string,
-    bot: Bot,
-    responseCtx: BotAdapters["responseCtx"],
-    commandText: string,
-    privateConversation: boolean,
-  ): Promise<boolean> {
-    if (!parseSessionViewCommand(commandText)) return false;
-
-    const allowSharedPrivateDelivery = platform === "slack" || platform === "discord";
-    const sendSessionViewReply = async (text: string): Promise<void> => {
-      if (privateConversation) {
-        await this.replyWithContext(responseCtx, text);
-        return;
-      }
-
-      if (platform === "slack" && bot instanceof SlackBotClass) {
-        await bot.postEphemeral(conversationId, platformUserId, text);
-        return;
-      }
-
-      if (platform === "discord" && bot instanceof DiscordBot) {
-        await bot.sendDirectMessage(platformUserId, text);
-        return;
-      }
-
-      await this.replyWithContext(responseCtx, text);
-    };
-
-    if (!privateConversation && !allowSharedPrivateDelivery) {
-      await sendSessionViewReply(
-        "為了保護對話內容，`/session` 目前只能在與機器人的私訊 / DM 中使用。",
-      );
-      return true;
-    }
-
-    if (!this.options.portalBaseUrl) {
-      await sendSessionViewReply(
-        "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
-      );
-      return true;
-    }
-
-    const sessionFile = resolveExistingSessionFile(
-      this.options.workingDir,
-      conversationId,
-      sessionKey,
-    );
-    if (!sessionFile) {
-      await sendSessionViewReply(
-        "目前還沒有可查看的 session。先和機器人對話一次，建立 session 後再試。",
-      );
-      return true;
-    }
-
-    const token = this.options.sessionViewTokenStore.create(
-      platform as "slack" | "discord" | "telegram",
-      platformUserId,
-      conversationId,
-      sessionKey,
-      sessionFile,
-    );
-
-    const linkText = `Open this read-only session link (expires in 24 hours):\n${this.options.portalBaseUrl}/session?token=${token.token}`;
-    await sendSessionViewReply(linkText);
-    return true;
   }
 }
 

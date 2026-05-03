@@ -1,3 +1,5 @@
+export { createDefaultCommandRegistry, CommandRegistry } from "./commands/index.js";
+export type { CommandContext, CommandHandler, CommandServices } from "./commands/index.js";
 export {
   createSessionRuntime,
   type CreateSessionSandboxOptions,
