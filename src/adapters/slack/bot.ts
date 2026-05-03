@@ -190,6 +190,10 @@ export class SlackBot implements Bot {
     });
   }
 
+  async postPrivate(conversationId: string, userId: string, text: string): Promise<void> {
+    await this.postEphemeral(conversationId, userId, text);
+  }
+
   async openDirectMessage(userId: string): Promise<string> {
     return slackRetry(async () => {
       const result = await this.webClient.conversations.open({ users: userId });

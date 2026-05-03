@@ -4,7 +4,7 @@ import type { DockerContainerManager } from "../provisioner.js";
 import type { SandboxConfig } from "../sandbox.js";
 import type { VaultManager } from "../vault.js";
 
-interface LinkTokenStoreLike {
+export interface LinkTokenStoreLike {
   create(
     platform: "slack" | "discord" | "telegram",
     platformUserId: string,
@@ -14,7 +14,7 @@ interface LinkTokenStoreLike {
   ): { token: string };
 }
 
-interface SessionViewTokenStoreLike {
+export interface SessionViewTokenStoreLike {
   create(
     platform: "slack" | "discord" | "telegram",
     platformUserId: string,

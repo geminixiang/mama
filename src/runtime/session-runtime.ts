@@ -5,11 +5,9 @@ import {
   waitForSlackBranchBootstrap,
 } from "../adapters/slack/branch-manager.js";
 import { type AgentRunner, createRunner } from "../agent.js";
-import type { UserBindingStore } from "../bindings.js";
-import { createDefaultCommandRegistry } from "../commands/index.js";
+import { CommandRegistry, createDefaultCommandRegistry } from "../commands/index.js";
+import type { CommandServices } from "../commands/index.js";
 import * as log from "../log.js";
-import { DockerContainerManager } from "../provisioner.js";
-import type { SandboxConfig } from "../sandbox.js";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,
@@ -20,7 +18,6 @@ import {
 } from "../session-store.js";
 import { addLifecycleBreadcrumb, applyRunScope } from "../sentry.js";
 import { formatNothingRunning, formatStopped, formatStopping } from "../ui-copy.js";
-import type { VaultManager } from "../vault.js";
 import * as Sentry from "@sentry/node";
 import { join } from "path";
 
@@ -32,26 +29,6 @@ interface ConversationState {
   lastAccessedAt: number;
   startedAt?: number;
   lastActivityAt?: number;
-}
-
-interface LinkTokenStoreLike {
-  create(
-    platform: "slack" | "discord" | "telegram",
-    platformUserId: string,
-    conversationId: string,
-    vaultId: string,
-    providerId: string,
-  ): { token: string };
-}
-
-interface SessionViewTokenStoreLike {
-  create(
-    platform: "slack" | "discord" | "telegram",
-    platformUserId: string,
-    conversationId: string,
-    sessionKey: string,
-    sessionFile: string,
-  ): { token: string };
 }
 
 export interface RunSessionOptions {
@@ -67,15 +44,9 @@ export interface CreateSessionSandboxOptions {
   sessionKey: string;
 }
 
-export interface SessionRuntimeOptions {
-  workingDir: string;
-  sandbox: SandboxConfig;
-  vaultManager: VaultManager;
-  bindingStore?: UserBindingStore;
-  provisioner?: DockerContainerManager;
-  linkTokenStore: LinkTokenStoreLike;
-  sessionViewTokenStore: SessionViewTokenStoreLike;
-  portalBaseUrl?: string;
+export interface SessionRuntimeOptions extends CommandServices {
+  /** Override the default command registry (e.g., to add /help, /status). */
+  commandRegistry?: CommandRegistry;
 }
 
 export interface SessionRuntime extends BotHandler {
@@ -94,10 +65,12 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 class MamaSessionRuntime implements SessionRuntime {
   private readonly conversationStates = new Map<string, ConversationState>();
   private readonly inFlightRuns = new Set<Promise<void>>();
-  private readonly commandRegistry = createDefaultCommandRegistry();
+  private readonly commandRegistry: CommandRegistry;
   private isShuttingDown = false;
 
-  constructor(private readonly options: SessionRuntimeOptions) {}
+  constructor(private readonly options: SessionRuntimeOptions) {
+    this.commandRegistry = options.commandRegistry ?? createDefaultCommandRegistry();
+  }
 
   isRunning(sessionKey: string): boolean {
     const state = this.conversationStates.get(sessionKey);

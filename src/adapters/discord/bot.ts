@@ -235,6 +235,10 @@ export class DiscordBot implements Bot {
     });
   }
 
+  async postPrivate(_conversationId: string, userId: string, text: string): Promise<void> {
+    await this.sendDirectMessage(userId, text);
+  }
+
   getAllChannels(): { id: string; name: string }[] {
     return Array.from(this.channels.values());
   }

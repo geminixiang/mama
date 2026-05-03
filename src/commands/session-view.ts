@@ -1,5 +1,3 @@
-import { DiscordBot } from "../adapters/discord/index.js";
-import { SlackBot as SlackBotClass } from "../adapters/slack/index.js";
 import { resolveExistingSessionFile } from "../session-view/service.js";
 import { parseSessionViewCommand } from "../session-view/command.js";
 import type { CommandContext, CommandHandler } from "./types.js";
@@ -17,28 +15,21 @@ export class SessionViewCommandHandler implements CommandHandler {
   async tryHandle(context: CommandContext): Promise<boolean> {
     if (!parseSessionViewCommand(context.commandText)) return false;
 
-    const allowSharedPrivateDelivery =
-      context.platform === "slack" || context.platform === "discord";
     const sendSessionViewReply = async (text: string): Promise<void> => {
       if (context.privateConversation) {
         await replyWithContext(context.responseCtx, text);
         return;
       }
 
-      if (context.platform === "slack" && context.bot instanceof SlackBotClass) {
-        await context.bot.postEphemeral(context.conversationId, context.platformUserId, text);
-        return;
-      }
-
-      if (context.platform === "discord" && context.bot instanceof DiscordBot) {
-        await context.bot.sendDirectMessage(context.platformUserId, text);
+      if (context.bot.postPrivate) {
+        await context.bot.postPrivate(context.conversationId, context.platformUserId, text);
         return;
       }
 
       await replyWithContext(context.responseCtx, text);
     };
 
-    if (!context.privateConversation && !allowSharedPrivateDelivery) {
+    if (!context.privateConversation && !context.bot.postPrivate) {
       await sendSessionViewReply(
         "為了保護對話內容，`/session` 目前只能在與機器人的私訊 / DM 中使用。",
       );

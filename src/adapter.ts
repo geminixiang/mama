@@ -84,6 +84,12 @@ export interface Bot {
   updateMessage(channel: string, ts: string, text: string): Promise<void>;
   enqueueEvent(event: BotEvent): boolean;
   getPlatformInfo(): PlatformInfo;
+  /**
+   * Deliver a message visible only to the given user.
+   * Implementations may use ephemeral messages (Slack), DMs (Discord), or
+   * any other private channel. Absent on platforms with no private delivery.
+   */
+  postPrivate?(conversationId: string, userId: string, text: string): Promise<void>;
 }
 
 /** Pre-created platform adapters passed to the handler */
