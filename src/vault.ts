@@ -1,5 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, isAbsolute, join, normalize, sep } from "path";
+import type { PlatformName } from "./adapter.js";
 import type { SandboxConfig } from "./sandbox.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
@@ -21,7 +22,7 @@ export interface VaultMountEntry {
 /** Per-user vault entry in vault.json */
 export interface VaultEntry {
   displayName: string;
-  platform?: "slack" | "discord" | "telegram";
+  platform?: PlatformName;
   /** Subdirs/files in vault dir to mount into sandbox (e.g. [".gcloud", ".ssh", ".kube"]) */
   mounts?: Array<string | VaultMountEntry>;
   /** Whether to load env file as environment variables (default: true if env file exists) */

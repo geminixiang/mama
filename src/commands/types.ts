@@ -1,4 +1,4 @@
-import type { Bot, BotAdapters } from "../adapter.js";
+import type { Bot, BotAdapters, PlatformName } from "../adapter.js";
 import type { UserBindingStore } from "../bindings.js";
 import type { DockerContainerManager } from "../provisioner.js";
 import type { SandboxConfig } from "../sandbox.js";
@@ -6,7 +6,7 @@ import type { VaultManager } from "../vault.js";
 
 export interface LinkTokenStoreLike {
   create(
-    platform: "slack" | "discord" | "telegram",
+    platform: PlatformName,
     platformUserId: string,
     conversationId: string,
     vaultId: string,
@@ -16,7 +16,7 @@ export interface LinkTokenStoreLike {
 
 export interface SessionViewTokenStoreLike {
   create(
-    platform: "slack" | "discord" | "telegram",
+    platform: PlatformName,
     platformUserId: string,
     conversationId: string,
     sessionKey: string,
@@ -38,7 +38,7 @@ export interface CommandServices {
 export interface CommandContext {
   bot: Bot;
   responseCtx: BotAdapters["responseCtx"];
-  platform: string;
+  platform: PlatformName;
   platformUserId: string;
   conversationId: string;
   sessionKey: string;

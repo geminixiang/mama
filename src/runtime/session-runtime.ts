@@ -1,4 +1,11 @@
-import type { Bot, BotAdapters, BotEvent, BotHandler, RunningSession } from "../adapter.js";
+import type {
+  Bot,
+  BotAdapters,
+  BotEvent,
+  BotHandler,
+  PlatformName,
+  RunningSession,
+} from "../adapter.js";
 import {
   hasMaterializedSlackBranchSession,
   resolveSlackSessionScope,
@@ -7,6 +14,7 @@ import {
 import { type AgentRunner, createRunner } from "../agent.js";
 import { CommandRegistry, createDefaultCommandRegistry } from "../commands/index.js";
 import type { CommandServices } from "../commands/index.js";
+import { isPrivateConversation } from "../commands/utils.js";
 import * as log from "../log.js";
 import {
   createManagedSessionFile,
@@ -161,7 +169,7 @@ class MamaSessionRuntime implements SessionRuntime {
     const handledCommand = await this.commandRegistry.handle({
       bot,
       responseCtx: adapters.responseCtx,
-      platform: adapters.platform.name,
+      platform: adapters.platform.name as PlatformName,
       platformUserId: event.user,
       conversationId,
       sessionKey,
@@ -187,31 +195,78 @@ class MamaSessionRuntime implements SessionRuntime {
       );
     }
 
-    const runner = await this.createSessionSandbox({
+    const state = await this.getOrCreateState({
       conversationId,
       platformName: adapters.platform.name,
       sessionKey,
     });
-    const state = this.conversationStates.get(sessionKey)!;
 
     state.running = true;
-    state.runner = runner;
     state.stopRequested = false;
     state.startedAt = Date.now();
     state.lastActivityAt = Date.now();
 
     log.logInfo(`[${conversationId}] Starting run: ${event.text.substring(0, 50)}`);
 
+    const runPromise = (async () => {
+      try {
+        const result = await this.runWithInstrumentation(
+          adapters,
+          { conversationId, sessionKey, isEvent, startedAt: state.startedAt! },
+          async () => {
+            await adapters.responseCtx.setTyping(true);
+            await adapters.responseCtx.setWorking(true);
+            const r = await state.runner.run(
+              adapters.message,
+              adapters.responseCtx,
+              adapters.platform,
+            );
+            await adapters.responseCtx.setWorking(false);
+            return r;
+          },
+        );
+
+        if (result?.stopReason === "aborted" && state.stopRequested) {
+          if (state.stopMessageTs) {
+            await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
+            state.stopMessageTs = undefined;
+          } else {
+            await bot.postMessage(conversationId, formatStopped(bot));
+          }
+        }
+      } finally {
+        state.running = false;
+        state.lastAccessedAt = Date.now();
+        Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size - 1);
+        this.evictIdleSessions();
+      }
+    })();
+
+    this.inFlightRuns.add(runPromise);
+    try {
+      await runPromise;
+    } finally {
+      this.inFlightRuns.delete(runPromise);
+    }
+  }
+
+  private async runWithInstrumentation(
+    adapters: BotAdapters,
+    meta: { conversationId: string; sessionKey: string; isEvent?: boolean; startedAt: number },
+    body: () => Promise<{ stopReason: string; errorMessage?: string }>,
+  ): Promise<{ stopReason: string; errorMessage?: string } | undefined> {
+    const { conversationId, sessionKey, isEvent, startedAt } = meta;
+    const { message, platform } = adapters;
+
     Sentry.metrics.count("agent.run.started", 1, {
       attributes: { channel: conversationId },
     });
     Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size + 1);
 
-    const runPromise = Sentry.startSpan(
+    return Sentry.startSpan(
       { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
-      async () => {
-        return Sentry.withScope(async (scope) => {
-          const { message, responseCtx, platform } = adapters;
+      async () =>
+        Sentry.withScope(async (scope) => {
           applyRunScope(scope, {
             conversationId,
             sessionKey,
@@ -229,110 +284,83 @@ class MamaSessionRuntime implements SessionRuntime {
           });
 
           try {
-            await responseCtx.setTyping(true);
-            await responseCtx.setWorking(true);
-            const result = await state.runner.run(message, responseCtx, platform);
-            await responseCtx.setWorking(false);
-
-            const durationMs = Date.now() - state.startedAt!;
+            const result = await body();
+            const durationMs = Date.now() - startedAt;
+            const completionAttrs = {
+              channel: conversationId,
+              platform: platform.name,
+              stop_reason: result.stopReason,
+            };
             Sentry.metrics.distribution("agent.run.duration", durationMs, {
               unit: "millisecond",
-              attributes: {
-                channel: conversationId,
-                platform: platform.name,
-                stop_reason: result.stopReason,
-              },
+              attributes: completionAttrs,
             });
-            Sentry.metrics.count("agent.run.completed", 1, {
-              attributes: {
-                channel: conversationId,
-                platform: platform.name,
-                stop_reason: result.stopReason,
-              },
-            });
+            Sentry.metrics.count("agent.run.completed", 1, { attributes: completionAttrs });
             addLifecycleBreadcrumb("agent.run.completed", {
               channel_id: conversationId,
               platform: platform.name,
               stop_reason: result.stopReason,
               duration_ms: durationMs,
             });
-
-            if (result.stopReason === "aborted" && state.stopRequested) {
-              if (state.stopMessageTs) {
-                await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
-                state.stopMessageTs = undefined;
-              } else {
-                await bot.postMessage(conversationId, formatStopped(bot));
-              }
-            }
+            return result;
           } catch (err) {
             scope.setContext("agent_run_error", {
               conversationId,
               sessionKey,
-              platform: adapters.platform.name,
-              messageId: adapters.message.id,
-              threadTs: adapters.message.threadTs,
+              platform: platform.name,
+              messageId: message.id,
+              threadTs: message.threadTs,
             });
             Sentry.captureException(err);
             Sentry.metrics.count("agent.run.errors", 1, {
-              attributes: { channel: conversationId, platform: adapters.platform.name },
+              attributes: { channel: conversationId, platform: platform.name },
             });
             log.logWarning(
               `[${conversationId}] Run error`,
               err instanceof Error ? err.message : String(err),
             );
-          } finally {
-            state.running = false;
-            state.lastAccessedAt = Date.now();
-            Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size - 1);
-            this.evictIdleSessions();
+            return undefined;
           }
-        });
-      },
+        }),
     );
-
-    this.inFlightRuns.add(runPromise);
-    try {
-      await runPromise;
-    } finally {
-      this.inFlightRuns.delete(runPromise);
-    }
   }
 
-  async createSessionSandbox({
+  async createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner> {
+    const state = await this.getOrCreateState(options);
+    return state.runner;
+  }
+
+  private async getOrCreateState({
     conversationId,
     platformName,
     sessionKey,
-  }: CreateSessionSandboxOptions): Promise<AgentRunner> {
-    let state = this.conversationStates.get(sessionKey);
-    if (!state) {
-      const conversationDir = join(this.options.workingDir, conversationId);
-      const sessionScope = await this.resolveSessionScope(
-        platformName,
-        conversationDir,
-        sessionKey,
-      );
-      state = {
-        running: false,
-        runner: await createRunner(
-          this.options.sandbox,
-          sessionKey,
-          conversationId,
-          conversationDir,
-          this.options.workingDir,
-          sessionScope,
-          this.options.vaultManager,
-          this.options.bindingStore,
-          this.options.provisioner,
-        ),
-        stopRequested: false,
-        lastAccessedAt: Date.now(),
-      };
-      this.conversationStates.set(sessionKey, state);
-    } else {
-      state.lastAccessedAt = Date.now();
+  }: CreateSessionSandboxOptions): Promise<ConversationState> {
+    const existing = this.conversationStates.get(sessionKey);
+    if (existing) {
+      existing.lastAccessedAt = Date.now();
+      return existing;
     }
-    return state.runner;
+
+    const conversationDir = join(this.options.workingDir, conversationId);
+    const sessionScope = await this.resolveSessionScope(platformName, conversationDir, sessionKey);
+    const state: ConversationState = {
+      running: false,
+      runner: await createRunner(
+        this.options.sandbox,
+        sessionKey,
+        conversationId,
+        conversationDir,
+        this.options.workingDir,
+        sessionScope,
+        this.options.vaultManager,
+        this.options.bindingStore,
+        this.options.provisioner,
+      ),
+      stopRequested: false,
+      lastAccessedAt: Date.now(),
+    };
+    this.conversationStates.set(sessionKey, state);
+    return state;
   }
 
   async shutdown(timeoutMs = 30_000): Promise<void> {
@@ -386,8 +414,4 @@ class MamaSessionRuntime implements SessionRuntime {
       }
     }
   }
-}
-
-function isPrivateConversation(event: BotEvent): boolean {
-  return event.conversationKind === "direct" || event.type === "dm";
 }

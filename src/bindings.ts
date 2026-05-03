@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
+import type { PlatformName } from "./adapter.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export interface UserBinding {
-  platform: "slack" | "discord" | "telegram";
+  platform: PlatformName;
   platformUserId: string;
   /** Internal identity (matches vault key in vault.json, or a backend user ID) */
   internalUserId: string;

@@ -1,10 +1,11 @@
 import { randomBytes } from "crypto";
+import type { PlatformName } from "../adapter.js";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 export interface LinkToken {
   token: string;
-  platform: "slack" | "discord" | "telegram";
+  platform: PlatformName;
   platformUserId: string;
   vaultId: string;
   providerId: string;
@@ -26,7 +27,7 @@ export class InMemoryLinkTokenStore {
    * Invalidates any existing unused token for the same user before creating a new one.
    */
   create(
-    platform: "slack" | "discord" | "telegram",
+    platform: PlatformName,
     platformUserId: string,
     conversationId: string,
     vaultId: string,

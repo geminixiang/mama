@@ -1,5 +1,7 @@
 export type ConversationKind = "direct" | "shared";
 
+export type PlatformName = "slack" | "discord" | "telegram";
+
 export interface ChatMessage {
   id: string;
   sessionKey: string;

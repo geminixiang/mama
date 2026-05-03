@@ -1,8 +1,9 @@
 import { randomBytes } from "crypto";
+import type { PlatformName } from "../adapter.js";
 
 export interface SessionViewToken {
   token: string;
-  platform: "slack" | "discord" | "telegram";
+  platform: PlatformName;
   platformUserId: string;
   conversationId: string;
   sessionKey: string;
@@ -16,7 +17,7 @@ export class InMemorySessionViewTokenStore {
   private tokens = new Map<string, SessionViewToken>();
 
   create(
-    platform: "slack" | "discord" | "telegram",
+    platform: PlatformName,
     platformUserId: string,
     conversationId: string,
     sessionKey: string,

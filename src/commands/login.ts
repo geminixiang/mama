@@ -6,15 +6,7 @@ import {
   resolveActorVaultKey,
 } from "../vault-routing.js";
 import type { CommandContext, CommandHandler } from "./types.js";
-
-async function replyWithContext(
-  responseCtx: CommandContext["responseCtx"],
-  text: string,
-): Promise<void> {
-  await responseCtx.setTyping(false);
-  await responseCtx.setWorking(false);
-  await responseCtx.respond(text);
-}
+import { replyWithContext } from "./utils.js";
 
 function ensureLoginVault(context: CommandContext): string {
   const { services, platform, platformUserId } = context;
@@ -80,7 +72,7 @@ export class LoginCommandHandler implements CommandHandler {
     }
 
     const token = context.services.linkTokenStore.create(
-      context.platform as "slack" | "discord" | "telegram",
+      context.platform,
       context.platformUserId,
       context.conversationId,
       vaultId,
