@@ -1,0 +1,601 @@
+import type { Bot, BotAdapters, BotEvent, BotHandler, RunningSession } from "../adapter.js";
+import { SlackBot as SlackBotClass } from "../adapters/slack/index.js";
+import { DiscordBot } from "../adapters/discord/index.js";
+import {
+  hasMaterializedSlackBranchSession,
+  resolveSlackSessionScope,
+  waitForSlackBranchBootstrap,
+} from "../adapters/slack/branch-manager.js";
+import { type AgentRunner, createRunner } from "../agent.js";
+import type { UserBindingStore } from "../bindings.js";
+import * as log from "../log.js";
+import { parseLoginCommand } from "../login/index.js";
+import { DockerContainerManager } from "../provisioner.js";
+import type { SandboxConfig } from "../sandbox.js";
+import {
+  createManagedSessionFile,
+  createManagedSessionFileAtPath,
+  getChannelSessionDir,
+  getThreadSessionFile,
+  resolveGenericSessionScope,
+  type ResolvedSessionScope,
+} from "../session-store.js";
+import { addLifecycleBreadcrumb, applyRunScope } from "../sentry.js";
+import { parseSessionViewCommand } from "../session-view/command.js";
+import { resolveExistingSessionFile } from "../session-view/service.js";
+import { formatNothingRunning, formatStopped, formatStopping } from "../ui-copy.js";
+import type { VaultManager } from "../vault.js";
+import {
+  createManagedVaultEntry,
+  ensureSandboxVaultEntry,
+  resolveActorVaultKey,
+} from "../vault-routing.js";
+import * as Sentry from "@sentry/node";
+import { join } from "path";
+
+interface ConversationState {
+  running: boolean;
+  runner: AgentRunner;
+  stopRequested: boolean;
+  stopMessageTs?: string;
+  lastAccessedAt: number;
+  startedAt?: number;
+  lastActivityAt?: number;
+}
+
+interface LinkTokenStoreLike {
+  create(
+    platform: "slack" | "discord" | "telegram",
+    platformUserId: string,
+    conversationId: string,
+    vaultId: string,
+    providerId: string,
+  ): { token: string };
+}
+
+interface SessionViewTokenStoreLike {
+  create(
+    platform: "slack" | "discord" | "telegram",
+    platformUserId: string,
+    conversationId: string,
+    sessionKey: string,
+    sessionFile: string,
+  ): { token: string };
+}
+
+export interface RunSessionOptions {
+  event: BotEvent;
+  bot: Bot;
+  adapters: BotAdapters;
+  isEvent?: boolean;
+}
+
+export interface CreateSessionSandboxOptions {
+  conversationId: string;
+  platformName: string;
+  sessionKey: string;
+}
+
+export interface SessionRuntimeOptions {
+  workingDir: string;
+  sandbox: SandboxConfig;
+  vaultManager: VaultManager;
+  bindingStore?: UserBindingStore;
+  provisioner?: DockerContainerManager;
+  linkTokenStore: LinkTokenStoreLike;
+  sessionViewTokenStore: SessionViewTokenStoreLike;
+  portalBaseUrl?: string;
+}
+
+export interface SessionRuntime extends BotHandler {
+  runSession(options: RunSessionOptions): Promise<void>;
+  createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner>;
+  shutdown(timeoutMs?: number): Promise<void>;
+}
+
+const MAX_SESSIONS = 500;
+const IDLE_TIMEOUT_MS = 3_600_000;
+
+export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntime {
+  return new MamaSessionRuntime(options);
+}
+
+class MamaSessionRuntime implements SessionRuntime {
+  private readonly conversationStates = new Map<string, ConversationState>();
+  private readonly inFlightRuns = new Set<Promise<void>>();
+  private isShuttingDown = false;
+
+  constructor(private readonly options: SessionRuntimeOptions) {}
+
+  isRunning(sessionKey: string): boolean {
+    const state = this.conversationStates.get(sessionKey);
+    return !!state?.running;
+  }
+
+  getRunningSessions(): RunningSession[] {
+    const sessions: RunningSession[] = [];
+    for (const [sessionKey, state] of this.conversationStates) {
+      if (state.running && state.startedAt) {
+        const currentStep = state.runner.getCurrentStep();
+        sessions.push({
+          sessionKey,
+          startedAt: state.startedAt,
+          lastActivityAt: state.lastActivityAt,
+          currentTool: currentStep?.label || currentStep?.toolName,
+        });
+      }
+    }
+    return sessions;
+  }
+
+  async handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = this.conversationStates.get(sessionKey);
+    if (state?.running) {
+      state.stopRequested = true;
+      state.runner.abort();
+      const ts = await bot.postMessage(conversationId, formatStopping(bot));
+      state.stopMessageTs = ts;
+    } else {
+      await bot.postMessage(conversationId, formatNothingRunning(bot));
+    }
+  }
+
+  forceStop(sessionKey: string): void {
+    const state = this.conversationStates.get(sessionKey);
+    if (state?.running) {
+      log.logInfo(`[Force Stop] Force stopping session: ${sessionKey}`);
+      state.stopRequested = true;
+      state.runner.abort();
+      state.running = false;
+    }
+  }
+
+  async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+    const state = this.conversationStates.get(sessionKey);
+    if (state?.running) {
+      state.stopRequested = true;
+      state.runner.abort();
+    }
+
+    const conversationDir = join(this.options.workingDir, conversationId);
+    if (sessionKey.includes(":")) {
+      createManagedSessionFileAtPath(
+        getThreadSessionFile(conversationDir, sessionKey),
+        conversationDir,
+      );
+    } else {
+      createManagedSessionFile(getChannelSessionDir(conversationDir), conversationDir);
+    }
+
+    this.conversationStates.delete(sessionKey);
+
+    log.logInfo(`[${conversationId}] Session reset: ${sessionKey}`);
+    await bot.postMessage(conversationId, "Conversation reset. Send a new message to start fresh.");
+  }
+
+  async handleEvent(
+    event: BotEvent,
+    bot: Bot,
+    adapters: BotAdapters,
+    isEvent?: boolean,
+  ): Promise<void> {
+    await this.runSession({ event, bot, adapters, isEvent });
+  }
+
+  async runSession({ event, bot, adapters, isEvent }: RunSessionOptions): Promise<void> {
+    const conversationId = event.conversationId;
+    if (this.isShuttingDown) {
+      log.logInfo(
+        `[${conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
+      );
+      return;
+    }
+
+    const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
+    const privateConversation = isPrivateConversation(event);
+    const handledLogin = await this.handleLoginCommand(
+      adapters.platform.name,
+      event.user,
+      conversationId,
+      adapters.responseCtx,
+      event.text,
+      privateConversation,
+    );
+    if (handledLogin) return;
+
+    const handledSessionView = await this.handleSessionViewCommand(
+      adapters.platform.name,
+      event.user,
+      conversationId,
+      sessionKey,
+      bot,
+      adapters.responseCtx,
+      event.text,
+      privateConversation,
+    );
+    if (handledSessionView) return;
+
+    const conversationDir = join(this.options.workingDir, conversationId);
+    const waitedForParent =
+      adapters.platform.name === "slack"
+        ? await waitForSlackBranchBootstrap({
+            parentSessionKey: conversationId,
+            sessionKey,
+            hasThreadSession: () => hasMaterializedSlackBranchSession(conversationDir, sessionKey),
+            isParentRunning: () => this.conversationStates.get(conversationId)?.running === true,
+          })
+        : false;
+    if (waitedForParent) {
+      log.logInfo(
+        `[${conversationId}] Delayed thread bootstrap until parent session sealed: ${sessionKey}`,
+      );
+    }
+
+    const runner = await this.createSessionSandbox({
+      conversationId,
+      platformName: adapters.platform.name,
+      sessionKey,
+    });
+    const state = this.conversationStates.get(sessionKey)!;
+
+    state.running = true;
+    state.runner = runner;
+    state.stopRequested = false;
+    state.startedAt = Date.now();
+    state.lastActivityAt = Date.now();
+
+    log.logInfo(`[${conversationId}] Starting run: ${event.text.substring(0, 50)}`);
+
+    Sentry.metrics.count("agent.run.started", 1, {
+      attributes: { channel: conversationId },
+    });
+    Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size + 1);
+
+    const runPromise = Sentry.startSpan(
+      { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
+      async () => {
+        return Sentry.withScope(async (scope) => {
+          const { message, responseCtx, platform } = adapters;
+          applyRunScope(scope, {
+            conversationId,
+            sessionKey,
+            messageId: message.id,
+            platform: platform.name,
+            userId: message.userId,
+            userName: message.userName,
+            threadTs: message.threadTs,
+            isEvent,
+          });
+          addLifecycleBreadcrumb("agent.run.started", {
+            channel_id: conversationId,
+            platform: platform.name,
+            has_attachments: (message.attachments?.length ?? 0) > 0,
+          });
+
+          try {
+            await responseCtx.setTyping(true);
+            await responseCtx.setWorking(true);
+            const result = await state.runner.run(message, responseCtx, platform);
+            await responseCtx.setWorking(false);
+
+            const durationMs = Date.now() - state.startedAt!;
+            Sentry.metrics.distribution("agent.run.duration", durationMs, {
+              unit: "millisecond",
+              attributes: {
+                channel: conversationId,
+                platform: platform.name,
+                stop_reason: result.stopReason,
+              },
+            });
+            Sentry.metrics.count("agent.run.completed", 1, {
+              attributes: {
+                channel: conversationId,
+                platform: platform.name,
+                stop_reason: result.stopReason,
+              },
+            });
+            addLifecycleBreadcrumb("agent.run.completed", {
+              channel_id: conversationId,
+              platform: platform.name,
+              stop_reason: result.stopReason,
+              duration_ms: durationMs,
+            });
+
+            if (result.stopReason === "aborted" && state.stopRequested) {
+              if (state.stopMessageTs) {
+                await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
+                state.stopMessageTs = undefined;
+              } else {
+                await bot.postMessage(conversationId, formatStopped(bot));
+              }
+            }
+          } catch (err) {
+            scope.setContext("agent_run_error", {
+              conversationId,
+              sessionKey,
+              platform: adapters.platform.name,
+              messageId: adapters.message.id,
+              threadTs: adapters.message.threadTs,
+            });
+            Sentry.captureException(err);
+            Sentry.metrics.count("agent.run.errors", 1, {
+              attributes: { channel: conversationId, platform: adapters.platform.name },
+            });
+            log.logWarning(
+              `[${conversationId}] Run error`,
+              err instanceof Error ? err.message : String(err),
+            );
+          } finally {
+            state.running = false;
+            state.lastAccessedAt = Date.now();
+            Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size - 1);
+            this.evictIdleSessions();
+          }
+        });
+      },
+    );
+
+    this.inFlightRuns.add(runPromise);
+    try {
+      await runPromise;
+    } finally {
+      this.inFlightRuns.delete(runPromise);
+    }
+  }
+
+  async createSessionSandbox({
+    conversationId,
+    platformName,
+    sessionKey,
+  }: CreateSessionSandboxOptions): Promise<AgentRunner> {
+    let state = this.conversationStates.get(sessionKey);
+    if (!state) {
+      const conversationDir = join(this.options.workingDir, conversationId);
+      const sessionScope = await this.resolveSessionScope(
+        platformName,
+        conversationDir,
+        sessionKey,
+      );
+      state = {
+        running: false,
+        runner: await createRunner(
+          this.options.sandbox,
+          sessionKey,
+          conversationId,
+          conversationDir,
+          this.options.workingDir,
+          sessionScope,
+          this.options.vaultManager,
+          this.options.bindingStore,
+          this.options.provisioner,
+        ),
+        stopRequested: false,
+        lastAccessedAt: Date.now(),
+      };
+      this.conversationStates.set(sessionKey, state);
+    } else {
+      state.lastAccessedAt = Date.now();
+    }
+    return state.runner;
+  }
+
+  async shutdown(timeoutMs = 30_000): Promise<void> {
+    if (this.isShuttingDown) return;
+    this.isShuttingDown = true;
+    log.logInfo("Shutting down gracefully...");
+
+    const timeout = Date.now() + timeoutMs;
+    while (this.inFlightRuns.size > 0 && Date.now() < timeout) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    if (this.inFlightRuns.size > 0) {
+      log.logWarning(`Forcing exit with ${this.inFlightRuns.size} runs still in progress`);
+    }
+  }
+
+  private async resolveSessionScope(
+    platformName: string,
+    conversationDir: string,
+    sessionKey: string,
+  ): Promise<ResolvedSessionScope> {
+    if (platformName === "slack") {
+      return resolveSlackSessionScope({ conversationDir, sessionKey });
+    }
+    return resolveGenericSessionScope({ conversationDir, sessionKey });
+  }
+
+  private evictIdleSessions(): void {
+    const now = Date.now();
+
+    for (const [key, state] of this.conversationStates) {
+      if (!state.running && now - state.lastAccessedAt > IDLE_TIMEOUT_MS) {
+        this.conversationStates.delete(key);
+      }
+    }
+
+    if (this.conversationStates.size > MAX_SESSIONS) {
+      const idleSessions: Array<{ key: string; lastAccessedAt: number }> = [];
+      for (const [key, state] of this.conversationStates) {
+        if (!state.running) {
+          idleSessions.push({ key, lastAccessedAt: state.lastAccessedAt });
+        }
+      }
+
+      idleSessions.sort((a, b) => a.lastAccessedAt - b.lastAccessedAt);
+
+      const toEvict = this.conversationStates.size - MAX_SESSIONS;
+      for (let i = 0; i < toEvict && i < idleSessions.length; i++) {
+        this.conversationStates.delete(idleSessions[i].key);
+      }
+    }
+  }
+
+  private ensureLoginVault(platform: string, platformUserId: string): string {
+    const vaultId = resolveActorVaultKey(
+      this.options.sandbox,
+      this.options.vaultManager,
+      this.options.bindingStore,
+      platform,
+      platformUserId,
+    );
+
+    ensureSandboxVaultEntry(
+      this.options.sandbox,
+      this.options.vaultManager,
+      platform,
+      platformUserId,
+      vaultId,
+    );
+    if (this.options.sandbox.type !== "container" && this.options.sandbox.type !== "image") {
+      this.options.vaultManager.addEntry(
+        vaultId,
+        createManagedVaultEntry(platform, platformUserId, vaultId),
+      );
+    }
+
+    return vaultId;
+  }
+
+  private async replyWithContext(
+    responseCtx: BotAdapters["responseCtx"],
+    text: string,
+  ): Promise<void> {
+    await responseCtx.setTyping(false);
+    await responseCtx.setWorking(false);
+    await responseCtx.respond(text);
+  }
+
+  private async handleLoginCommand(
+    platform: string,
+    platformUserId: string,
+    conversationId: string,
+    responseCtx: BotAdapters["responseCtx"],
+    commandText: string,
+    privateConversation: boolean,
+  ): Promise<boolean> {
+    const parsed = parseLoginCommand(commandText);
+    if (!parsed) return false;
+
+    if (!privateConversation) {
+      await this.replyWithContext(
+        responseCtx,
+        "為了保護你的憑證，`/login` 只能在與機器人的私訊中使用。請先私訊機器人，再重新執行 `/login`。",
+      );
+      return true;
+    }
+
+    if (!this.options.portalBaseUrl) {
+      await this.replyWithContext(
+        responseCtx,
+        "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+      );
+      return true;
+    }
+
+    let vaultId: string;
+    try {
+      vaultId = this.ensureLoginVault(platform, platformUserId);
+    } catch (error) {
+      log.logWarning(
+        `[${conversationId}] Failed to prepare login vault for ${platform}/${platformUserId}`,
+        error instanceof Error ? error.message : String(error),
+      );
+      await this.replyWithContext(
+        responseCtx,
+        "Login setup failed on the server. 請稍後重試，或聯絡管理員檢查 vault 儲存權限。",
+      );
+      return true;
+    }
+
+    const token = this.options.linkTokenStore.create(
+      platform as "slack" | "discord" | "telegram",
+      platformUserId,
+      conversationId,
+      vaultId,
+      "",
+    );
+    const vaultLabel =
+      this.options.sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
+    await this.replyWithContext(
+      responseCtx,
+      `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${this.options.portalBaseUrl}/link?token=${token.token}`,
+    );
+    return true;
+  }
+
+  private async handleSessionViewCommand(
+    platform: string,
+    platformUserId: string,
+    conversationId: string,
+    sessionKey: string,
+    bot: Bot,
+    responseCtx: BotAdapters["responseCtx"],
+    commandText: string,
+    privateConversation: boolean,
+  ): Promise<boolean> {
+    if (!parseSessionViewCommand(commandText)) return false;
+
+    const allowSharedPrivateDelivery = platform === "slack" || platform === "discord";
+    const sendSessionViewReply = async (text: string): Promise<void> => {
+      if (privateConversation) {
+        await this.replyWithContext(responseCtx, text);
+        return;
+      }
+
+      if (platform === "slack" && bot instanceof SlackBotClass) {
+        await bot.postEphemeral(conversationId, platformUserId, text);
+        return;
+      }
+
+      if (platform === "discord" && bot instanceof DiscordBot) {
+        await bot.sendDirectMessage(platformUserId, text);
+        return;
+      }
+
+      await this.replyWithContext(responseCtx, text);
+    };
+
+    if (!privateConversation && !allowSharedPrivateDelivery) {
+      await sendSessionViewReply(
+        "為了保護對話內容，`/session` 目前只能在與機器人的私訊 / DM 中使用。",
+      );
+      return true;
+    }
+
+    if (!this.options.portalBaseUrl) {
+      await sendSessionViewReply(
+        "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+      );
+      return true;
+    }
+
+    const sessionFile = resolveExistingSessionFile(
+      this.options.workingDir,
+      conversationId,
+      sessionKey,
+    );
+    if (!sessionFile) {
+      await sendSessionViewReply(
+        "目前還沒有可查看的 session。先和機器人對話一次，建立 session 後再試。",
+      );
+      return true;
+    }
+
+    const token = this.options.sessionViewTokenStore.create(
+      platform as "slack" | "discord" | "telegram",
+      platformUserId,
+      conversationId,
+      sessionKey,
+      sessionFile,
+    );
+
+    const linkText = `Open this read-only session link (expires in 24 hours):\n${this.options.portalBaseUrl}/session?token=${token.token}`;
+    await sendSessionViewReply(linkText);
+    return true;
+  }
+}
+
+function isPrivateConversation(event: BotEvent): boolean {
+  return event.conversationKind === "direct" || event.type === "dm";
+}
