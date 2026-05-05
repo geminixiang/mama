@@ -85,15 +85,15 @@ describe("FileVaultManager", () => {
   });
 
   test("resolves a vault from directory contents without vault.json metadata", () => {
-    const conversationDir = join(vaultsDir, "slack-d123");
+    const conversationDir = join(vaultsDir, "d123");
     mkdirSync(join(conversationDir, ".ssh"), { recursive: true });
     writeFileSync(join(conversationDir, "env"), "OPENAI_API_KEY=sk-test\n");
 
-    const vault = new FileVaultManager(tmpDir).resolve("slack-d123");
+    const vault = new FileVaultManager(tmpDir).resolve("d123");
 
     expect(vault).toMatchObject({
-      userId: "slack-d123",
-      displayName: "slack-d123",
+      userId: "d123",
+      displayName: "d123",
       env: { OPENAI_API_KEY: "sk-test" },
       mounts: [{ source: join(conversationDir, ".ssh"), target: "/root/.ssh" }],
     });
@@ -226,7 +226,7 @@ describe("FileVaultManager", () => {
   test("ignores managed image metadata when switching to cloudflare mode", () => {
     writeVaultJson({
       vaults: {
-        "slack-d123": {
+        d123: {
           displayName: "slack:D123",
           sandbox: { type: "image" },
         },
@@ -234,11 +234,9 @@ describe("FileVaultManager", () => {
     });
 
     const mgr = new FileVaultManager(tmpDir);
-    expect(
-      mgr.getSandboxConfig("slack-d123", { type: "cloudflare", sandboxId: "mama-remote" }),
-    ).toEqual({
+    expect(mgr.getSandboxConfig("d123", { type: "cloudflare", sandboxId: "mama-remote" })).toEqual({
       type: "cloudflare",
-      sandboxId: "mama-remote-slack-d123",
+      sandboxId: "mama-remote-d123",
     });
   });
 
@@ -317,9 +315,9 @@ describe("ActorExecutionResolver image mode", () => {
 
     expect(executor.getSandboxConfig()).toEqual({
       type: "container",
-      container: "mama-sandbox-slack-d123",
+      container: "mama-sandbox-d123",
     });
-    expect(mgr.resolve(DockerContainerManager.vaultId("slack", "D123"))).toBeUndefined();
+    expect(mgr.resolve(DockerContainerManager.sanitizeSegment("D123"))).toBeUndefined();
   });
 
   test("uses conversation-scoped vault keys even when user-scoped entries exist", async () => {
@@ -347,10 +345,10 @@ describe("ActorExecutionResolver image mode", () => {
 
     expect(executor.getSandboxConfig()).toEqual({
       type: "container",
-      container: "mama-sandbox-slack-d123",
+      container: "mama-sandbox-d123",
     });
     expect(mgr.hasEntry("U123")).toBe(true);
-    expect(mgr.hasEntry(DockerContainerManager.vaultId("slack", "D123"))).toBe(false);
+    expect(mgr.hasEntry(DockerContainerManager.sanitizeSegment("D123"))).toBe(false);
   });
 
   test("ignores bindings for image-mode vault routing", async () => {
@@ -379,17 +377,17 @@ describe("ActorExecutionResolver image mode", () => {
 
     expect(executor.getSandboxConfig()).toEqual({
       type: "container",
-      container: "mama-sandbox-slack-d123",
+      container: "mama-sandbox-d123",
     });
     expect(mgr.hasEntry("alice")).toBe(true);
-    expect(mgr.hasEntry(DockerContainerManager.vaultId("slack", "D123"))).toBe(false);
+    expect(mgr.hasEntry(DockerContainerManager.sanitizeSegment("D123"))).toBe(false);
   });
 
   test("login and execution use the same generated vault key in image mode", async () => {
     writeVaultJson({ vaults: {} });
     const mgr = new FileVaultManager(tmpDir);
     const baseConfig = { type: "image", image: "ubuntu:24.04" } as const;
-    const vaultKey = resolveActorVaultKey(baseConfig, "slack", "U123", "D123");
+    const vaultKey = resolveActorVaultKey(baseConfig, "U123", "D123");
 
     const resolver = new ActorExecutionResolver(baseConfig, mgr, undefined, tmpDir);
     const executor = await resolver.resolve({
@@ -398,10 +396,10 @@ describe("ActorExecutionResolver image mode", () => {
       conversationId: "D123",
     });
 
-    expect(vaultKey).toBe("slack-d123");
+    expect(vaultKey).toBe("d123");
     expect(executor.getSandboxConfig()).toEqual({
       type: "container",
-      container: "mama-sandbox-slack-d123",
+      container: "mama-sandbox-d123",
     });
   });
 
@@ -421,22 +419,22 @@ describe("ActorExecutionResolver image mode", () => {
 
     expect(executor.getSandboxConfig()).toEqual({
       type: "cloudflare",
-      sandboxId: "mama-remote-slack-d123",
+      sandboxId: "mama-remote-d123",
     });
-    expect(mgr.resolve(DockerContainerManager.vaultId("slack", "D123"))).toBeUndefined();
+    expect(mgr.resolve(DockerContainerManager.sanitizeSegment("D123"))).toBeUndefined();
   });
 
   test("provisions custom containers with vault mounts", async () => {
     writeVaultJson({
       vaults: {
-        "slack-d123": {
+        d123: {
           displayName: "Alice",
           mounts: [".ssh"],
           sandbox: { type: "image", container: "alice-box" },
         },
       },
     });
-    mkdirSync(join(vaultsDir, "slack-d123", ".ssh"), { recursive: true });
+    mkdirSync(join(vaultsDir, "d123", ".ssh"), { recursive: true });
 
     const mgr = new FileVaultManager(tmpDir);
     const provision = vi.fn().mockResolvedValue("alice-box");
@@ -457,7 +455,7 @@ describe("ActorExecutionResolver image mode", () => {
     });
     await executor.exec("pwd");
 
-    expect(provision).toHaveBeenCalledWith("slack-d123", {
+    expect(provision).toHaveBeenCalledWith("d123", {
       containerName: "alice-box",
       conversationId: "D123",
       mounts: [
@@ -465,7 +463,7 @@ describe("ActorExecutionResolver image mode", () => {
         { source: join(tmpDir, "skills"), target: "/workspace/skills" },
         { source: join(tmpDir, "events"), target: "/workspace/events" },
         { source: join(tmpDir, "D123"), target: "/workspace/D123" },
-        { source: join(vaultsDir, "slack-d123", ".ssh"), target: "/root/.ssh" },
+        { source: join(vaultsDir, "d123", ".ssh"), target: "/root/.ssh" },
       ],
     });
     expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
@@ -474,7 +472,7 @@ describe("ActorExecutionResolver image mode", () => {
   test("deduplicates mount targets and ignores missing files", async () => {
     writeVaultJson({
       vaults: {
-        "slack-d123": {
+        d123: {
           displayName: "Alice",
           mounts: [
             ".config/gws/credentials.json",
@@ -491,8 +489,8 @@ describe("ActorExecutionResolver image mode", () => {
         },
       },
     });
-    mkdirSync(join(vaultsDir, "slack-d123"), { recursive: true });
-    writeFileSync(join(vaultsDir, "slack-d123", "gws.json"), '{ "type": "authorized_user" }\n');
+    mkdirSync(join(vaultsDir, "d123"), { recursive: true });
+    writeFileSync(join(vaultsDir, "d123", "gws.json"), '{ "type": "authorized_user" }\n');
 
     const mgr = new FileVaultManager(tmpDir);
     const provision = vi.fn().mockResolvedValue("alice-box");
@@ -513,7 +511,7 @@ describe("ActorExecutionResolver image mode", () => {
     });
     await executor.exec("pwd");
 
-    expect(provision).toHaveBeenCalledWith("slack-d123", {
+    expect(provision).toHaveBeenCalledWith("d123", {
       containerName: "alice-box",
       conversationId: "D123",
       mounts: [
@@ -522,7 +520,7 @@ describe("ActorExecutionResolver image mode", () => {
         { source: join(tmpDir, "events"), target: "/workspace/events" },
         { source: join(tmpDir, "D123"), target: "/workspace/D123" },
         {
-          source: join(vaultsDir, "slack-d123", "gws.json"),
+          source: join(vaultsDir, "d123", "gws.json"),
           target: "/root/.config/gws/credentials.json",
         },
       ],

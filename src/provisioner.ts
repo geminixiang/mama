@@ -82,16 +82,8 @@ export class DockerContainerManager {
     return sanitized || "unknown";
   }
 
-  static vaultId(platform: string, platformUserId: string): string {
-    return `${DockerContainerManager.sanitizeSegment(platform)}-${DockerContainerManager.sanitizeSegment(platformUserId)}`;
-  }
-
   static containerName(containerKey: string): string {
     return `mama-sandbox-${containerKey}`;
-  }
-
-  static containerKey(vaultId: string, conversationId: string): string {
-    return `${vaultId}-${DockerContainerManager.sanitizeSegment(conversationId)}`;
   }
 
   static networkName(containerKey: string): string {

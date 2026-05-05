@@ -5,10 +5,9 @@ import type { CommandContext, CommandHandler } from "./types.js";
 import { replyWithContext } from "./utils.js";
 
 function ensureLoginVault(context: CommandContext): string {
-  const { services, platform, platformUserId, conversationId, vaultConversationId } = context;
+  const { services, platformUserId, conversationId, vaultConversationId } = context;
   return resolveActorVaultKey(
     services.sandbox,
-    platform,
     platformUserId,
     vaultConversationId ?? conversationId,
   );

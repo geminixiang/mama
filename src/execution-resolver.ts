@@ -26,12 +26,7 @@ export class ActorExecutionResolver {
   }
 
   async resolve(context: ActorContext): Promise<Executor> {
-    const vaultKey = resolveActorVaultKey(
-      this.baseConfig,
-      context.platform,
-      context.userId,
-      context.conversationId,
-    );
+    const vaultKey = resolveActorVaultKey(this.baseConfig, context.userId, context.conversationId);
 
     const vault = this.vaultManager.resolve(vaultKey);
     const config = this.resolveSandboxConfig(vaultKey);

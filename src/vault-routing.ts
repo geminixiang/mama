@@ -4,7 +4,6 @@ import type { VaultEntry } from "./vault.js";
 
 export function resolveActorVaultKey(
   baseConfig: SandboxConfig,
-  platform: string,
   userId: string,
   conversationId: string,
 ): string {
@@ -17,7 +16,7 @@ export function resolveActorVaultKey(
     baseConfig.type === "cloudflare" ||
     baseConfig.type === "firecracker"
   ) {
-    return DockerContainerManager.vaultId(platform, conversationId);
+    return DockerContainerManager.sanitizeSegment(conversationId);
   }
 
   return userId;

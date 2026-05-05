@@ -301,7 +301,7 @@ describe("LoginCommandHandler", () => {
         platform: "slack",
         platformUserId: "U123",
         conversationId: "D123",
-        vaultId: "slack-c123",
+        vaultId: "c123",
         providerId: "",
       },
     ]);
