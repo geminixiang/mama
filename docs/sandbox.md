@@ -176,9 +176,9 @@ mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 
 vault key 選擇邏輯：
 
-1. 使用 conversation ID 產生 platform-scoped vault key，例如 `slack-d123`
+1. 直接使用 conversation ID 作為 vault key，例如 `d123`
 2. 該 conversation 的 credentials / mounts / env 都寫入這個 vault
-3. 對應的 managed container 會使用同一個 conversation key，例如 `mama-sandbox-slack-d123`
+3. 對應的 managed container 會使用同一個 key，例如 `mama-sandbox-d123`
 
 適合：
 
@@ -233,7 +233,7 @@ mama --sandbox=firecracker:192.168.1.100:/home/mama/workspace:root:22 /home/mama
 - VM 內 workspace 預期是 `/workspace`
 - vault env 會透過 SSH stdin 注入，避免 secret 出現在宿主機 command line
 - vault 選擇邏輯：
-  1. 使用 conversation ID 產生 platform-scoped vault key（例如 `slack-d123`）
+  1. 直接使用 conversation ID 作為 vault key（例如 `d123`）
   2. 找不到 vault 時不注入 env
 
 限制：
