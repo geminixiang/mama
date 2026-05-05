@@ -130,6 +130,8 @@ function fakeSessionViewTokenStore() {
 interface BuildContextArgs {
   commandText: string;
   privateConversation?: boolean;
+  conversationId?: string;
+  vaultConversationId?: string;
   bot?: Bot;
   services?: Partial<CommandServices>;
   platform?: "slack" | "discord" | "telegram";
@@ -155,8 +157,9 @@ function buildContext(args: BuildContextArgs): CommandContext & {
     responseCtx,
     platform: args.platform ?? "slack",
     platformUserId: "U123",
-    conversationId: "C123",
-    sessionKey: "C123",
+    conversationId: args.conversationId ?? "C123",
+    vaultConversationId: args.vaultConversationId,
+    sessionKey: args.conversationId ?? "C123",
     commandText: args.commandText,
     privateConversation: args.privateConversation ?? false,
     services,
@@ -261,6 +264,48 @@ describe("LoginCommandHandler", () => {
       },
     ]);
     expect(ctx.responseCtx.responses[0]).toContain("https://portal.example/link?token=tok-link");
+  });
+
+  test("uses vaultConversationId for vault routing when reply channel differs", async () => {
+    const linkTokenStore = fakeLinkTokenStore();
+    const entries = new Map<string, VaultEntry>();
+    const ctx = buildContext({
+      commandText: "/login",
+      privateConversation: true,
+      conversationId: "D123",
+      vaultConversationId: "C123",
+      services: {
+        linkTokenStore,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        vaultManager: {
+          entries,
+          hasEntry: (key: string) => entries.has(key),
+          resolve: () => undefined,
+          getSandboxConfig: (_uid: string, base: SandboxConfig) => base,
+          list: () => [],
+          reload: () => {},
+          isEnabled: () => true,
+          addEntry: (key: string, entry: VaultEntry) => {
+            if (!entries.has(key)) entries.set(key, entry);
+          },
+          ensureImageSandboxEntry: (key: string, entry: VaultEntry) => entries.set(key, entry),
+          upsertEnv: () => {},
+          upsertFile: () => {},
+        } as VaultManager,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(linkTokenStore.created).toEqual([
+      {
+        platform: "slack",
+        platformUserId: "U123",
+        conversationId: "D123",
+        vaultId: "slack-c123",
+        providerId: "",
+      },
+    ]);
+    expect(entries.size).toBe(0);
   });
 });
 

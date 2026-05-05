@@ -1,47 +1,40 @@
-import type { UserBindingStore } from "./bindings.js";
 import { DockerContainerManager } from "./provisioner.js";
 import type { SandboxConfig } from "./sandbox.js";
-import type { VaultEntry, VaultManager } from "./vault.js";
+import type { VaultEntry } from "./vault.js";
 
 export function resolveActorVaultKey(
   baseConfig: SandboxConfig,
-  vaultManager: Pick<VaultManager, "hasEntry">,
-  bindingStore: Pick<UserBindingStore, "resolve"> | undefined,
   platform: string,
   userId: string,
+  conversationId: string,
 ): string {
   if (baseConfig.type === "container") {
     return containerSharedVaultId(baseConfig.container);
   }
 
-  const binding = bindingStore?.resolve(platform, userId);
-  if (binding) {
-    return binding.vaultId;
+  if (
+    baseConfig.type === "image" ||
+    baseConfig.type === "cloudflare" ||
+    baseConfig.type === "firecracker"
+  ) {
+    return DockerContainerManager.vaultId(platform, conversationId);
   }
 
-  if (vaultManager.hasEntry(userId)) {
-    return userId;
-  }
-
-  return baseConfig.type === "image" || baseConfig.type === "cloudflare"
-    ? DockerContainerManager.vaultId(platform, userId)
-    : userId;
+  return userId;
 }
 
 export function createManagedVaultEntry(
   platform: string,
-  userId: string,
-  vaultKey: string,
+  conversationId: string,
   withImageSandbox = false,
 ): VaultEntry {
   return {
-    displayName: `${platform}:${userId}`,
+    displayName: `${platform}:${conversationId}`,
     platform: asVaultPlatform(platform),
     ...(withImageSandbox
       ? {
           sandbox: {
             type: "image" as const,
-            container: DockerContainerManager.containerName(vaultKey),
           },
         }
       : {}),
@@ -56,31 +49,6 @@ export function createSharedContainerVaultEntry(containerName: string): VaultEnt
   return {
     displayName: `container:${containerName}`,
   };
-}
-
-export function ensureSandboxVaultEntry(
-  baseConfig: SandboxConfig,
-  vaultManager: Pick<VaultManager, "addEntry" | "ensureImageSandboxEntry">,
-  platform: string,
-  userId: string,
-  vaultKey: string,
-): void {
-  if (baseConfig.type === "image") {
-    vaultManager.ensureImageSandboxEntry(
-      vaultKey,
-      createManagedVaultEntry(platform, userId, vaultKey, true),
-    );
-    return;
-  }
-
-  if (baseConfig.type === "container") {
-    vaultManager.addEntry(vaultKey, createSharedContainerVaultEntry(baseConfig.container));
-    return;
-  }
-
-  if (baseConfig.type === "cloudflare") {
-    vaultManager.addEntry(vaultKey, createManagedVaultEntry(platform, userId, vaultKey));
-  }
 }
 
 function asVaultPlatform(platform: string): VaultEntry["platform"] | undefined {

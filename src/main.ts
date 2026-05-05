@@ -3,7 +3,7 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
-import { mkdirSync, readFileSync, statSync } from "fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
@@ -221,7 +221,7 @@ if (vaultManager.isEnabled()) {
     sandbox.type === "container"
       ? "  Vault system enabled. Container vault active."
       : sandbox.type === "image" || sandbox.type === "firecracker" || sandbox.type === "cloudflare"
-        ? "  Vault system enabled. Per-user credential routing active."
+        ? "  Vault system enabled. Conversation-scoped credential routing active."
         : "  Vault system enabled. Host mode will not inject vault env.",
   );
 }
@@ -232,7 +232,7 @@ if (bindingStore.isEnabled()) {
     sandbox.type === "container"
       ? "  Binding store enabled. Container mode uses the container vault."
       : sandbox.type === "image" || sandbox.type === "firecracker" || sandbox.type === "cloudflare"
-        ? "  Binding store enabled. Platform user → vault routing active."
+        ? "  Binding store enabled, but conversation-scoped sandbox routing does not use it."
         : "  Binding store enabled. Host mode will not inject vault env.",
   );
 }
@@ -245,8 +245,18 @@ const sandboxLimits =
 
 const provisioner =
   sandbox.type === "image"
-    ? new DockerContainerManager(sandbox.image, workingDir, { limits: sandboxLimits })
+    ? new DockerContainerManager(sandbox.image, { limits: sandboxLimits })
     : undefined;
+
+if (sandbox.type === "image") {
+  mkdirSync(join(workingDir, "skills"), { recursive: true });
+  mkdirSync(join(workingDir, "events"), { recursive: true });
+  try {
+    writeFileSync(join(workingDir, "MEMORY.md"), "", { flag: "wx" });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+}
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 const sessionViewTokenStore = new InMemorySessionViewTokenStore();

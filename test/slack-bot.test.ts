@@ -74,6 +74,7 @@ describe("SlackBot slash commands", () => {
     expect(event).toMatchObject({
       type: "dm",
       conversationId: "D123",
+      vaultConversationId: "C123",
       conversationKind: "direct",
       user: "U123",
       text: "/pi-login github",

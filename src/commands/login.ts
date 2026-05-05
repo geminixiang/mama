@@ -1,38 +1,17 @@
 import * as log from "../log.js";
 import { parseLoginCommand } from "../login/index.js";
-import {
-  createManagedVaultEntry,
-  ensureSandboxVaultEntry,
-  resolveActorVaultKey,
-} from "../vault-routing.js";
+import { resolveActorVaultKey } from "../vault-routing.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { replyWithContext } from "./utils.js";
 
 function ensureLoginVault(context: CommandContext): string {
-  const { services, platform, platformUserId } = context;
-  const vaultId = resolveActorVaultKey(
+  const { services, platform, platformUserId, conversationId, vaultConversationId } = context;
+  return resolveActorVaultKey(
     services.sandbox,
-    services.vaultManager,
-    services.bindingStore,
     platform,
     platformUserId,
+    vaultConversationId ?? conversationId,
   );
-
-  ensureSandboxVaultEntry(
-    services.sandbox,
-    services.vaultManager,
-    platform,
-    platformUserId,
-    vaultId,
-  );
-  if (services.sandbox.type !== "container" && services.sandbox.type !== "image") {
-    services.vaultManager.addEntry(
-      vaultId,
-      createManagedVaultEntry(platform, platformUserId, vaultId),
-    );
-  }
-
-  return vaultId;
 }
 
 export class LoginCommandHandler implements CommandHandler {

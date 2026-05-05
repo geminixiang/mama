@@ -41,6 +41,7 @@ export interface CommandContext {
   platform: PlatformName;
   platformUserId: string;
   conversationId: string;
+  vaultConversationId?: string;
   sessionKey: string;
   commandText: string;
   privateConversation: boolean;

@@ -662,6 +662,7 @@ export class SlackBot implements Bot {
     const event: BotEvent = {
       type: "dm",
       conversationId: targetChannelId,
+      ...(isDirectMessage ? {} : { vaultConversationId: sourceChannelId }),
       conversationKind: "direct",
       ts: eventTs,
       user: payload.user_id,

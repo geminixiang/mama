@@ -19,6 +19,7 @@ function isDockerNotFoundError(err: unknown): boolean {
     haystack.includes("no such container") ||
     haystack.includes("no such object") ||
     haystack.includes("network not found") ||
+    /network [^\n]+ not found/.test(haystack) ||
     /error: no such [^\n]+/.test(haystack)
   );
 }
@@ -42,6 +43,7 @@ export interface ResourceLimits {
 export interface ProvisionOptions {
   containerName?: string;
   mounts?: ContainerMount[];
+  conversationId?: string;
 }
 
 export interface DockerContainerManagerOptions {
@@ -55,13 +57,13 @@ export class DockerContainerManager {
   private static readonly MANAGED_LABEL = "mama.managed=true";
   private static readonly IMAGE_MODE_LABEL = "mama.sandbox=image";
   private static readonly VAULT_ID_LABEL_KEY = "mama.vault-id";
+  private static readonly CONVERSATION_ID_LABEL_KEY = "mama.conversation-id";
 
   private readonly limits?: ResourceLimits;
   private readonly execFileImpl: ExecFileAsync;
 
   constructor(
     private readonly image: string,
-    private readonly workspaceDir: string,
     options: DockerContainerManagerOptions | ExecFileAsync = {},
   ) {
     if (typeof options === "function") {
@@ -84,35 +86,43 @@ export class DockerContainerManager {
     return `${DockerContainerManager.sanitizeSegment(platform)}-${DockerContainerManager.sanitizeSegment(platformUserId)}`;
   }
 
-  static containerName(vaultId: string): string {
-    return `mama-sandbox-${vaultId}`;
+  static containerName(containerKey: string): string {
+    return `mama-sandbox-${containerKey}`;
   }
 
-  static networkName(vaultId: string): string {
-    return `mama-sandbox-net-${vaultId}`;
+  static containerKey(vaultId: string, conversationId: string): string {
+    return `${vaultId}-${DockerContainerManager.sanitizeSegment(conversationId)}`;
   }
 
-  async provision(vaultId: string, options: ProvisionOptions = {}): Promise<string> {
-    const existing = this.inflight.get(vaultId);
+  static networkName(containerKey: string): string {
+    return `mama-sandbox-net-${containerKey}`;
+  }
+
+  async provision(containerKey: string, options: ProvisionOptions = {}): Promise<string> {
+    const existing = this.inflight.get(containerKey);
     if (existing) return existing;
 
-    const pending = this.provisionInner(vaultId, options).finally(() => {
-      this.inflight.delete(vaultId);
+    const pending = this.provisionInner(containerKey, options).finally(() => {
+      this.inflight.delete(containerKey);
     });
-    this.inflight.set(vaultId, pending);
+    this.inflight.set(containerKey, pending);
     return pending;
   }
 
-  private async provisionInner(vaultId: string, options: ProvisionOptions): Promise<string> {
-    const containerName = options.containerName ?? DockerContainerManager.containerName(vaultId);
+  private async provisionInner(containerKey: string, options: ProvisionOptions): Promise<string> {
+    const containerName =
+      options.containerName ?? DockerContainerManager.containerName(containerKey);
     const mounts = options.mounts ?? [];
     const status = await this.inspectStatus(containerName);
 
     try {
-      if (status !== "missing" && (await this.hasRuntimeDrift(vaultId, containerName, mounts))) {
+      if (
+        status !== "missing" &&
+        (await this.hasRuntimeDrift(containerKey, containerName, mounts))
+      ) {
         log.logInfo(`Container ${containerName} configuration changed; recreating container`);
         await this.execFileImpl("docker", ["rm", "-f", containerName]);
-        await this.runContainer(vaultId, containerName, mounts);
+        await this.runContainer(containerKey, containerName, mounts, options);
         log.logInfo(`Container ${containerName} recreated`);
       } else if (status === "running") {
         log.logInfo(`Container ${containerName} already running`);
@@ -120,24 +130,24 @@ export class DockerContainerManager {
         await this.execFileImpl("docker", ["start", containerName]);
         log.logInfo(`Container ${containerName} started`);
       } else {
-        await this.runContainer(vaultId, containerName, mounts);
+        await this.runContainer(containerKey, containerName, mounts, options);
         log.logInfo(`Container ${containerName} created`);
       }
     } catch (err) {
-      this.state.delete(vaultId);
+      this.state.delete(containerKey);
       throw err;
     }
 
-    this.setState(vaultId, "running", containerName);
+    this.setState(containerKey, "running", containerName);
     await this.applyResourceLimits(containerName);
     return containerName;
   }
 
-  async stop(vaultId: string): Promise<void> {
-    const containerName = this.getContainerName(vaultId);
+  async stop(containerKey: string): Promise<void> {
+    const containerName = this.getContainerName(containerKey);
     try {
       await this.execFileImpl("docker", ["stop", containerName]);
-      this.setState(vaultId, "stopped", containerName);
+      this.setState(containerKey, "stopped", containerName);
       log.logInfo(`Container ${containerName} stopped (idle)`);
     } catch (err) {
       log.logWarning(
@@ -147,19 +157,15 @@ export class DockerContainerManager {
     }
   }
 
-  async remove(vaultId: string): Promise<void> {
-    const containerName = this.getContainerName(vaultId);
-    const networkName = DockerContainerManager.networkName(vaultId);
+  async remove(containerKey: string): Promise<void> {
+    const containerName = this.getContainerName(containerKey);
+    const networkName = DockerContainerManager.networkName(containerKey);
 
-    try {
-      await this.execFileImpl("docker", ["rm", "-f", containerName]);
-      log.logInfo(`Container ${containerName} removed`);
-    } catch (err) {
-      log.logWarning(
-        `Failed to remove container ${containerName}`,
-        err instanceof Error ? err.message : String(err),
-      );
-    }
+    await this.forceRemoveContainer(
+      containerName,
+      `Container ${containerName} removed`,
+      `Failed to remove container ${containerName}`,
+    );
 
     try {
       await this.execFileImpl("docker", ["network", "rm", networkName]);
@@ -171,18 +177,18 @@ export class DockerContainerManager {
       );
     }
 
-    this.state.delete(vaultId);
+    this.state.delete(containerKey);
   }
 
   async stopIdle(maxIdleMs: number): Promise<void> {
     const now = Date.now();
     const toStop: string[] = [];
-    for (const [vaultId, containerState] of this.state) {
+    for (const [containerKey, containerState] of this.state) {
       if (containerState.status === "running" && now - containerState.lastUsed > maxIdleMs) {
-        toStop.push(vaultId);
+        toStop.push(containerKey);
       }
     }
-    await Promise.all(toStop.map((vaultId) => this.stop(vaultId)));
+    await Promise.all(toStop.map((containerKey) => this.stop(containerKey)));
   }
 
   async reconcile(): Promise<void> {
@@ -194,20 +200,33 @@ export class DockerContainerManager {
 
     this.state.clear();
 
-    for (const containerName of discovered) {
-      const details = await this.inspectContainerDetails(containerName);
+    const inspected = await Promise.all(
+      Array.from(discovered).map(async (containerName) => ({
+        containerName,
+        details: await this.inspectContainerDetails(containerName),
+      })),
+    );
+
+    const legacyRemovals: Promise<void>[] = [];
+    for (const { containerName, details } of inspected) {
       if (!details) continue;
 
-      const vaultId = details.vaultId || this.vaultIdFromContainerName(containerName);
-      if (!vaultId) {
-        log.logWarning(`Skipping unmanaged-style container without vault id`, containerName);
+      if (!details.conversationId) {
+        legacyRemovals.push(this.removeLegacyContainer(containerName));
+        continue;
+      }
+
+      const containerKey = this.containerKeyFromContainerName(containerName);
+      if (!containerKey) {
+        log.logWarning(`Skipping unmanaged-style container without container key`, containerName);
         continue;
       }
 
       const status: ContainerStatus = details.running ? "running" : "stopped";
       const lastUsed = details.startedAtMs ?? Date.now();
-      this.state.set(vaultId, { status, lastUsed, containerName });
+      this.state.set(containerKey, { status, lastUsed, containerName });
     }
+    await Promise.all(legacyRemovals);
 
     const running = Array.from(this.state.values()).filter((s) => s.status === "running").length;
     const stopped = this.state.size - running;
@@ -216,12 +235,15 @@ export class DockerContainerManager {
     );
   }
 
-  private setState(vaultId: string, status: ContainerStatus, containerName: string): void {
-    this.state.set(vaultId, { status, lastUsed: Date.now(), containerName });
+  private setState(containerKey: string, status: ContainerStatus, containerName: string): void {
+    this.state.set(containerKey, { status, lastUsed: Date.now(), containerName });
   }
 
-  private getContainerName(vaultId: string): string {
-    return this.state.get(vaultId)?.containerName ?? DockerContainerManager.containerName(vaultId);
+  private getContainerName(containerKey: string): string {
+    return (
+      this.state.get(containerKey)?.containerName ??
+      DockerContainerManager.containerName(containerKey)
+    );
   }
 
   private mountArgs(mounts: ContainerMount[]): string[] {
@@ -233,12 +255,27 @@ export class DockerContainerManager {
   }
 
   private async runContainer(
-    vaultId: string,
+    containerKey: string,
     containerName: string,
     mounts: ContainerMount[],
+    options: ProvisionOptions,
   ): Promise<void> {
-    const networkName = await this.ensureNetwork(vaultId);
+    const networkName = await this.ensureNetwork(containerKey);
     log.logInfo(`Creating container ${containerName} from image ${this.image}`);
+    const labels = [
+      "--label",
+      DockerContainerManager.MANAGED_LABEL,
+      "--label",
+      DockerContainerManager.IMAGE_MODE_LABEL,
+      "--label",
+      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${containerKey}`,
+    ];
+    if (options.conversationId) {
+      labels.push(
+        "--label",
+        `${DockerContainerManager.CONVERSATION_ID_LABEL_KEY}=${options.conversationId}`,
+      );
+    }
     await this.execFileImpl("docker", [
       "run",
       "-d",
@@ -246,15 +283,8 @@ export class DockerContainerManager {
       containerName,
       "--network",
       networkName,
-      "--label",
-      DockerContainerManager.MANAGED_LABEL,
-      "--label",
-      DockerContainerManager.IMAGE_MODE_LABEL,
-      "--label",
-      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+      ...labels,
       ...this.resourceLimitArgs(),
-      "-v",
-      `${this.workspaceDir}:/workspace`,
       ...this.mountArgs(mounts),
       this.image,
       "sleep",
@@ -283,14 +313,14 @@ export class DockerContainerManager {
   }
 
   private async hasRuntimeDrift(
-    vaultId: string,
+    containerKey: string,
     containerName: string,
     mounts: ContainerMount[],
   ): Promise<boolean> {
     if (await this.hasBindMountDrift(containerName, mounts)) {
       return true;
     }
-    return this.hasNetworkModeDrift(vaultId, containerName);
+    return this.hasNetworkModeDrift(containerKey, containerName);
   }
 
   private async hasBindMountDrift(
@@ -303,7 +333,8 @@ export class DockerContainerManager {
   }
 
   private expectedBinds(mounts: ContainerMount[]): string[] {
-    return [`${this.workspaceDir}:/workspace`, ...mounts.map((mount) => this.toBindSpec(mount))]
+    return mounts
+      .map((mount) => this.toBindSpec(mount))
       .slice()
       .sort();
   }
@@ -337,8 +368,8 @@ export class DockerContainerManager {
     return [...parsed].sort();
   }
 
-  private async hasNetworkModeDrift(vaultId: string, containerName: string): Promise<boolean> {
-    const expected = DockerContainerManager.networkName(vaultId);
+  private async hasNetworkModeDrift(containerKey: string, containerName: string): Promise<boolean> {
+    const expected = DockerContainerManager.networkName(containerKey);
     const { stdout } = await this.execFileImpl("docker", [
       "inspect",
       "-f",
@@ -348,8 +379,8 @@ export class DockerContainerManager {
     return stdout.trim() !== expected;
   }
 
-  private async ensureNetwork(vaultId: string): Promise<string> {
-    const networkName = DockerContainerManager.networkName(vaultId);
+  private async ensureNetwork(containerKey: string): Promise<string> {
+    const networkName = DockerContainerManager.networkName(containerKey);
     try {
       await this.execFileImpl("docker", ["network", "inspect", networkName]);
       return networkName;
@@ -366,7 +397,7 @@ export class DockerContainerManager {
       "--label",
       DockerContainerManager.IMAGE_MODE_LABEL,
       "--label",
-      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${vaultId}`,
+      `${DockerContainerManager.VAULT_ID_LABEL_KEY}=${containerKey}`,
       networkName,
     ]);
     return networkName;
@@ -438,19 +469,23 @@ export class DockerContainerManager {
 
   private async inspectContainerDetails(
     containerName: string,
-  ): Promise<{ running: boolean; startedAtMs?: number; vaultId?: string } | undefined> {
+  ): Promise<
+    | { running: boolean; startedAtMs?: number; vaultId?: string; conversationId?: string }
+    | undefined
+  > {
     try {
       const { stdout } = await this.execFileImpl("docker", [
         "inspect",
         "-f",
-        `{{.State.Running}}\t{{.State.StartedAt}}\t{{index .Config.Labels "${DockerContainerManager.VAULT_ID_LABEL_KEY}"}}`,
+        `{{.State.Running}}\t{{.State.StartedAt}}\t{{index .Config.Labels "${DockerContainerManager.VAULT_ID_LABEL_KEY}"}}\t{{index .Config.Labels "${DockerContainerManager.CONVERSATION_ID_LABEL_KEY}"}}`,
         containerName,
       ]);
-      const [runningRaw, startedAtRaw, vaultIdRaw] = stdout.trim().split("\t");
+      const [runningRaw, startedAtRaw, vaultIdRaw, conversationIdRaw] = stdout.trim().split("\t");
       const running = runningRaw === "true";
       const startedAtMs = this.parseDockerTimestamp(startedAtRaw);
       const vaultId = this.normalizeDockerValue(vaultIdRaw);
-      return { running, startedAtMs, vaultId };
+      const conversationId = this.normalizeDockerValue(conversationIdRaw);
+      return { running, startedAtMs, vaultId, conversationId };
     } catch (err) {
       log.logWarning(
         `Failed to inspect container ${containerName} during reconcile`,
@@ -473,11 +508,32 @@ export class DockerContainerManager {
     return Number.isNaN(parsed) ? undefined : parsed;
   }
 
-  private vaultIdFromContainerName(containerName: string): string | undefined {
+  private containerKeyFromContainerName(containerName: string): string | undefined {
     const prefix = DockerContainerManager.containerName("");
     if (!containerName.startsWith(prefix)) return undefined;
-    const vaultId = containerName.slice(prefix.length);
-    return vaultId.length > 0 ? vaultId : undefined;
+    const containerKey = containerName.slice(prefix.length);
+    return containerKey.length > 0 ? containerKey : undefined;
+  }
+
+  private async forceRemoveContainer(
+    containerName: string,
+    successLog: string,
+    failureLog: string,
+  ): Promise<void> {
+    try {
+      await this.execFileImpl("docker", ["rm", "-f", containerName]);
+      log.logInfo(successLog);
+    } catch (err) {
+      log.logWarning(failureLog, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  private async removeLegacyContainer(containerName: string): Promise<void> {
+    await this.forceRemoveContainer(
+      containerName,
+      `Removed legacy mama container ${containerName} (pre-channel-isolation scheme)`,
+      `Failed to remove legacy mama container ${containerName}`,
+    );
   }
 }
 

@@ -60,6 +60,8 @@ export interface BotEvent {
   type: string;
   /** Platform-specific raw conversation/channel/chat identifier */
   conversationId: string;
+  /** Optional alternate conversation identity used for vault routing. */
+  vaultConversationId?: string;
   /** Cross-platform conversation shape: direct message vs shared space */
   conversationKind: ConversationKind;
   /** Message timestamp or ID as string */

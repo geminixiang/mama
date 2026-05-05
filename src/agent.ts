@@ -448,12 +448,11 @@ export async function createRunner(
     vaultManager &&
     sandboxConfig.type !== "host" &&
     (vaultManager.isEnabled() ||
-      !!bindingStore ||
       sandboxConfig.type === "container" ||
       sandboxConfig.type === "image" ||
       sandboxConfig.type === "cloudflare" ||
       sandboxConfig.type === "firecracker")
-      ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
       : undefined;
   // activeExecutor is replaced at the start of each run() call when executionResolver
   // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
@@ -840,6 +839,7 @@ export async function createRunner(
         activeExecutor = await executionResolver.resolve({
           platform: platform.name,
           userId: message.userId,
+          conversationId,
         });
         workspacePath = getWorkspacePath();
       }

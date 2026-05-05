@@ -6,13 +6,13 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
       .mockResolvedValueOnce({ stdout: "false\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
       .mockResolvedValueOnce({ stdout: "started\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u123");
     await manager.provision("slack-u123");
@@ -60,12 +60,12 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
       .mockRejectedValueOnce(new Error("No such object"))
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u123");
     await manager.provision("slack-u123");
@@ -83,8 +83,6 @@ describe("DockerContainerManager", () => {
       "mama.sandbox=image",
       "--label",
       "mama.vault-id=slack-u123",
-      "-v",
-      "/tmp/workspace:/workspace",
       "ubuntu:24.04",
       "sleep",
       "infinity",
@@ -99,11 +97,12 @@ describe("DockerContainerManager", () => {
       .mockResolvedValueOnce({ stdout: "network-id\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" })
       .mockResolvedValueOnce({ stdout: "" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("alice", {
       containerName: "alice-box",
       mounts: [{ source: "/tmp/vaults/alice/.ssh", target: "/root/.ssh" }],
+      conversationId: "D123",
     });
     await manager.stop("alice");
 
@@ -133,8 +132,8 @@ describe("DockerContainerManager", () => {
       "mama.sandbox=image",
       "--label",
       "mama.vault-id=alice",
-      "-v",
-      "/tmp/workspace:/workspace",
+      "--label",
+      "mama.conversation-id=D123",
       "-v",
       "/tmp/vaults/alice/.ssh:/root/.ssh",
       "ubuntu:24.04",
@@ -144,21 +143,57 @@ describe("DockerContainerManager", () => {
     expect(execMock).toHaveBeenNthCalledWith(5, "docker", ["stop", "alice-box"]);
   });
 
+  test("creates the network when docker reports '<name> not found'", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockRejectedValueOnce(new Error("No such object"))
+      .mockRejectedValueOnce(
+        new Error("Error response from daemon: network mama-sandbox-net-slack-u123-d123 not found"),
+      )
+      .mockResolvedValueOnce({ stdout: "network-id\n" })
+      .mockResolvedValueOnce({ stdout: "new-container-id\n" });
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
+
+    await manager.provision("slack-u123-d123", {
+      conversationId: "D123",
+    });
+
+    expect(execMock).toHaveBeenNthCalledWith(2, "docker", [
+      "network",
+      "inspect",
+      "mama-sandbox-net-slack-u123-d123",
+    ]);
+    expect(execMock).toHaveBeenNthCalledWith(3, "docker", [
+      "network",
+      "create",
+      "--driver",
+      "bridge",
+      "--label",
+      "mama.managed=true",
+      "--label",
+      "mama.sandbox=image",
+      "--label",
+      "mama.vault-id=slack-u123-d123",
+      "mama-sandbox-net-slack-u123-d123",
+    ]);
+  });
+
   test("recreates existing containers when vault mounts change", async () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
       .mockResolvedValueOnce({
-        stdout: '["/tmp/workspace:/workspace","/tmp/vaults/alice/.ssh:/root/.ssh"]\n',
+        stdout: '["/tmp/vaults/alice/.ssh:/root/.ssh"]\n',
       })
       .mockResolvedValueOnce({ stdout: "removed\n" })
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("alice", {
       containerName: "alice-box",
       mounts: [{ source: "/tmp/vaults/alice/.kube", target: "/root/.kube" }],
+      conversationId: "D123",
     });
 
     expect(execMock).toHaveBeenNthCalledWith(3, "docker", ["rm", "-f", "alice-box"]);
@@ -175,8 +210,8 @@ describe("DockerContainerManager", () => {
       "mama.sandbox=image",
       "--label",
       "mama.vault-id=alice",
-      "-v",
-      "/tmp/workspace:/workspace",
+      "--label",
+      "mama.conversation-id=D123",
       "-v",
       "/tmp/vaults/alice/.kube:/root/.kube",
       "ubuntu:24.04",
@@ -189,12 +224,12 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "bridge\n" })
       .mockResolvedValueOnce({ stdout: "removed\n" })
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u123");
 
@@ -212,8 +247,6 @@ describe("DockerContainerManager", () => {
       "mama.sandbox=image",
       "--label",
       "mama.vault-id=slack-u123",
-      "-v",
-      "/tmp/workspace:/workspace",
       "ubuntu:24.04",
       "sleep",
       "infinity",
@@ -224,12 +257,12 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u111\n" })
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u222\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u111");
     await manager.provision("slack-u222");
@@ -248,16 +281,36 @@ describe("DockerContainerManager", () => {
   test("reconcile discovers labeled containers and restores state", async () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
-      .mockResolvedValueOnce({ stdout: "mama-sandbox-slack-u123\n" })
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-slack-u123-d123\n" })
       .mockResolvedValueOnce({ stdout: "" })
-      .mockResolvedValueOnce({ stdout: "true\t2026-04-22T00:00:00.000000000Z\tslack-u123\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+      .mockResolvedValueOnce({
+        stdout: "true\t2026-04-22T00:00:00.000000000Z\tslack-u123\tD123\n",
+      });
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.reconcile();
 
     const stateField = (manager as any).state as Map<string, { status: string; lastUsed: number }>;
-    expect(stateField.get("slack-u123")?.status).toBe("running");
-    expect(stateField.get("slack-u123")?.lastUsed).toBe(Date.parse("2026-04-22T00:00:00.000Z"));
+    expect(stateField.get("slack-u123-d123")?.status).toBe("running");
+    expect(stateField.get("slack-u123-d123")?.lastUsed).toBe(
+      Date.parse("2026-04-22T00:00:00.000Z"),
+    );
+  });
+
+  test("reconcile removes legacy containers without conversation labels", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-slack-u123\n" })
+      .mockResolvedValueOnce({ stdout: "" })
+      .mockResolvedValueOnce({ stdout: "true\t2026-04-22T00:00:00.000000000Z\tslack-u123\t\n" })
+      .mockResolvedValueOnce({ stdout: "removed\n" });
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
+
+    await manager.reconcile();
+
+    expect(execMock).toHaveBeenNthCalledWith(4, "docker", ["rm", "-f", "mama-sandbox-slack-u123"]);
+    const stateField = (manager as any).state as Map<string, { status: string; lastUsed: number }>;
+    expect(stateField.size).toBe(0);
   });
 
   test("concurrent provision calls for the same vaultId share one docker run", async () => {
@@ -271,7 +324,7 @@ describe("DockerContainerManager", () => {
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockReturnValueOnce(startPromise);
 
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     const first = manager.provision("slack-u123");
     const second = manager.provision("slack-u123");
@@ -288,14 +341,14 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "false\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
       .mockRejectedValueOnce(new Error("docker start failed"))
       .mockRejectedValueOnce(new Error("No such object"))
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-id\n" });
 
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await expect(manager.provision("slack-u123")).rejects.toThrow(/start failed/);
 
@@ -313,7 +366,7 @@ describe("DockerContainerManager", () => {
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" })
       .mockResolvedValueOnce({ stdout: "" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+    const manager = new DockerContainerManager("ubuntu:24.04", {
       limits: { cpus: "0.5", memory: "512m" },
       execFileImpl: execMock as any,
     });
@@ -337,8 +390,6 @@ describe("DockerContainerManager", () => {
       "0.5",
       "--memory",
       "512m",
-      "-v",
-      "/tmp/workspace:/workspace",
       "ubuntu:24.04",
       "sleep",
       "infinity",
@@ -357,10 +408,10 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
       .mockResolvedValueOnce({ stdout: "" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+    const manager = new DockerContainerManager("ubuntu:24.04", {
       limits: { cpus: "1", memory: "1g" },
       execFileImpl: execMock as any,
     });
@@ -381,9 +432,9 @@ describe("DockerContainerManager", () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockResolvedValueOnce({ stdout: "true\n" })
-      .mockResolvedValueOnce({ stdout: '["/tmp/workspace:/workspace"]\n' })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u123");
 
@@ -398,7 +449,7 @@ describe("DockerContainerManager", () => {
       .mockResolvedValueOnce({ stdout: "[]\n" })
       .mockResolvedValueOnce({ stdout: "new-container-id\n" })
       .mockRejectedValueOnce(new Error("docker update unsupported"));
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", {
+    const manager = new DockerContainerManager("ubuntu:24.04", {
       limits: { memory: "256m" },
       execFileImpl: execMock as any,
     });
@@ -414,7 +465,7 @@ describe("DockerContainerManager", () => {
       .mockResolvedValueOnce({ stdout: "new-container-id\n" })
       .mockResolvedValueOnce({ stdout: "removed\n" })
       .mockResolvedValueOnce({ stdout: "network removed\n" });
-    const manager = new DockerContainerManager("ubuntu:24.04", "/tmp/workspace", execMock as any);
+    const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     await manager.provision("slack-u123");
     await manager.remove("slack-u123");

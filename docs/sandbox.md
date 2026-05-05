@@ -4,13 +4,13 @@
 
 ## 支援模式
 
-| 模式                                                        | 執行位置              | Vault env injection | Vault key 語意                            | 備註                                                                               |
-| ----------------------------------------------------------- | --------------------- | ------------------- | ----------------------------------------- | ---------------------------------------------------------------------------------- |
-| `host`                                                      | 宿主機                | 不注入              | 可存，但執行時不用                        | 最適合本機開發；不把 vault env 放進 host process                                   |
-| `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`                        | one container one vault；多人共用同一 container 就共用該 vault                     |
-| `image:<image>`                                             | mama 管理的 Docker    | 注入                | binding / direct userId / generated vault | 目前最推薦的隔離模式；per-user container lifecycle 由 mama 管理                    |
-| `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | binding 優先，再 fallback 到 userId vault | Alpha 超早期；VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`，目前不建議使用 |
-| `cloudflare:<sandbox-id>`                                   | Cloudflare Worker     | 注入                | binding / direct userId / generated vault | Experimental；需自行部署 `@cloudflare/sandbox` bridge，host workspace 不會自動同步 |
+| 模式                                                        | 執行位置              | Vault env injection | Vault key 語意               | 備註                                                                               |
+| ----------------------------------------------------------- | --------------------- | ------------------- | ---------------------------- | ---------------------------------------------------------------------------------- |
+| `host`                                                      | 宿主機                | 不注入              | 可存，但執行時不用           | 最適合本機開發；不把 vault env 放進 host process                                   |
+| `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`           | one container one vault；多人共用同一 container 就共用該 vault                     |
+| `image:<image>`                                             | mama 管理的 Docker    | 注入                | generated conversation vault | 目前最推薦的隔離模式；`1 conversation = 1 vault = 1 container`                     |
+| `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | generated conversation vault | Alpha 超早期；VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`，目前不建議使用 |
+| `cloudflare:<sandbox-id>`                                   | Cloudflare Worker     | 注入                | generated conversation vault | Experimental；需自行部署 `@cloudflare/sandbox` bridge，host workspace 不會自動同步 |
 
 `docker:*` 不是可用模式；請改用 `container:*` 或 `image:*`。
 
@@ -30,7 +30,6 @@ state directory 預設是：
 ~/.mama/
 ├── settings.json
 └── vaults/
-    ├── bindings.json
     ├── vault.json
     └── <vault-id>/
 ```
@@ -52,7 +51,7 @@ mama --state-dir=/secure/mama-state --sandbox=container:mama-tools /path/to/work
 1. `<state-dir>/settings.json`
 2. `<working-directory>/settings.json`（只有前者不存在時才 fallback）
 
-啟動時 mama 會拒絕使用 world-writable 或非目前使用者擁有的 `--state-dir`，避免本機其他使用者竄改 settings、vault 或 binding。
+啟動時 mama 會拒絕使用 world-writable 或非目前使用者擁有的 `--state-dir`，避免本機其他使用者竄改 settings 或 vault。
 
 ---
 
@@ -69,7 +68,6 @@ mama --state-dir=/secure/mama-state --sandbox=container:mama-tools /path/to/work
 ```text
 ~/.mama/vaults/
 ├── vault.json
-├── bindings.json
 └── container-mama-tools/
     ├── env
     └── gws.json
@@ -156,7 +154,7 @@ container-<name>
 # Pushes to main also publish :edge
 docker pull ghcr.io/geminixiang/mama-sandbox:tools
 
-# Run mama with managed per-user containers
+# Run mama with managed per-conversation containers
 mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:tools /path/to/workspace
 ```
 
@@ -169,23 +167,23 @@ mama --sandbox=image:mama-sandbox:tools /path/to/workspace
 
 特性：
 
-- mama 會為每個 resolved vault / user 建立一個獨立 container
+- mama 會為每個 conversation 建立一個獨立 vault 與 container
 - 每個 container 會綁定自己的 Docker bridge network，彼此預設互相隔離
-- workspace 會固定 mount 到 `/workspace`
+- container 內只會看到 `/workspace/MEMORY.md`、`/workspace/skills`、`/workspace/events` 與當前 conversation 目錄
 - vault env 會在執行時注入
 - vault file credential 會依 target path 自動 bind mount 進 container
 - 閒置 container 會自動 stop；下次需要時再 start 或 recreate
 
 vault key 選擇邏輯：
 
-1. 先看 `bindings.json` 是否把 platform user 綁到指定 vault
-2. 若沒有 binding，但存在同名 `userId` vault，使用該 direct vault
-3. 若都沒有，建立一個 platform-scoped vault key，例如 `slack-u123`
+1. 使用 conversation ID 產生 platform-scoped vault key，例如 `slack-d123`
+2. 該 conversation 的 credentials / mounts / env 都寫入這個 vault
+3. 對應的 managed container 會使用同一個 conversation key，例如 `mama-sandbox-slack-d123`
 
 適合：
 
 - 多使用者共用一個 mama instance
-- 需要 per-user env/file credential isolation
+- 需要 per-conversation env/file credential isolation
 - 想比 shared container 更安全，但又不想直接上 Firecracker
 
 ### 容器資源限制
@@ -235,9 +233,8 @@ mama --sandbox=firecracker:192.168.1.100:/home/mama/workspace:root:22 /home/mama
 - VM 內 workspace 預期是 `/workspace`
 - vault env 會透過 SSH stdin 注入，避免 secret 出現在宿主機 command line
 - vault 選擇邏輯：
-  1. 先看 `bindings.json` 是否把 platform user 綁到 vault
-  2. 若沒有 binding，使用同名 `userId` vault（如果存在）
-  3. 找不到 vault 時不注入 env
+  1. 使用 conversation ID 產生 platform-scoped vault key（例如 `slack-d123`）
+  2. 找不到 vault 時不注入 env
 
 限制：
 
@@ -262,7 +259,7 @@ mama --sandbox=cloudflare:mama-remote /path/to/workspace
 
 - mama 會把 remote sandbox id 衍生為 `<base-sandbox-id>-<vault-key>`
 - vault env 會在每次 `exec()` 時透過 bridge 注入
-- vault 選擇邏輯和 `image` 類似：binding 優先，再 direct userId vault，再 fallback 到 platform-scoped generated vault
+- vault 選擇邏輯和 `image` 類似：使用 conversation ID 產生 platform-scoped vault key
 
 限制：
 
@@ -331,22 +328,4 @@ OAuth callback URL 是：
 
 ## Binding store
 
-`bindings.json` 可把 platform user 對應到指定 vault：
-
-```json
-{
-  "bindings": [
-    {
-      "platform": "slack",
-      "platformUserId": "U123456",
-      "internalUserId": "alice",
-      "vaultId": "alice",
-      "status": "active",
-      "createdAt": "2026-04-26T00:00:00Z",
-      "updatedAt": "2026-04-26T00:00:00Z"
-    }
-  ]
-}
-```
-
-目前 binding 主要影響 `image` / `firecracker` 這類 per-user routing 模式。`container:<name>` 會固定使用 container vault，因此不看 per-user binding。
+`bindings.json` 仍可存在於 state dir，供其他流程或歷史資料使用；但目前 conversation-scoped sandbox routing（`image` / `firecracker` / `cloudflare`）不使用它。

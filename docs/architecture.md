@@ -48,8 +48,7 @@ flowchart LR
   end
 
   subgraph StateDir["State Dir (~/.mama or --state-dir)"]
-    Vaults["vaults/\nvault.json + per-user secrets"]
-    Bindings["bindings\nplatform user -> vault"]
+    Vaults["vaults/\nvault.json + conversation-scoped secrets"]
     LinkTokens["login/session tokens\nin-memory stores"]
   end
 
@@ -90,11 +89,10 @@ flowchart LR
   Main --> Settings
   EventsWatcher --> EventsDir
   VaultManager --> Vaults
-  Main --> Bindings
   LinkServer --> LinkTokens
 
   Executor -. host / container / image / firecracker .-> ConversationDir
-  Provisioner -. per-user image sandbox .-> Executor
+  Provisioner -. managed conversation sandbox .-> Executor
   VaultManager -. env + mount routing .-> Executor
   EventsWatcher -. enqueue synthetic BotEvent .-> Main
 ```
@@ -152,8 +150,8 @@ flowchart LR
 職責:
 
 - 統一抽象 `Executor`
-- 支援 `host`、共享 `container`、per-user `image`、`firecracker`
-- 依使用者 vault / binding 動態決定實際執行位置
+- 支援 `host`、共享 `container`、conversation-scoped `image`、`firecracker`
+- 依 conversation vault 決定隔離型 sandbox 的實際執行位置
 - 在 `image` 模式下自動建立與回收 Docker container
 
 ### E. 狀態與持久化層
@@ -161,15 +159,13 @@ flowchart LR
 - `src/session-store.ts`
 - `src/context.ts`
 - `src/vault.ts`
-- `src/bindings.ts`
 
 職責:
 
 - session 檔案管理: `sessions/current` 與 `*.jsonl`
 - `log.jsonl` 與 structured session 的雙軌歷史保存
 - workspace / conversation 級別 `MEMORY.md`
-- per-user vault 憑證與 mount / env 注入
-- 平台 user 與 vault 的綁定
+- per-conversation vault 憑證與 mount / env 注入
 
 ### F. 輔助服務層
 
@@ -267,7 +263,7 @@ flowchart TD
 
 - 憑證不直接進 workspace
 - vault 存在 `--state-dir`
-- 執行時才由 vault 路由到對應 sandbox
+- 執行時才由 conversation vault 路由到對應 sandbox
 - `image` / `firecracker` 模式下，憑證隔離比 host / shared container 更完整
 
 ## 6. Events 與一般對話的差異

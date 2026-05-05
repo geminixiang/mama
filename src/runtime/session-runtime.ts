@@ -172,6 +172,7 @@ class MamaSessionRuntime implements SessionRuntime {
       platform: adapters.platform.name as PlatformName,
       platformUserId: event.user,
       conversationId,
+      vaultConversationId: event.vaultConversationId,
       sessionKey,
       commandText: event.text,
       privateConversation,

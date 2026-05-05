@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
 import { dirname, isAbsolute, join, normalize, sep } from "path";
 import type { PlatformName } from "./adapter.js";
 import type { SandboxConfig } from "./sandbox.js";
@@ -67,7 +67,7 @@ export interface ResolvedVault {
 }
 
 export interface VaultManager {
-  /** Return true when vault.json contains this exact key. */
+  /** Return true when a vault entry or vault directory exists for this exact key. */
   hasEntry(key: string): boolean;
   /** Resolve vault for a user; returns undefined when no entry exists. */
   resolve(userId: string): ResolvedVault | undefined;
@@ -77,7 +77,7 @@ export interface VaultManager {
   list(): ResolvedVault[];
   /** Re-read vault.json without restart */
   reload(): void;
-  /** Check if vault system is enabled (vault.json exists) */
+  /** Check if vault system metadata is enabled (vault.json exists) */
   isEnabled(): boolean;
   /**
    * Add a vault entry and persist to disk.
@@ -197,16 +197,17 @@ export class FileVaultManager implements VaultManager {
   }
 
   isEnabled(): boolean {
-    return this.config !== null;
+    return this.config !== null || existsSync(this.vaultsDir);
   }
 
   hasEntry(key: string): boolean {
-    return !!this.config?.vaults[key];
+    return !!this.config?.vaults[key] || existsSync(join(this.vaultsDir, key));
   }
 
   resolve(userId: string): ResolvedVault | undefined {
     const entry = this.config?.vaults[userId];
-    if (!entry) return undefined;
+    const dir = join(this.vaultsDir, userId);
+    if (!entry && !existsSync(dir)) return undefined;
     return this.buildResolved(userId, entry);
   }
 
@@ -226,9 +227,18 @@ export class FileVaultManager implements VaultManager {
 
     if (override.type === "image") {
       if (baseConfig.type !== "image") {
+        if (!override.container) {
+          if (baseConfig.type === "cloudflare") {
+            return {
+              type: "cloudflare",
+              sandboxId: `${baseConfig.sandboxId}-${sanitizeCloudflareSandboxId(userId)}`,
+            };
+          }
+          return baseConfig;
+        }
         throw new Error(
           `vault "${userId}" sets sandbox.type=image, but base sandbox is "${baseConfig.type}". ` +
-            "Use --sandbox=image:<image> to enable per-user managed containers.",
+            "Use --sandbox=image:<image> to enable managed image containers for this vault.",
         );
       }
       const container = override.container || `mama-sandbox-${userId}`;
@@ -285,13 +295,16 @@ export class FileVaultManager implements VaultManager {
   }
 
   list(): ResolvedVault[] {
-    if (!this.config) return [];
-
-    const results: ResolvedVault[] = [];
-    for (const [key, entry] of Object.entries(this.config.vaults)) {
-      results.push(this.buildResolved(key, entry));
+    const keys = new Set<string>();
+    for (const key of Object.keys(this.config?.vaults ?? {})) {
+      keys.add(key);
     }
-    return results;
+    if (existsSync(this.vaultsDir)) {
+      for (const entry of readdirSync(this.vaultsDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) keys.add(entry.name);
+      }
+    }
+    return Array.from(keys, (key) => this.buildResolved(key, this.config?.vaults[key]));
   }
 
   addEntry(key: string, entry: VaultEntry): void {
@@ -327,16 +340,6 @@ export class FileVaultManager implements VaultManager {
     if (!existingSandbox?.type) {
       nextEntry = { ...nextEntry, sandbox: entry.sandbox };
       changed = true;
-    } else if (
-      existingSandbox.type === "image" &&
-      !existingSandbox.container &&
-      entry.sandbox.container
-    ) {
-      nextEntry = {
-        ...nextEntry,
-        sandbox: { ...existingSandbox, container: entry.sandbox.container },
-      };
-      changed = true;
     }
 
     if (!changed) return;
@@ -364,8 +367,7 @@ export class FileVaultManager implements VaultManager {
 
   upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void {
     const normalizedPath = normalizeVaultRelativePath(relativePath);
-    const normalizedTarget = normalizeVaultTargetPath(targetPath);
-    if (!normalizedPath || (targetPath !== undefined && !normalizedTarget)) {
+    if (!normalizedPath || (targetPath !== undefined && !normalizeVaultTargetPath(targetPath))) {
       throw new Error(`vault: invalid relative secret file path for "${key}": ${relativePath}`);
     }
 
@@ -377,7 +379,6 @@ export class FileVaultManager implements VaultManager {
     const parentDir = dirname(filePath);
     if (parentDir !== dir) ensurePrivateDir(parentDir);
     atomicWritePrivateFile(filePath, content);
-    this.ensureMountEntry(key, normalizedPath, normalizedTarget);
   }
 
   // ── private ────────────────────────────────────────────────────────────────
@@ -419,40 +420,20 @@ export class FileVaultManager implements VaultManager {
     }
   }
 
-  private ensureMountEntry(key: string, relativePath: string, targetPath?: string): void {
-    if (!this.config?.vaults[key]) {
-      throw new Error(`vault: cannot add mount "${relativePath}" for missing entry "${key}"`);
-    }
-
-    const existing = this.config.vaults[key];
-    const mounts = existing.mounts ?? [];
-    if (
-      mounts.some((mount) =>
-        typeof mount === "string"
-          ? mount === relativePath && !targetPath
-          : mount.source === relativePath && mount.target === targetPath,
-      )
-    ) {
-      return;
-    }
-
-    this.config.vaults[key] = {
-      ...existing,
-      mounts: [...mounts, targetPath ? { source: relativePath, target: targetPath } : relativePath],
-    };
-    this.persistConfig();
-  }
-
-  private buildResolved(key: string, entry: VaultEntry): ResolvedVault {
+  private buildResolved(key: string, entry?: VaultEntry): ResolvedVault {
     const dir = join(this.vaultsDir, key);
 
-    const mounts = (entry.mounts ?? [])
+    const inferredMounts = this.inferMountsFromDir(dir);
+    const configuredMounts = (entry?.mounts ?? [])
       .map((mount) => this.resolveMountEntry(dir, mount))
       .filter((mount): mount is ResolvedVaultMount => mount !== undefined);
+    const mountsByTarget = new Map<string, ResolvedVaultMount>();
+    for (const mount of inferredMounts) mountsByTarget.set(mount.target, mount);
+    for (const mount of configuredMounts) mountsByTarget.set(mount.target, mount);
 
     let env: Record<string, string> = {};
     const envPath = join(dir, "env");
-    if (entry.envFile !== false && existsSync(envPath)) {
+    if ((entry?.envFile ?? true) && existsSync(envPath)) {
       try {
         env = parseEnvFile(readFileSync(envPath, "utf-8"));
       } catch (err) {
@@ -462,12 +443,28 @@ export class FileVaultManager implements VaultManager {
 
     return {
       userId: key,
-      displayName: entry.displayName,
+      displayName: entry?.displayName ?? key,
       dir,
-      mounts,
+      mounts: [...mountsByTarget.values()],
       env,
-      sandboxOverride: entry.sandbox,
+      sandboxOverride: entry?.sandbox,
     };
+  }
+
+  private inferMountsFromDir(dir: string): ResolvedVaultMount[] {
+    if (!existsSync(dir)) {
+      return [];
+    }
+
+    const mounts: ResolvedVaultMount[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === "env") continue;
+      const source = join(dir, entry.name);
+      const target = inferredVaultTargetPath(entry.name);
+      if (!target) continue;
+      mounts.push({ source, target });
+    }
+    return mounts;
   }
 
   private resolveMountEntry(
@@ -527,4 +524,24 @@ function normalizeVaultTargetPath(targetPath?: string): string | undefined {
 export function defaultVaultTargetPath(relativePath: string): string {
   const normalized = normalizeVaultRelativePath(relativePath) ?? relativePath.replace(/^\/+/, "");
   return `/root/${normalized}`;
+}
+
+function inferredVaultTargetPath(relativePath: string): string | undefined {
+  const normalized = normalizeVaultRelativePath(relativePath);
+  if (!normalized) return undefined;
+
+  if (normalized === "gws.json") {
+    return "/root/.config/gws/credentials.json";
+  }
+  if (normalized === ".ssh" || normalized.startsWith(".ssh/")) {
+    return "/root/.ssh";
+  }
+  if (normalized === ".kube" || normalized.startsWith(".kube/")) {
+    return "/root/.kube";
+  }
+  if (normalized === ".config/gh" || normalized.startsWith(".config/gh/")) {
+    return "/root/.config/gh";
+  }
+
+  return defaultVaultTargetPath(normalized);
 }
