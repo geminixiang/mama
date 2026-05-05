@@ -436,7 +436,7 @@ export async function createRunner(
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
 ): Promise<AgentRunner> {
-  const agentConfig = loadAgentConfig(workspaceDir);
+  const agentConfig = loadAgentConfig();
 
   // Initialize logger with settings from config
   log.initLogger({

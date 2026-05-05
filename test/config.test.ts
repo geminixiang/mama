@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -11,22 +11,23 @@ import {
 } from "../src/config.js";
 
 describe("loadAgentConfig", () => {
-  let tmpDir: string;
+  let stateDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `mama-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
+    stateDir = join(tmpdir(), `mama-test-${Date.now()}`);
+    mkdirSync(stateDir, { recursive: true });
+    process.env.MAMA_STATE_DIR = stateDir;
   });
 
   afterEach(() => {
     delete process.env.MAMA_STATE_DIR;
     delete process.env.MAMA_AI_PROVIDER;
     delete process.env.MAMA_AI_MODEL;
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+    if (existsSync(stateDir)) rmSync(stateDir, { recursive: true });
   });
 
   test("returns defaults when no settings.json and no env vars", () => {
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.provider).toBe("anthropic");
     expect(config.model).toBe("claude-sonnet-4-5");
     expect(config.thinkingLevel).toBe("off");
@@ -34,33 +35,33 @@ describe("loadAgentConfig", () => {
   });
 
   test("reads provider and model from settings.json", () => {
-    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ provider: "openai", model: "gpt-4o" });
+    const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
   });
 
   test("reads sessionScope from settings.json", () => {
-    saveAgentConfig(tmpDir, { sessionScope: "channel" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ sessionScope: "channel" });
+    const config = loadAgentConfig();
     expect(config.sessionScope).toBe("channel");
   });
 
   test("reads sentryDsn from settings.json", () => {
-    saveAgentConfig(tmpDir, { sentryDsn: "https://examplePublicKey@o0.ingest.sentry.io/0" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ sentryDsn: "https://examplePublicKey@o0.ingest.sentry.io/0" });
+    const config = loadAgentConfig();
     expect(config.sentryDsn).toBe("https://examplePublicKey@o0.ingest.sentry.io/0");
   });
 
   test("reads sandboxCpus and sandboxMemory from settings.json", () => {
-    saveAgentConfig(tmpDir, { sandboxCpus: "0.5", sandboxMemory: "512m" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ sandboxCpus: "0.5", sandboxMemory: "512m" });
+    const config = loadAgentConfig();
     expect(config.sandboxCpus).toBe("0.5");
     expect(config.sandboxMemory).toBe("512m");
   });
 
   test("sandboxCpus and sandboxMemory are undefined when not set", () => {
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.sandboxCpus).toBeUndefined();
     expect(config.sandboxMemory).toBeUndefined();
   });
@@ -69,47 +70,46 @@ describe("loadAgentConfig", () => {
     process.env.MAMA_AI_PROVIDER = "google";
     process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
 
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.provider).toBe("google");
     expect(config.model).toBe("gemini-2.0-flash");
   });
 
   test("settings.json values override env vars", () => {
-    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
+    saveAgentConfig({ provider: "openai", model: "gpt-4o" });
     process.env.MAMA_AI_PROVIDER = "google";
     process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
 
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
   });
 
-  test("prefers state-dir settings.json over workspace settings.json", () => {
-    const stateDir = join(tmpdir(), `mama-state-${Date.now()}`);
-    mkdirSync(stateDir, { recursive: true });
-    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
-    saveAgentConfig(stateDir, { provider: "google", model: "gemini-2.0-flash" });
-    process.env.MAMA_STATE_DIR = stateDir;
-
+  test("ignores settings.json in non-state directories", () => {
+    const otherDir = join(tmpdir(), `mama-other-${Date.now()}`);
+    mkdirSync(otherDir, { recursive: true });
     try {
-      const config = loadAgentConfig(tmpDir);
-      expect(config.provider).toBe("google");
-      expect(config.model).toBe("gemini-2.0-flash");
+      writeFileSync(
+        join(otherDir, "settings.json"),
+        JSON.stringify({ provider: "openai", model: "gpt-4o" }),
+        "utf-8",
+      );
+      const config = loadAgentConfig();
+      expect(config.provider).toBe("anthropic");
+      expect(config.model).toBe("claude-sonnet-4-5");
     } finally {
-      rmSync(stateDir, { recursive: true, force: true });
+      rmSync(otherDir, { recursive: true, force: true });
     }
   });
 
   test("throws on malformed settings.json instead of silently falling back", () => {
-    const { writeFileSync } = require("node:fs");
-    writeFileSync(join(tmpDir, "settings.json"), "{ invalid json }", "utf-8");
-    expect(() => loadAgentConfig(tmpDir)).toThrow(/Malformed settings file/);
+    writeFileSync(join(stateDir, "settings.json"), "{ invalid json }", "utf-8");
+    expect(() => loadAgentConfig()).toThrow(/Malformed settings file/);
   });
 
   test("throws on settings.json whose top-level value is not an object", () => {
-    const { writeFileSync } = require("node:fs");
-    writeFileSync(join(tmpDir, "settings.json"), "[]", "utf-8");
-    expect(() => loadAgentConfig(tmpDir)).toThrow(/expected a JSON object/);
+    writeFileSync(join(stateDir, "settings.json"), "[]", "utf-8");
+    expect(() => loadAgentConfig()).toThrow(/expected a JSON object/);
   });
 });
 
@@ -133,76 +133,66 @@ describe("argv config resolution", () => {
 });
 
 describe("resolveSentryDsn", () => {
-  let tmpDir: string;
+  let stateDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `mama-test-sentry-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
+    stateDir = join(tmpdir(), `mama-test-sentry-${Date.now()}`);
+    mkdirSync(stateDir, { recursive: true });
+    process.env.MAMA_STATE_DIR = stateDir;
   });
 
   afterEach(() => {
     delete process.env.MAMA_STATE_DIR;
     delete process.env.SENTRY_DSN;
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+    if (existsSync(stateDir)) rmSync(stateDir, { recursive: true });
   });
 
   test("prefers settings.json over env", () => {
-    saveAgentConfig(tmpDir, { sentryDsn: "https://settings.example/1" });
+    saveAgentConfig({ sentryDsn: "https://settings.example/1" });
     process.env.SENTRY_DSN = "https://env.example/1";
-    expect(resolveSentryDsn(tmpDir)).toBe("https://settings.example/1");
+    expect(resolveSentryDsn()).toBe("https://settings.example/1");
   });
 
   test("falls back to env when settings.json has no sentryDsn", () => {
     process.env.SENTRY_DSN = "https://env.example/2";
-    expect(resolveSentryDsn(tmpDir)).toBe("https://env.example/2");
-  });
-
-  test("prefers state-dir sentryDsn over workspace settings", () => {
-    const stateDir = join(tmpdir(), `mama-state-sentry-${Date.now()}`);
-    mkdirSync(stateDir, { recursive: true });
-    saveAgentConfig(tmpDir, { sentryDsn: "https://workspace.example/1" });
-    saveAgentConfig(stateDir, { sentryDsn: "https://state.example/1" });
-    process.env.MAMA_STATE_DIR = stateDir;
-
-    try {
-      expect(resolveSentryDsn(tmpDir)).toBe("https://state.example/1");
-    } finally {
-      rmSync(stateDir, { recursive: true, force: true });
-    }
+    expect(resolveSentryDsn()).toBe("https://env.example/2");
   });
 });
 
 describe("saveAgentConfig", () => {
-  let tmpDir: string;
+  let stateDir: string;
 
   beforeEach(() => {
-    tmpDir = join(tmpdir(), `mama-test-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
+    stateDir = join(tmpdir(), `mama-test-${Date.now()}`);
+    mkdirSync(stateDir, { recursive: true });
+    process.env.MAMA_STATE_DIR = stateDir;
   });
 
   afterEach(() => {
-    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+    delete process.env.MAMA_STATE_DIR;
+    if (existsSync(stateDir)) rmSync(stateDir, { recursive: true });
   });
 
   test("creates settings.json with given config", () => {
-    saveAgentConfig(tmpDir, { provider: "google", model: "gemini-2.0-flash" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ provider: "google", model: "gemini-2.0-flash" });
+    const config = loadAgentConfig();
     expect(config.provider).toBe("google");
     expect(config.model).toBe("gemini-2.0-flash");
   });
 
   test("merges with existing settings — preserves unrelated fields", () => {
-    saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o", sessionScope: "channel" });
-    saveAgentConfig(tmpDir, { model: "gpt-4o-mini" });
-    const config = loadAgentConfig(tmpDir);
+    saveAgentConfig({ provider: "openai", model: "gpt-4o", sessionScope: "channel" });
+    saveAgentConfig({ model: "gpt-4o-mini" });
+    const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o-mini");
     expect(config.sessionScope).toBe("channel");
   });
 
   test("creates parent directories if they don't exist", () => {
-    const nested = join(tmpDir, "a", "b", "c");
-    saveAgentConfig(nested, { provider: "anthropic" });
+    const nested = join(stateDir, "a", "b", "c");
+    process.env.MAMA_STATE_DIR = nested;
+    saveAgentConfig({ provider: "anthropic" });
     expect(existsSync(join(nested, "settings.json"))).toBe(true);
   });
 });

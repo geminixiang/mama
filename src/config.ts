@@ -45,30 +45,17 @@ function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined 
   return parsed as Partial<AgentConfig>;
 }
 
-function getConfiguredStateDir(): string | undefined {
+function getStateDir(): string {
   const raw = process.env.MAMA_STATE_DIR?.trim();
-  return raw ? resolve(raw) : undefined;
+  return raw ? resolve(raw) : join(homedir(), ".mama");
 }
 
-function loadRawAgentConfig(workspaceDir?: string): Partial<AgentConfig> {
-  const stateDir = getConfiguredStateDir();
-  const candidates = [
-    ...(stateDir ? [join(stateDir, "settings.json")] : []),
-    ...(workspaceDir ? [join(workspaceDir, "settings.json")] : []),
-  ];
-
-  for (const settingsPath of candidates) {
-    const config = loadConfigFile(settingsPath);
-    if (config) {
-      return config;
-    }
-  }
-
-  return {};
+function loadRawAgentConfig(): Partial<AgentConfig> {
+  return loadConfigFile(join(getStateDir(), "settings.json")) ?? {};
 }
 
-export function loadAgentConfig(workspaceDir: string): AgentConfig {
-  const fromFile = loadRawAgentConfig(workspaceDir);
+export function loadAgentConfig(): AgentConfig {
+  const fromFile = loadRawAgentConfig();
 
   const provider = fromFile.provider || process.env.MAMA_AI_PROVIDER || DEFAULTS.provider;
   const model = fromFile.model || process.env.MAMA_AI_MODEL || DEFAULTS.model;
@@ -136,8 +123,8 @@ export function resolveStateDirFromArgv(args = process.argv.slice(2)): string {
   return join(homedir(), ".mama");
 }
 
-export function resolveSentryDsn(workspaceDir?: string): string | undefined {
-  const fromFile = loadRawAgentConfig(workspaceDir);
+export function resolveSentryDsn(): string | undefined {
+  const fromFile = loadRawAgentConfig();
   if (fromFile.sentryDsn) {
     return fromFile.sentryDsn;
   }
@@ -156,8 +143,8 @@ export function resolveLinkBaseUrl(): string | undefined {
   return raw.replace(/\/+$/, "");
 }
 
-export function saveAgentConfig(workspaceDir: string, config: Partial<AgentConfig>): void {
-  const settingsPath = join(workspaceDir, "settings.json");
+export function saveAgentConfig(config: Partial<AgentConfig>): void {
+  const settingsPath = join(getStateDir(), "settings.json");
 
   let existing: Partial<AgentConfig> = {};
   if (existsSync(settingsPath)) {

@@ -237,7 +237,7 @@ if (bindingStore.isEnabled()) {
   );
 }
 
-const startupConfig = loadAgentConfig(workingDir);
+const startupConfig = loadAgentConfig();
 const sandboxLimits =
   startupConfig.sandboxCpus || startupConfig.sandboxMemory
     ? { cpus: startupConfig.sandboxCpus, memory: startupConfig.sandboxMemory }

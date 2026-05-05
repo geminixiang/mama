@@ -11,31 +11,33 @@ describe("log config from settings.json", () => {
   beforeEach(() => {
     tmpDir = join(tmpdir(), `mama-test-log-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
+    process.env.MAMA_STATE_DIR = tmpDir;
   });
 
   afterEach(() => {
+    delete process.env.MAMA_STATE_DIR;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
   test("logFormat defaults to console", () => {
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.logFormat).toBe("console");
   });
 
   test("logLevel defaults to info", () => {
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.logLevel).toBe("info");
   });
 
   test("reads logFormat from settings.json", () => {
     writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ logFormat: "json" }), "utf-8");
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.logFormat).toBe("json");
   });
 
   test("reads logLevel from settings.json", () => {
     writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ logLevel: "debug" }), "utf-8");
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.logLevel).toBe("debug");
   });
 
@@ -45,7 +47,7 @@ describe("log config from settings.json", () => {
       JSON.stringify({ logFormat: "json", logLevel: "warn" }),
       "utf-8",
     );
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.logFormat).toBe("json");
     expect(config.logLevel).toBe("warn");
   });
@@ -63,7 +65,7 @@ describe("log config from settings.json", () => {
       }),
       "utf-8",
     );
-    const config = loadAgentConfig(tmpDir);
+    const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
     expect(config.thinkingLevel).toBe("on");
