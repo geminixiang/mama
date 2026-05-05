@@ -183,7 +183,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
   console.error(
-    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>] <working-directory>",
+    "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>|cloudflare:<sandbox-id>] <working-directory>",
   );
   console.error("       mama --download <channel-id>");
   process.exit(1);
@@ -220,7 +220,7 @@ if (vaultManager.isEnabled()) {
   console.log(
     sandbox.type === "container"
       ? "  Vault system enabled. Container vault active."
-      : sandbox.type === "image" || sandbox.type === "firecracker"
+      : sandbox.type === "image" || sandbox.type === "firecracker" || sandbox.type === "cloudflare"
         ? "  Vault system enabled. Per-user credential routing active."
         : "  Vault system enabled. Host mode will not inject vault env.",
   );
@@ -231,7 +231,7 @@ if (bindingStore.isEnabled()) {
   console.log(
     sandbox.type === "container"
       ? "  Binding store enabled. Container mode uses the container vault."
-      : sandbox.type === "image" || sandbox.type === "firecracker"
+      : sandbox.type === "image" || sandbox.type === "firecracker" || sandbox.type === "cloudflare"
         ? "  Binding store enabled. Platform user → vault routing active."
         : "  Binding store enabled. Host mode will not inject vault env.",
   );
@@ -288,7 +288,9 @@ const sandboxDesc =
       ? `container:${sandbox.container}`
       : sandbox.type === "image"
         ? `image:${sandbox.image}`
-        : `firecracker:${sandbox.vmId}`;
+        : sandbox.type === "firecracker"
+          ? `firecracker:${sandbox.vmId}`
+          : `cloudflare:${sandbox.sandboxId}`;
 log.logStartup(workingDir, sandboxDesc);
 
 // Create platform bots

@@ -11,6 +11,12 @@ import {
   validateFirecrackerSandbox,
 } from "./firecracker.js";
 import {
+  CloudflareSandboxExecutor,
+  cloudflareSandboxAdapter,
+  parseCloudflareSandboxArg,
+  validateCloudflareSandbox,
+} from "./cloudflare.js";
+import {
   HostExecutor,
   hostSandboxAdapter,
   parseHostSandboxArg,
@@ -22,6 +28,7 @@ import type { Executor, SandboxAdapter, SandboxConfig } from "./types.js";
 
 export type {
   ContainerSandboxConfig,
+  CloudflareSandboxConfig,
   ExecOptions,
   ExecResult,
   Executor,
@@ -31,7 +38,7 @@ export type {
   SandboxAdapter,
   SandboxConfig,
 } from "./types.js";
-export { ContainerExecutor, FirecrackerExecutor, HostExecutor };
+export { CloudflareSandboxExecutor, ContainerExecutor, FirecrackerExecutor, HostExecutor };
 export { SandboxError } from "./errors.js";
 export {
   buildContainerExecCommand,
@@ -44,6 +51,11 @@ export {
   parseFirecrackerSandboxArg,
   validateFirecrackerSandbox,
 } from "./firecracker.js";
+export {
+  cloudflareSandboxAdapter,
+  parseCloudflareSandboxArg,
+  validateCloudflareSandbox,
+} from "./cloudflare.js";
 export { hostSandboxAdapter, parseHostSandboxArg, validateHostSandbox } from "./host.js";
 export { imageSandboxAdapter, parseImageSandboxArg, validateImageSandbox } from "./image.js";
 
@@ -52,6 +64,7 @@ const sandboxAdapters = [
   containerSandboxAdapter,
   imageSandboxAdapter,
   firecrackerSandboxAdapter,
+  cloudflareSandboxAdapter,
 ] as const;
 const sandboxAdapterByType = new Map(
   sandboxAdapters.map((adapter) => [adapter.type, adapter]),
@@ -76,7 +89,7 @@ export function parseSandboxArg(value: string): SandboxConfig {
   }
 
   throw new SandboxError(
-    `Error: Invalid sandbox type '${value}'. Use 'host', 'container:<container-name>', 'image:<image-name>', or 'firecracker:<vm-id>:<host-path>'`,
+    `Error: Invalid sandbox type '${value}'. Use 'host', 'container:<container-name>', 'image:<image-name>', 'firecracker:<vm-id>:<host-path>', or 'cloudflare:<sandbox-id>'`,
   );
 }
 
@@ -90,7 +103,7 @@ export async function validateSandbox(config: SandboxConfig): Promise<void> {
 }
 
 /**
- * Create an executor that runs commands on host, in a Docker container, or in a Firecracker VM.
+ * Create an executor that runs commands on host, in Docker, in a Firecracker VM, or through a Cloudflare sandbox bridge.
  */
 export function createExecutor(
   config: SandboxConfig,

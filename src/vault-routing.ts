@@ -23,7 +23,9 @@ export function resolveActorVaultKey(
     return userId;
   }
 
-  return baseConfig.type === "image" ? DockerContainerManager.vaultId(platform, userId) : userId;
+  return baseConfig.type === "image" || baseConfig.type === "cloudflare"
+    ? DockerContainerManager.vaultId(platform, userId)
+    : userId;
 }
 
 export function createManagedVaultEntry(
@@ -73,6 +75,11 @@ export function ensureSandboxVaultEntry(
 
   if (baseConfig.type === "container") {
     vaultManager.addEntry(vaultKey, createSharedContainerVaultEntry(baseConfig.container));
+    return;
+  }
+
+  if (baseConfig.type === "cloudflare") {
+    vaultManager.addEntry(vaultKey, createManagedVaultEntry(platform, userId, vaultKey));
   }
 }
 

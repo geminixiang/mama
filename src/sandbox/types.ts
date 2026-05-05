@@ -2,7 +2,8 @@ export type SandboxConfig =
   | HostSandboxConfig
   | ContainerSandboxConfig
   | ImageSandboxConfig
-  | FirecrackerSandboxConfig;
+  | FirecrackerSandboxConfig
+  | CloudflareSandboxConfig;
 
 export interface HostSandboxConfig {
   type: "host";
@@ -24,6 +25,11 @@ export interface FirecrackerSandboxConfig {
   hostPath: string;
   sshUser?: string;
   sshPort?: number;
+}
+
+export interface CloudflareSandboxConfig {
+  type: "cloudflare";
+  sandboxId: string;
 }
 
 export interface Executor {

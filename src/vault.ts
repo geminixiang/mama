@@ -6,6 +6,15 @@ import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 const PRIVATE_DIR_MODE = 0o700;
 
+function sanitizeCloudflareSandboxId(value: string): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "unknown"
+  );
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 /** Shape of workspace/vaults/vault.json */
@@ -29,10 +38,11 @@ export interface VaultEntry {
   envFile?: boolean;
   /** Per-user sandbox config override */
   sandbox?: {
-    type?: "image" | "firecracker" | "host" | "container" | "docker";
+    type?: "image" | "firecracker" | "cloudflare" | "host" | "container" | "docker";
     container?: string;
     image?: string;
     vmId?: string;
+    sandboxId?: string;
     sshUser?: string;
     sshPort?: number;
   };
@@ -174,13 +184,13 @@ export class FileVaultManager implements VaultManager {
       if (entry.sandbox?.type === "host") {
         console.error(
           `vault: "${key}" uses sandbox.type=host, which is blocked for credential isolation. ` +
-            "Use sandbox.type=image or sandbox.type=firecracker.",
+            "Use sandbox.type=image, sandbox.type=firecracker, or sandbox.type=cloudflare.",
         );
       }
       if (entry.sandbox?.type === "container" || entry.sandbox?.type === "docker") {
         console.error(
           `vault: "${key}" uses sandbox.type=${entry.sandbox.type}, which is blocked for credential isolation. ` +
-            "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
+            "Use sandbox.type=image for per-user containers, sandbox.type=firecracker, or sandbox.type=cloudflare.",
         );
       }
     }
@@ -202,7 +212,15 @@ export class FileVaultManager implements VaultManager {
 
   getSandboxConfig(userId: string, baseConfig: SandboxConfig): SandboxConfig {
     const vault = this.resolve(userId);
-    if (!vault?.sandboxOverride) return baseConfig;
+    if (!vault?.sandboxOverride) {
+      if (baseConfig.type === "cloudflare") {
+        return {
+          type: "cloudflare",
+          sandboxId: `${baseConfig.sandboxId}-${sanitizeCloudflareSandboxId(userId)}`,
+        };
+      }
+      return baseConfig;
+    }
 
     const override = vault.sandboxOverride;
 
@@ -234,17 +252,31 @@ export class FileVaultManager implements VaultManager {
       };
     }
 
+    if (override.type === "cloudflare") {
+      if (!override.sandboxId) return baseConfig;
+      if (baseConfig.type !== "cloudflare") {
+        throw new Error(
+          `vault "${userId}" sets sandbox.type=cloudflare, but base sandbox is "${baseConfig.type}". ` +
+            "Use --sandbox=cloudflare:<sandbox-id> to enable Cloudflare remote execution.",
+        );
+      }
+      return {
+        type: "cloudflare",
+        sandboxId: override.sandboxId,
+      };
+    }
+
     if (override.type === "host") {
       throw new Error(
         `vault "${userId}" uses sandbox.type=host, which is blocked for credential isolation. ` +
-          "Use sandbox.type=image or sandbox.type=firecracker.",
+          "Use sandbox.type=image, sandbox.type=firecracker, or sandbox.type=cloudflare.",
       );
     }
 
     if (override.type === "container" || override.type === "docker") {
       throw new Error(
         `vault "${userId}" uses sandbox.type=${override.type}, which is blocked for credential isolation. ` +
-          "Use sandbox.type=image for per-user containers or sandbox.type=firecracker.",
+          "Use sandbox.type=image for per-user containers, sandbox.type=firecracker, or sandbox.type=cloudflare.",
       );
     }
 

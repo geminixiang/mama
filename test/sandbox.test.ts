@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
+  CloudflareSandboxExecutor,
   ContainerExecutor,
   FirecrackerExecutor,
   HostExecutor,
@@ -48,6 +49,13 @@ describe("parseSandboxArg", () => {
       hostPath: "/srv/workspace",
       sshUser: "ubuntu",
       sshPort: 2222,
+    });
+  });
+
+  test("parses cloudflare sandbox", () => {
+    expect(parseSandboxArg("cloudflare:slack-u123")).toEqual({
+      type: "cloudflare",
+      sandboxId: "slack-u123",
     });
   });
 
@@ -101,6 +109,12 @@ describe("createExecutor", () => {
       }),
     ).toBeInstanceOf(FirecrackerExecutor);
   });
+
+  test("creates cloudflare executor", () => {
+    expect(createExecutor({ type: "cloudflare", sandboxId: "shared-prefix" })).toBeInstanceOf(
+      CloudflareSandboxExecutor,
+    );
+  });
 });
 
 describe("FirecrackerExecutor", () => {
@@ -143,5 +157,45 @@ describe("FirecrackerExecutor", () => {
       "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -p 2222 ubuntu@vm1 sh -c 'pwd'",
       { timeout: 5 },
     );
+  });
+});
+
+describe("CloudflareSandboxExecutor", () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    process.env = { ...originalEnv };
+  });
+
+  test("posts exec requests to the bridge", async () => {
+    process.env.MAMA_CLOUDFLARE_SANDBOX_URL = "https://sandbox.example";
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ stdout: "ok\n", stderr: "", code: 0 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const executor = new CloudflareSandboxExecutor("slack-u123", { API_TOKEN: "secret" });
+    await expect(executor.exec("pwd", { timeout: 5 })).resolves.toEqual({
+      stdout: "ok\n",
+      stderr: "",
+      code: 0,
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      new URL("/exec", "https://sandbox.example"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "content-type": "application/json" }),
+      }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      sandboxId: "slack-u123",
+      command: "pwd",
+      timeoutSeconds: 5,
+      cwd: "/workspace",
+      env: { API_TOKEN: "secret" },
+    });
   });
 });

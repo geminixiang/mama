@@ -157,6 +157,7 @@ function buildSystemPrompt(
   const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
   const isImageSandbox = sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
+  const isCloudflareSandbox = sandboxConfig.type === "cloudflare";
 
   // Format channel mappings
   const channelMappings =
@@ -185,7 +186,12 @@ function buildSystemPrompt(
 - Bash working directory: / (use cd or absolute paths)
 - Install tools with: apt-get install <package> (Debian-based)
 - Your changes persist across sessions`
-        : `You are running directly on the host machine.
+        : isCloudflareSandbox
+          ? `You are running through a Cloudflare Sandbox bridge.
+- Bash working directory: /workspace
+- Your commands run in a remote container managed by Cloudflare
+- Important: the remote filesystem is not automatically synced back to the host workspace`
+          : `You are running directly on the host machine.
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
@@ -444,7 +450,9 @@ export async function createRunner(
     (vaultManager.isEnabled() ||
       !!bindingStore ||
       sandboxConfig.type === "container" ||
-      sandboxConfig.type === "image")
+      sandboxConfig.type === "image" ||
+      sandboxConfig.type === "cloudflare" ||
+      sandboxConfig.type === "firecracker")
       ? new ActorExecutionResolver(sandboxConfig, vaultManager, bindingStore, provisioner)
       : undefined;
   // activeExecutor is replaced at the start of each run() call when executionResolver

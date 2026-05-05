@@ -10,6 +10,7 @@
 | `container:<name>`                                          | 既有 Docker container | 注入                | `container-<name>`                        | one container one vault；多人共用同一 container 就共用該 vault                     |
 | `image:<image>`                                             | mama 管理的 Docker    | 注入                | binding / direct userId / generated vault | 目前最推薦的隔離模式；per-user container lifecycle 由 mama 管理                    |
 | `firecracker:<vm-id>:<host-path>[:<ssh-user>[:<ssh-port>]]` | Firecracker VM        | 注入                | binding 優先，再 fallback 到 userId vault | Alpha 超早期；VM 需自行啟動，workspace 需在 VM 內掛到 `/workspace`，目前不建議使用 |
+| `cloudflare:<sandbox-id>`                                   | Cloudflare Worker     | 注入                | binding / direct userId / generated vault | Experimental；需自行部署 `@cloudflare/sandbox` bridge，host workspace 不會自動同步 |
 
 `docker:*` 不是可用模式；請改用 `container:*` 或 `image:*`。
 
@@ -243,6 +244,36 @@ mama --sandbox=firecracker:192.168.1.100:/home/mama/workspace:root:22 /home/mama
 - VM lifecycle 由你管理
 - workspace mount 由你管理
 - vault file credential 會被保存，但目前不會自動投影到 VM 內的 target path
+
+---
+
+## `cloudflare:<sandbox-id>`
+
+警告：Cloudflare 支援目前是 experimental。mama 會透過你自行部署的 Cloudflare Worker bridge 呼叫 `@cloudflare/sandbox`，但不會自動把宿主機 workspace 同步到遠端 container。
+
+```bash
+export MAMA_CLOUDFLARE_SANDBOX_URL="https://your-bridge.workers.dev"
+export MAMA_CLOUDFLARE_SANDBOX_TOKEN="replace-me" # optional
+
+mama --sandbox=cloudflare:mama-remote /path/to/workspace
+```
+
+特性：
+
+- mama 會把 remote sandbox id 衍生為 `<base-sandbox-id>-<vault-key>`
+- vault env 會在每次 `exec()` 時透過 bridge 注入
+- vault 選擇邏輯和 `image` 類似：binding 優先，再 direct userId vault，再 fallback 到 platform-scoped generated vault
+
+限制：
+
+- 遠端 `/workspace` 不會自動 mirror 本機工作目錄
+- 因此 `pwd` 會顯示 `/workspace`，但 `ls` 可能是空的；這是預期行為，不代表它正在讀你的本機 repo
+- vault file credential 目前不會自動投影到 Cloudflare sandbox
+- 需要自行部署 bridge Worker 與對應 container image
+
+可直接使用範例 bridge：
+
+- [examples/cloudflare-sandbox-bridge/README.md](../examples/cloudflare-sandbox-bridge/README.md)
 
 ---
 

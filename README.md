@@ -172,7 +172,7 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 export MOM_SLACK_APP_TOKEN=xapp-...
 export MOM_SLACK_BOT_TOKEN=xoxb-...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
 
 The bot responds when `@mentioned` in any channel or via DM.
@@ -193,7 +193,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 ```bash
 export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
 
 - **Private chats** — every message is forwarded to the bot automatically.
@@ -215,7 +215,7 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 ```bash
 export MOM_DISCORD_BOT_TOKEN=MTI...
 
-mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>] <working-directory>
+mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
 
 - **Server channels** — the bot responds when `@mentioned`.
@@ -236,6 +236,7 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 | `--sandbox=container:<name>`           |           | Run commands in an existing shared container                       |
 | `--sandbox=image:<image>`              |           | Auto-provision one Docker container per platform user              |
 | `--sandbox=firecracker:<vm-id>:<path>` |           | Experimental Firecracker microVM mode (alpha; not recommended yet) |
+| `--sandbox=cloudflare:<sandbox-id>`    |           | Experimental remote executor via a Cloudflare Sandbox bridge       |
 | `--download <channel-id>`              |           | Download channel history to stdout and exit (Slack only)           |
 
 ### Sandbox and Vault Semantics
@@ -244,6 +245,7 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 - `container:<name>`: one container maps to one shared vault key: `container-<name>`.
 - `image:<image>`: mama creates one container per resolved vault/user and injects that vault's env and file mounts.
 - `firecracker:*`: per-user vault routing via `bindings.json` first, then direct userId vault. This mode is still alpha and not recommended for normal deployments yet.
+- `cloudflare:<sandbox-id>`: per-user vault routing via `bindings.json` first, then direct userId vault, then generated platform-scoped vault ids. mama derives remote sandbox ids as `<sandbox-id>-<vault-key>`.
 - `docker:*` is not supported; use `container:*` or `image:*`.
 
 See [docs/sandbox.md](docs/sandbox.md) for the full sandbox/vault behavior matrix.
@@ -480,6 +482,22 @@ mama --sandbox=firecracker:192.168.1.100:/home/user/workspace:root:2222 /home/us
    ```
 
 The host path is mounted as `/workspace` inside the Firecracker VM. All bash commands will execute inside the VM.
+
+## Cloudflare Sandbox Bridge
+
+Warning: Cloudflare support is experimental. mama can execute commands through a Cloudflare Worker bridge backed by `@cloudflare/sandbox`, but it does not automatically mirror the host workspace into the remote container.
+
+```bash
+export MAMA_CLOUDFLARE_SANDBOX_URL="https://your-bridge.workers.dev"
+# Optional bearer token enforced by the bridge
+export MAMA_CLOUDFLARE_SANDBOX_TOKEN="replace-me"
+
+mama --sandbox=cloudflare:mama-remote /path/to/workspace
+```
+
+In this mode the remote container still uses `/workspace` as its working directory, but that path is not automatically populated from your local repo. As a result, `pwd` returns `/workspace` while `ls` may show an empty directory unless you add your own sync/upload flow.
+
+For a deployable bridge example, see [examples/cloudflare-sandbox-bridge/README.md](examples/cloudflare-sandbox-bridge/README.md).
 
 ## Events
 

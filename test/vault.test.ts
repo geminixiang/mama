@@ -208,6 +208,43 @@ describe("FileVaultManager", () => {
     const mgr = new FileVaultManager(tmpDir);
     expect(() => mgr.getSandboxConfig("U123", { type: "host" })).toThrow(/base sandbox is "host"/);
   });
+
+  test("derives per-vault cloudflare sandbox ids", () => {
+    writeVaultJson({
+      vaults: {
+        alice: {
+          displayName: "Alice",
+        },
+      },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    expect(mgr.getSandboxConfig("alice", { type: "cloudflare", sandboxId: "mama-remote" })).toEqual(
+      {
+        type: "cloudflare",
+        sandboxId: "mama-remote-alice",
+      },
+    );
+  });
+
+  test("applies cloudflare sandbox override in cloudflare mode", () => {
+    writeVaultJson({
+      vaults: {
+        alice: {
+          displayName: "Alice",
+          sandbox: { type: "cloudflare", sandboxId: "custom-alice" },
+        },
+      },
+    });
+
+    const mgr = new FileVaultManager(tmpDir);
+    expect(mgr.getSandboxConfig("alice", { type: "cloudflare", sandboxId: "mama-remote" })).toEqual(
+      {
+        type: "cloudflare",
+        sandboxId: "custom-alice",
+      },
+    );
+  });
 });
 
 describe("ActorExecutionResolver image mode", () => {
@@ -325,6 +362,25 @@ describe("ActorExecutionResolver image mode", () => {
       type: "container",
       container: "mama-sandbox-slack-u123",
     });
+  });
+
+  test("uses platform-namespaced vault ids for new users in cloudflare mode", async () => {
+    writeVaultJson({ vaults: {} });
+    const mgr = new FileVaultManager(tmpDir);
+    const resolver = new ActorExecutionResolver(
+      { type: "cloudflare", sandboxId: "mama-remote" },
+      mgr,
+    );
+
+    const executor = await resolver.resolve({ platform: "slack", userId: "U123" });
+
+    expect(executor.getSandboxConfig()).toEqual({
+      type: "cloudflare",
+      sandboxId: "mama-remote-slack-u123",
+    });
+    expect(mgr.resolve(DockerContainerManager.vaultId("slack", "U123"))?.displayName).toBe(
+      "slack:U123",
+    );
   });
 
   test("provisions custom containers with vault mounts", async () => {
