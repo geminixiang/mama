@@ -70,8 +70,8 @@ function loadRawAgentConfig(workspaceDir?: string): Partial<AgentConfig> {
 export function loadAgentConfig(workspaceDir: string): AgentConfig {
   const fromFile = loadRawAgentConfig(workspaceDir);
 
-  const provider = fromFile.provider || process.env.MOM_AI_PROVIDER || DEFAULTS.provider;
-  const model = fromFile.model || process.env.MOM_AI_MODEL || DEFAULTS.model;
+  const provider = fromFile.provider || process.env.MAMA_AI_PROVIDER || DEFAULTS.provider;
+  const model = fromFile.model || process.env.MAMA_AI_MODEL || DEFAULTS.model;
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
   const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
@@ -147,11 +147,11 @@ export function resolveSentryDsn(workspaceDir?: string): string | undefined {
 
 /**
  * Externally-visible base URL of the link/OAuth server, e.g.
- * `https://mama.example.com` (no trailing slash). Read from `MOM_LINK_URL`,
+ * `https://mama.example.com` (no trailing slash). Read from `MAMA_LINK_URL`,
  * the same env var the bot uses to build credential onboarding links.
  */
 export function resolveLinkBaseUrl(): string | undefined {
-  const raw = process.env.MOM_LINK_URL?.trim();
+  const raw = process.env.MAMA_LINK_URL?.trim();
   if (!raw) return undefined;
   return raw.replace(/\/+$/, "");
 }

@@ -169,8 +169,8 @@ Or import this **App Manifest** directly (Settings → App Manifest → paste JS
 </details>
 
 ```bash
-export MOM_SLACK_APP_TOKEN=xapp-...
-export MOM_SLACK_BOT_TOKEN=xoxb-...
+export MAMA_SLACK_APP_TOKEN=xapp-...
+export MAMA_SLACK_BOT_TOKEN=xoxb-...
 
 mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
@@ -191,7 +191,7 @@ The bot responds when `@mentioned` in any channel or via DM.
 2. Optionally disable privacy mode (`/setprivacy → Disable`) so the bot can read group messages without being `@mentioned`.
 
 ```bash
-export MOM_TELEGRAM_BOT_TOKEN=123456:ABC-...
+export MAMA_TELEGRAM_BOT_TOKEN=123456:ABC-...
 
 mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
@@ -213,7 +213,7 @@ mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|f
 4. Copy the **Bot Token**.
 
 ```bash
-export MOM_DISCORD_BOT_TOKEN=MTI...
+export MAMA_DISCORD_BOT_TOKEN=MTI...
 
 mama [--state-dir=~/.mama] [--sandbox=host|container:<container>|image:<image>|firecracker:<vm-id>:<path>|cloudflare:<sandbox-id>] <working-directory>
 ```
@@ -258,15 +258,15 @@ mama --download C0123456789
 
 ## `/login` Credential Onboarding
 
-For normal deployments, set `MOM_LINK_URL` to the externally reachable base URL of the web credential onboarding flow:
+For normal deployments, set `MAMA_LINK_URL` to the externally reachable base URL of the web credential onboarding flow:
 
 ```bash
-export MOM_LINK_URL="https://mama.example.com"
-# optional; defaults to 8181 when MOM_LINK_URL is set
-export MOM_LINK_PORT=8181
+export MAMA_LINK_URL="https://mama.example.com"
+# optional; defaults to 8181 when MAMA_LINK_URL is set
+export MAMA_LINK_PORT=8181
 ```
 
-For local-only testing, you can set `MOM_LINK_PORT` without `MOM_LINK_URL`; mama will use `http://localhost:<port>` for the onboarding link.
+For local-only testing, you can set `MAMA_LINK_PORT` without `MAMA_LINK_URL`; mama will use `http://localhost:<port>` for the onboarding link.
 
 Users can then run `/login` in a private conversation with the bot. mama returns a 15-minute link for storing API keys or using built-in OAuth providers. `/login` is rejected in shared channels to avoid leaking onboarding links.
 
@@ -284,7 +284,7 @@ The same web portal used for `/login` can also render a read-only view of the cu
 - The page shows the current branch timeline, including user messages, assistant replies, tool results, and compaction / branch summary events.
 - For now, session links are only issued from private conversations to avoid leaking shared-channel history.
 
-This feature uses the same `MOM_LINK_URL` / `MOM_LINK_PORT` configuration as `/login`.
+This feature uses the same `MAMA_LINK_URL` / `MAMA_LINK_PORT` configuration as `/login`.
 
 Built-in OAuth guides:
 
@@ -311,8 +311,8 @@ mama loads settings from `<state-dir>/settings.json` first, then falls back to `
 
 | Field           | Default             | Description                                                                                              |
 | --------------- | ------------------- | -------------------------------------------------------------------------------------------------------- |
-| `provider`      | `anthropic`         | AI provider (env: `MOM_AI_PROVIDER`)                                                                     |
-| `model`         | `claude-sonnet-4-5` | Model name (env: `MOM_AI_MODEL`)                                                                         |
+| `provider`      | `anthropic`         | AI provider (env: `MAMA_AI_PROVIDER`)                                                                    |
+| `model`         | `claude-sonnet-4-5` | Model name (env: `MAMA_AI_MODEL`)                                                                        |
 | `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                                                                        |
 | `sessionScope`  | `thread`            | Legacy compatibility setting. Current session boundaries are platform-defined by adapter/session policy. |
 | `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging)                                                 |

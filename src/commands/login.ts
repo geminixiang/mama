@@ -51,7 +51,7 @@ export class LoginCommandHandler implements CommandHandler {
     if (!context.services.portalBaseUrl) {
       await replyWithContext(
         context.responseCtx,
-        "Login is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+        "Login is not configured. Set `MAMA_LINK_URL` or `MAMA_LINK_PORT` on the server.",
       );
       return true;
     }

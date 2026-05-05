@@ -50,14 +50,14 @@ function getVersion(): string {
   return "unknown";
 }
 
-const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
-const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
-const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
-const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
-const MOM_LINK_URL = process.env.MOM_LINK_URL;
-const MOM_LINK_PORT = process.env.MOM_LINK_PORT
-  ? parseInt(process.env.MOM_LINK_PORT, 10)
-  : MOM_LINK_URL
+const MAMA_SLACK_APP_TOKEN = process.env.MAMA_SLACK_APP_TOKEN;
+const MAMA_SLACK_BOT_TOKEN = process.env.MAMA_SLACK_BOT_TOKEN;
+const MAMA_TELEGRAM_BOT_TOKEN = process.env.MAMA_TELEGRAM_BOT_TOKEN;
+const MAMA_DISCORD_BOT_TOKEN = process.env.MAMA_DISCORD_BOT_TOKEN;
+const MAMA_LINK_URL = process.env.MAMA_LINK_URL;
+const MAMA_LINK_PORT = process.env.MAMA_LINK_PORT
+  ? parseInt(process.env.MAMA_LINK_PORT, 10)
+  : MAMA_LINK_URL
     ? 8181
     : undefined;
 
@@ -172,11 +172,11 @@ if (parsedArgs.showVersion) {
 
 // Handle --download mode (Slack only)
 if (parsedArgs.downloadChannel) {
-  if (!MOM_SLACK_BOT_TOKEN) {
-    console.error("Missing env: MOM_SLACK_BOT_TOKEN");
+  if (!MAMA_SLACK_BOT_TOKEN) {
+    console.error("Missing env: MAMA_SLACK_BOT_TOKEN");
     process.exit(1);
   }
-  await downloadChannel(parsedArgs.downloadChannel, MOM_SLACK_BOT_TOKEN);
+  await downloadChannel(parsedArgs.downloadChannel, MAMA_SLACK_BOT_TOKEN);
   process.exit(0);
 }
 
@@ -195,16 +195,16 @@ process.env.MAMA_STATE_DIR = stateDir;
 ensureSecureStateDir(stateDir);
 
 // Validate platform tokens
-const hasSlack = !!(MOM_SLACK_APP_TOKEN && MOM_SLACK_BOT_TOKEN);
-const hasTelegram = !!MOM_TELEGRAM_BOT_TOKEN;
-const hasDiscord = !!MOM_DISCORD_BOT_TOKEN;
+const hasSlack = !!(MAMA_SLACK_APP_TOKEN && MAMA_SLACK_BOT_TOKEN);
+const hasTelegram = !!MAMA_TELEGRAM_BOT_TOKEN;
+const hasDiscord = !!MAMA_DISCORD_BOT_TOKEN;
 
 if (!hasSlack && !hasTelegram && !hasDiscord) {
   console.error(
     "No platform tokens found. Set one of:\n" +
-      "  Slack:    MOM_SLACK_APP_TOKEN + MOM_SLACK_BOT_TOKEN\n" +
-      "  Telegram: MOM_TELEGRAM_BOT_TOKEN\n" +
-      "  Discord:  MOM_DISCORD_BOT_TOKEN",
+      "  Slack:    MAMA_SLACK_APP_TOKEN + MAMA_SLACK_BOT_TOKEN\n" +
+      "  Telegram: MAMA_TELEGRAM_BOT_TOKEN\n" +
+      "  Discord:  MAMA_DISCORD_BOT_TOKEN",
   );
   process.exit(1);
 }
@@ -254,8 +254,8 @@ setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
 setInterval(() => sessionViewTokenStore.purge(), 5 * 60 * 1000).unref();
 
 function portalBaseUrl(): string | undefined {
-  if (MOM_LINK_URL) return MOM_LINK_URL.replace(/\/+$/, "");
-  if (MOM_LINK_PORT) return `http://localhost:${MOM_LINK_PORT}`;
+  if (MAMA_LINK_URL) return MAMA_LINK_URL.replace(/\/+$/, "");
+  if (MAMA_LINK_PORT) return `http://localhost:${MAMA_LINK_PORT}`;
   return undefined;
 }
 /** Idle timeout for managed image containers (10 minutes) */
@@ -298,10 +298,10 @@ const bots: Bot[] = [];
 const botsByPlatform: Record<string, Bot> = {};
 
 if (hasSlack) {
-  const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+  const sharedStore = new ChannelStore({ workingDir, botToken: MAMA_SLACK_BOT_TOKEN! });
   const slackBot = new SlackBotClass(handler, {
-    appToken: MOM_SLACK_APP_TOKEN!,
-    botToken: MOM_SLACK_BOT_TOKEN!,
+    appToken: MAMA_SLACK_APP_TOKEN!,
+    botToken: MAMA_SLACK_BOT_TOKEN!,
     workingDir,
     store: sharedStore,
   });
@@ -311,7 +311,7 @@ if (hasSlack) {
 }
 if (hasTelegram) {
   const telegramBot = new TelegramBot(handler, {
-    token: MOM_TELEGRAM_BOT_TOKEN!,
+    token: MAMA_TELEGRAM_BOT_TOKEN!,
     workingDir,
   });
   bots.push(telegramBot);
@@ -320,7 +320,7 @@ if (hasTelegram) {
 }
 if (hasDiscord) {
   const discordBot = new DiscordBot(handler, {
-    token: MOM_DISCORD_BOT_TOKEN!,
+    token: MAMA_DISCORD_BOT_TOKEN!,
     workingDir,
   });
   bots.push(discordBot);
@@ -328,9 +328,9 @@ if (hasDiscord) {
   log.logInfo("Platform: Discord");
 }
 
-if (MOM_LINK_PORT) {
+if (MAMA_LINK_PORT) {
   startLinkServer(
-    MOM_LINK_PORT,
+    MAMA_LINK_PORT,
     linkTokenStore,
     vaultManager,
     async (platform, conversationId, message) => {

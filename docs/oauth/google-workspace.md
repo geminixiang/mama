@@ -15,12 +15,12 @@ APIs & Services → Credentials → Create Credentials → OAuth client ID
 設定：
 
 - Application type：`Web application`
-- Authorized redirect URI：`<MOM_LINK_URL>/oauth/callback`
+- Authorized redirect URI：`<MAMA_LINK_URL>/oauth/callback`
 
 範例：
 
 ```text
-MOM_LINK_URL=https://mama.example.com
+MAMA_LINK_URL=https://mama.example.com
 Redirect URI=https://mama.example.com/oauth/callback
 ```
 
@@ -33,17 +33,17 @@ OAuth consent screen → Test users
 ## 2. 設定環境變數
 
 ```bash
-export MOM_LINK_URL="https://mama.example.com"
+export MAMA_LINK_URL="https://mama.example.com"
 export GOOGLE_WORKSPACE_CLI_CLIENT_ID="<client-id>"
 export GOOGLE_WORKSPACE_CLI_CLIENT_SECRET="<client-secret>"
 ```
 
-如果沒有設定 `MOM_LINK_PORT`，mama 會在 `MOM_LINK_URL` 存在時預設監聽 `8181`。
+如果沒有設定 `MAMA_LINK_PORT`，mama 會在 `MAMA_LINK_URL` 存在時預設監聽 `8181`。
 
 可選：覆蓋預設 scopes：
 
 ```bash
-export MOM_GOOGLE_WORKSPACE_CLI_OAUTH_SCOPES="https://www.googleapis.com/auth/drive https://mail.google.com/ https://www.googleapis.com/auth/calendar"
+export MAMA_GOOGLE_WORKSPACE_CLI_OAUTH_SCOPES="https://www.googleapis.com/auth/drive https://mail.google.com/ https://www.googleapis.com/auth/calendar"
 ```
 
 ## 3. 使用 `/login`

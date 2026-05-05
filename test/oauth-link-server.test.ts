@@ -13,7 +13,7 @@ const originalEnv = {
   GITHUB_OAUTH_CLIENT_SECRET: process.env.GITHUB_OAUTH_CLIENT_SECRET,
   GOOGLE_WORKSPACE_CLI_CLIENT_ID: process.env.GOOGLE_WORKSPACE_CLI_CLIENT_ID,
   GOOGLE_WORKSPACE_CLI_CLIENT_SECRET: process.env.GOOGLE_WORKSPACE_CLI_CLIENT_SECRET,
-  MOM_LINK_URL: process.env.MOM_LINK_URL,
+  MAMA_LINK_URL: process.env.MAMA_LINK_URL,
 };
 
 async function waitForListening(server: Server): Promise<void> {
@@ -123,9 +123,9 @@ describe("OAuth link server flows", () => {
     }
   });
 
-  test("rejects cross-origin OAuth start requests when MOM_LINK_URL is configured", async () => {
+  test("rejects cross-origin OAuth start requests when MAMA_LINK_URL is configured", async () => {
     const stateDir = createStateDir(dirs);
-    process.env.MOM_LINK_URL = "https://mama.example.com";
+    process.env.MAMA_LINK_URL = "https://mama.example.com";
     configureGitHubOAuth();
 
     const { url, token } = await createFlow(servers, stateDir, "U100");

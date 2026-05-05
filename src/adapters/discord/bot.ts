@@ -116,7 +116,7 @@ export class DiscordBot implements Bot {
         resolve();
       });
       this.client.once(Events.Error, reject);
-      this.client.login(process.env.MOM_DISCORD_BOT_TOKEN!).catch(reject);
+      this.client.login(process.env.MAMA_DISCORD_BOT_TOKEN!).catch(reject);
     });
   }
 

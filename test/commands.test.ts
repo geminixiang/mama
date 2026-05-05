@@ -239,7 +239,7 @@ describe("LoginCommandHandler", () => {
 
     expect(await handler.tryHandle(ctx)).toBe(true);
     expect(linkTokenStore.created).toHaveLength(0);
-    expect(ctx.responseCtx.responses[0]).toContain("MOM_LINK_URL");
+    expect(ctx.responseCtx.responses[0]).toContain("MAMA_LINK_URL");
   });
 
   test("creates a link token and replies with the portal URL", async () => {

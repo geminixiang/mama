@@ -20,8 +20,8 @@ describe("loadAgentConfig", () => {
 
   afterEach(() => {
     delete process.env.MAMA_STATE_DIR;
-    delete process.env.MOM_AI_PROVIDER;
-    delete process.env.MOM_AI_MODEL;
+    delete process.env.MAMA_AI_PROVIDER;
+    delete process.env.MAMA_AI_MODEL;
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
@@ -66,8 +66,8 @@ describe("loadAgentConfig", () => {
   });
 
   test("env vars override defaults but not settings.json", () => {
-    process.env.MOM_AI_PROVIDER = "google";
-    process.env.MOM_AI_MODEL = "gemini-2.0-flash";
+    process.env.MAMA_AI_PROVIDER = "google";
+    process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
 
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBe("google");
@@ -76,8 +76,8 @@ describe("loadAgentConfig", () => {
 
   test("settings.json values override env vars", () => {
     saveAgentConfig(tmpDir, { provider: "openai", model: "gpt-4o" });
-    process.env.MOM_AI_PROVIDER = "google";
-    process.env.MOM_AI_MODEL = "gemini-2.0-flash";
+    process.env.MAMA_AI_PROVIDER = "google";
+    process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
 
     const config = loadAgentConfig(tmpDir);
     expect(config.provider).toBe("openai");

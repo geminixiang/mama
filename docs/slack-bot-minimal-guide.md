@@ -14,7 +14,7 @@ This guide lists the minimum Slack app settings needed to run `mama` over Socket
 1. Go to **Settings → Socket Mode**.
 2. Turn **Enable Socket Mode** on.
 3. Create an app-level token with the `connections:write` scope.
-4. Save the token as `MOM_SLACK_APP_TOKEN`.
+4. Save the token as `MAMA_SLACK_APP_TOKEN`.
 
 The token starts with `xapp-`.
 
@@ -36,7 +36,7 @@ Go to **OAuth & Permissions → Scopes → Bot Token Scopes** and add:
 - `im:write`
 - `users:read`
 
-Then install or reinstall the app to your workspace and save the bot token as `MOM_SLACK_BOT_TOKEN`.
+Then install or reinstall the app to your workspace and save the bot token as `MAMA_SLACK_BOT_TOKEN`.
 
 The token starts with `xoxb-`.
 
@@ -81,8 +81,8 @@ Slash commands are optional because text commands also work in supported context
 ## 8. Run mama
 
 ```bash
-export MOM_SLACK_APP_TOKEN=xapp-...
-export MOM_SLACK_BOT_TOKEN=xoxb-...
+export MAMA_SLACK_APP_TOKEN=xapp-...
+export MAMA_SLACK_BOT_TOKEN=xoxb-...
 
 mama --state-dir ~/.mama /path/to/workspace
 ```

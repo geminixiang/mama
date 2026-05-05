@@ -30,7 +30,7 @@ export class SessionViewCommandHandler implements CommandHandler {
 
     if (!context.services.portalBaseUrl) {
       await sendSessionViewReply(
-        "Session viewer is not configured. Set `MOM_LINK_URL` or `MOM_LINK_PORT` on the server.",
+        "Session viewer is not configured. Set `MAMA_LINK_URL` or `MAMA_LINK_PORT` on the server.",
       );
       return true;
     }
