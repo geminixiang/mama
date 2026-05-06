@@ -87,8 +87,6 @@ export class TelegramBot implements Bot {
     this.startupTime = Date.now();
 
     await this.client.api.setMyCommands([
-      { command: "start", description: "Welcome message" },
-      { command: "help", description: "Show available commands" },
       { command: "login", description: "Store credentials in your private vault" },
       { command: "session", description: "Open the current session in the web viewer" },
       { command: "stop", description: "Stop ongoing conversation" },
@@ -398,45 +396,6 @@ export class TelegramBot implements Bot {
 
   private setupEventHandlers(): void {
     // --- Slash commands (registered before catch-all so grammY intercepts them) ---
-
-    this.client.command("start", async (ctx) => {
-      const mc = this.extractMessageContext(ctx.message);
-      if (!mc) return;
-      await this.postMessageRaw(
-        parseInt(mc.chatId),
-        [
-          "<b>Welcome!</b>",
-          "",
-          "I'm an AI coding agent. Send me a message or use these commands:",
-          "",
-          "/new — Reset conversation history and start fresh",
-          "/stop — Stop the current conversation",
-          "/session — Open the current session in the web viewer",
-          "/help — Show available commands",
-          "/login — Store credentials in your private vault",
-        ].join("\n"),
-      );
-    });
-
-    this.client.command("help", async (ctx) => {
-      const mc = this.extractMessageContext(ctx.message);
-      if (!mc) return;
-      await this.postMessageRaw(
-        parseInt(mc.chatId),
-        [
-          "<b>Available commands:</b>",
-          "",
-          "/start — Welcome message",
-          "/help — Show this help",
-          "/login — Store credentials in your private vault",
-          "/session — Open the current session in the web viewer",
-          "/stop — Stop ongoing conversation",
-          "/new — Reset conversation history and start fresh",
-          "",
-          "You can also send a regular message to chat with the agent.",
-        ].join("\n"),
-      );
-    });
 
     this.client.command("stop", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);

@@ -6,6 +6,7 @@ import type { Bot, ChatResponseContext } from "../src/adapter.js";
 import type { UserBindingStore } from "../src/bindings.js";
 import { CommandRegistry } from "../src/commands/registry.js";
 import { LoginCommandHandler } from "../src/commands/login.js";
+import { NewCommandHandler } from "../src/commands/new.js";
 import { SessionViewCommandHandler } from "../src/commands/session-view.js";
 import type { CommandContext, CommandHandler, CommandServices } from "../src/commands/types.js";
 import { createManagedSessionFile, getChannelSessionDir } from "../src/session-store.js";
@@ -144,6 +145,17 @@ function buildContext(args: BuildContextArgs): CommandContext & {
   const responseCtx = fakeResponseCtx();
   const services: CommandServices = {
     workingDir: "/tmp/no-such-working-dir",
+    runtime: {
+      createSessionSandbox: vi.fn(),
+      forceStop: vi.fn(),
+      getRunningSessions: vi.fn().mockReturnValue([]),
+      handleEvent: vi.fn(),
+      handleNew: vi.fn(),
+      handleStop: vi.fn(),
+      isRunning: vi.fn().mockReturnValue(false),
+      runSession: vi.fn(),
+      shutdown: vi.fn(),
+    } as any,
     sandbox,
     vaultManager: fakeVaultManager(),
     bindingStore: fakeBindingStore(),
@@ -404,5 +416,36 @@ describe("SessionViewCommandHandler", () => {
     expect(await handler.tryHandle(ctx)).toBe(true);
     expect(sessionViewTokenStore.created).toEqual([{ sessionFile: expectedFile }]);
     expect(ctx.responseCtx.responses[0]).toContain("https://portal.example/session?token=tok-sv");
+  });
+});
+
+describe("NewCommandHandler", () => {
+  const handler = new NewCommandHandler();
+
+  test("declines unrelated commands", async () => {
+    const ctx = buildContext({ commandText: "hello" });
+    expect(await handler.tryHandle(ctx)).toBe(false);
+  });
+
+  test("rejects shared conversations", async () => {
+    const ctx = buildContext({
+      commandText: "/new",
+      privateConversation: false,
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.responseCtx.responses[0]).toContain("只能在與機器人的私訊");
+    expect(ctx.services.runtime.handleNew).not.toHaveBeenCalled();
+  });
+
+  test("resets the active private session", async () => {
+    const ctx = buildContext({
+      commandText: "/new",
+      privateConversation: true,
+      conversationId: "D123",
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.services.runtime.handleNew).toHaveBeenCalledWith("D123", "D123", ctx.bot);
   });
 });

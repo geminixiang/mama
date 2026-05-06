@@ -66,7 +66,7 @@ Create a Socket Mode app with the scopes and event subscriptions listed in [docs
 
 ### Telegram
 
-Create a bot via [@BotFather](https://t.me/BotFather) and copy the token. The bot responds to all private messages, and to `@mention` or reply chains in groups. Say `stop` or `/stop` to cancel a running task.
+Create a bot via [@BotFather](https://t.me/BotFather) and copy the token. The bot responds to all private messages, and to `@mention` or reply chains in groups. Use `/login`, `/session`, `/new`, and `/stop` for controls.
 
 ### Discord
 
@@ -114,7 +114,9 @@ For local testing you can set just `MAMA_LINK_PORT`; mama will use `http://local
 
 - `/login` (DM only) returns a 15-minute link to store API keys or run built-in OAuth flows ([GitHub](docs/oauth/github.md), [Google Workspace](docs/oauth/google-workspace.md)).
 - `session` / `/session` (DM only) returns a read-only link showing the current session timeline.
-- On Slack you can also register native commands like `/pi-login` and `/pi-new` (DM-only reset).
+- `new` / `/new` (DM only) resets the current session and starts fresh.
+- `stop` / `/stop` stops the current run. On Slack, use text commands so thread-local stop routing remains accurate.
+- On Slack you can also register native commands like `/pi-login`, `/pi-session`, and `/pi-new`.
 
 Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Vault env is only injected in `container`, `image`, `firecracker`, and `cloudflare` modes.
 

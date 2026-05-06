@@ -103,8 +103,20 @@ export class DiscordBot implements Bot {
         try {
           await readyClient.application.commands.set([
             {
+              name: "login",
+              description: "Store credentials in your private vault",
+            },
+            {
               name: "session",
               description: "Open the current session in the web viewer",
+            },
+            {
+              name: "new",
+              description: "Reset conversation history and start fresh",
+            },
+            {
+              name: "stop",
+              description: "Stop the current conversation",
             },
           ]);
         } catch (err) {
@@ -391,7 +403,7 @@ export class DiscordBot implements Bot {
     };
   }
 
-  private createSessionSlashAdapters(
+  private createSlashCommandAdapters(
     interaction: ChatInputCommandInteraction,
     commandText: string,
     sessionKey: string,
@@ -454,7 +466,15 @@ export class DiscordBot implements Bot {
 
   private setupEventHandlers(): void {
     this.client.on(Events.InteractionCreate, async (interaction) => {
-      if (!interaction.isChatInputCommand() || interaction.commandName !== "session") return;
+      if (!interaction.isChatInputCommand()) return;
+      if (
+        interaction.commandName !== "login" &&
+        interaction.commandName !== "session" &&
+        interaction.commandName !== "new" &&
+        interaction.commandName !== "stop"
+      ) {
+        return;
+      }
 
       const isDM = !interaction.inGuild();
       const { conversationId, threadTs } = this.resolveConversationContext({
@@ -473,7 +493,7 @@ export class DiscordBot implements Bot {
         persistentTopLevel: true,
         threadTs,
       });
-      const commandText = "/session";
+      const commandText = `/${interaction.commandName}`;
 
       this.logToFile(conversationId, {
         date: new Date(interaction.createdTimestamp).toISOString(),
@@ -486,25 +506,40 @@ export class DiscordBot implements Bot {
         isBot: false,
       });
 
-      const event: BotEvent = {
-        type: "dm",
-        conversationId,
-        conversationKind: isDM ? "direct" : "shared",
-        ts: interaction.id,
-        thread_ts: threadTs,
-        sessionKey,
-        user: interaction.user.id,
-        text: commandText,
-        attachments: [],
-      };
-
-      const adapters = this.createSessionSlashAdapters(
+      const adapters = this.createSlashCommandAdapters(
         interaction,
         commandText,
         sessionKey,
         conversationId,
       );
       try {
+        if (interaction.commandName === "new") {
+          await this.handler.handleNew(sessionKey, conversationId, this);
+          return;
+        }
+
+        if (interaction.commandName === "stop") {
+          const stopTarget = this.resolveStopTarget(conversationId, sessionKey);
+          if (stopTarget) {
+            await this.handler.handleStop(stopTarget, conversationId, this);
+          } else {
+            await adapters.responseCtx.respond(formatNothingRunning("discord"));
+          }
+          return;
+        }
+
+        const event: BotEvent = {
+          type: "dm",
+          conversationId,
+          conversationKind: isDM ? "direct" : "shared",
+          ts: interaction.id,
+          thread_ts: threadTs,
+          sessionKey,
+          user: interaction.user.id,
+          text: commandText,
+          attachments: [],
+        };
+
         await this.handler.handleEvent(event, this, adapters, false);
       } catch (err) {
         log.logWarning(
@@ -513,7 +548,7 @@ export class DiscordBot implements Bot {
         );
         if (!interaction.replied && !interaction.deferred) {
           await interaction.reply({
-            content: "Session command failed. Please try again later.",
+            content: `${interaction.commandName} command failed. Please try again later.`,
             ephemeral: !isDM,
           });
         }

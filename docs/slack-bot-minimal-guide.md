@@ -76,7 +76,7 @@ You can add slash commands for common controls:
 - `/pi-new` → start a new DM session
 - `/pi-session` → session viewer
 
-Slash commands are optional because text commands also work in supported contexts.
+Slash commands are optional because text commands also work in supported contexts. Keep `stop` as a text command (`stop` or `/stop`) so thread-local stop routing can target the correct session.
 
 ## 8. Run mama
 

@@ -265,7 +265,7 @@ describe("TelegramBot startup", () => {
     if (existsSync(workingDir)) rmSync(workingDir, { recursive: true, force: true });
   });
 
-  test("start registers /login in Telegram slash commands", async () => {
+  test("start registers required Telegram slash commands only", async () => {
     const bot = new TelegramBot(makeHandler(), { token: "TEST_TOKEN", workingDir });
     const getMe = vi.fn().mockResolvedValue({ id: 99, username: "mama_bot" });
     const setMyCommands = vi.fn().mockResolvedValue(undefined);
@@ -282,9 +282,12 @@ describe("TelegramBot startup", () => {
 
     await bot.start();
 
-    expect(setMyCommands).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ command: "login" })]),
-    );
+    expect(setMyCommands).toHaveBeenCalledWith([
+      { command: "login", description: "Store credentials in your private vault" },
+      { command: "session", description: "Open the current session in the web viewer" },
+      { command: "stop", description: "Stop ongoing conversation" },
+      { command: "new", description: "Reset conversation history and start fresh" },
+    ]);
   });
 });
 

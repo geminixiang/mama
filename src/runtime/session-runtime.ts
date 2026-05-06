@@ -77,6 +77,7 @@ class MamaSessionRuntime implements SessionRuntime {
   private isShuttingDown = false;
 
   constructor(private readonly options: SessionRuntimeOptions) {
+    this.options.runtime = this;
     this.commandRegistry = options.commandRegistry ?? createDefaultCommandRegistry();
   }
 

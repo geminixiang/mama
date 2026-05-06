@@ -409,4 +409,55 @@ describe("DiscordBot message routing", () => {
       text: "/session",
     });
   });
+
+  test("/new slash command resets the resolved session", async () => {
+    const handler = makeHandler();
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const interactionHandler = installInteractionHandler(bot);
+
+    await interactionHandler({
+      isChatInputCommand: () => true,
+      commandName: "new",
+      channelId: "DM1",
+      inGuild: () => false,
+      channel: { isThread: () => false },
+      id: "I3",
+      createdTimestamp: Date.now(),
+      user: { id: "U1", username: "alice" },
+      replied: false,
+      deferred: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn(),
+      editReply: vi.fn(),
+    });
+
+    expect(handler.handleNew).toHaveBeenCalledWith("DM1", "DM1", bot);
+  });
+
+  test("/stop slash command targets the thread session in Discord threads", async () => {
+    const handler = makeHandler();
+    vi.mocked(handler.isRunning).mockImplementation(
+      (sessionKey: string) => sessionKey === "C1:THREAD1",
+    );
+    const bot = new DiscordBot(handler, { token: "TEST_TOKEN", workingDir });
+    const interactionHandler = installInteractionHandler(bot);
+
+    await interactionHandler({
+      isChatInputCommand: () => true,
+      commandName: "stop",
+      channelId: "THREAD1",
+      inGuild: () => true,
+      channel: { isThread: () => true, parentId: "C1" },
+      id: "I4",
+      createdTimestamp: Date.now(),
+      user: { id: "U1", username: "alice" },
+      replied: false,
+      deferred: false,
+      reply: vi.fn().mockResolvedValue(undefined),
+      followUp: vi.fn(),
+      editReply: vi.fn(),
+    });
+
+    expect(handler.handleStop).toHaveBeenCalledWith("C1:THREAD1", "C1", bot);
+  });
 });

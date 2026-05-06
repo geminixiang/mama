@@ -554,6 +554,11 @@ export class SlackBot implements Bot {
     return resolveOnlyScopedStopTarget(this.handler, channelId);
   }
 
+  private isStopText(text: string): boolean {
+    const normalized = text.trim().toLowerCase();
+    return normalized === "stop" || normalized === "/stop";
+  }
+
   private createCommandAdapters(
     conversationId: string,
     userId: string,
@@ -813,7 +818,7 @@ export class SlackBot implements Bot {
       }
 
       // Check for stop command - execute immediately, don't queue!
-      if (slackEvent.text.toLowerCase().trim() === "stop") {
+      if (this.isStopText(slackEvent.text)) {
         const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
@@ -913,7 +918,7 @@ export class SlackBot implements Bot {
 
       // Check for stop command in channel threads (without @mention)
       // app_mention handles "@mama stop", but bare "stop" in a thread comes here
-      if (!isDM && e.thread_ts && slackEvent.text.toLowerCase().trim() === "stop") {
+      if (!isDM && e.thread_ts && this.isStopText(slackEvent.text)) {
         const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
@@ -932,7 +937,7 @@ export class SlackBot implements Bot {
         const activeSessionKey =
           slackEvent.sessionKey ?? resolveSlackSessionKey(e.channel, e.thread_ts);
         // Check for stop command - execute immediately, don't queue!
-        if (slackEvent.text.toLowerCase().trim() === "stop") {
+        if (this.isStopText(slackEvent.text)) {
           const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
           if (stopTarget) {
             this.handler.handleStop(stopTarget, e.channel, this); // Don't await, don't queue
