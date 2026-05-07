@@ -721,6 +721,55 @@ export class SlackBot implements Bot {
     await this.handler.handleNew(conversationId, conversationId, commandBot);
   }
 
+  private async routeSlashModelCommand(payload: {
+    command: string;
+    text?: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    const conversationId = payload.channel_id;
+    const isDirectMessage = conversationId.startsWith("D");
+    const createdAt = new Date();
+    const eventTs = (createdAt.getTime() / 1000).toFixed(6);
+    const userName = payload.user_name ?? this.getUser(payload.user_id)?.userName;
+    const commandSuffix = payload.text?.trim();
+    const commandText = commandSuffix ? `${payload.command} ${commandSuffix}` : payload.command;
+
+    this.logToFile(conversationId, {
+      date: createdAt.toISOString(),
+      ts: eventTs,
+      user: payload.user_id,
+      userName,
+      text: commandText,
+      attachments: [],
+      isBot: false,
+    });
+
+    const sessionKey = conversationId;
+    const event: BotEvent = {
+      type: "dm",
+      conversationId,
+      conversationKind: isDirectMessage ? "direct" : "shared",
+      ts: eventTs,
+      user: payload.user_id,
+      text: commandText,
+      attachments: [],
+      sessionKey,
+    };
+
+    const adapters = this.createCommandAdapters(
+      conversationId,
+      payload.user_id,
+      userName,
+      commandText,
+      eventTs,
+      isDirectMessage ? {} : { ephemeralChannelId: conversationId },
+    );
+
+    await this.handler.handleEvent(event, this, adapters, false);
+  }
+
   private async routeSlashSessionCommand(payload: {
     command: string;
     channel_id: string;
@@ -1008,7 +1057,15 @@ export class SlackBot implements Bot {
                   user_id: payload.user_id,
                   user_name: payload.user_name,
                 })
-              : null;
+              : payload.command === "/pi-model"
+                ? this.routeSlashModelCommand({
+                    command: payload.command,
+                    text: payload.text,
+                    channel_id: payload.channel_id,
+                    user_id: payload.user_id,
+                    user_name: payload.user_name,
+                  })
+                : null;
 
       if (!handlerPromise) {
         return;

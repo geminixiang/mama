@@ -60,6 +60,7 @@ export interface SessionRuntimeOptions extends CommandServices {
 export interface SessionRuntime extends BotHandler {
   runSession(options: RunSessionOptions): Promise<void>;
   createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner>;
+  switchConversationModel(conversationId: string, provider: string, model: string): boolean;
   shutdown(timeoutMs?: number): Promise<void>;
 }
 
@@ -330,6 +331,26 @@ class MamaSessionRuntime implements SessionRuntime {
   async createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner> {
     const state = await this.getOrCreateState(options);
     return state.runner;
+  }
+
+  switchConversationModel(conversationId: string, _provider: string, _model: string): boolean {
+    for (const [sessionKey, state] of this.conversationStates) {
+      if (this.isConversationSession(sessionKey, conversationId) && state.running) {
+        return false;
+      }
+    }
+
+    for (const sessionKey of Array.from(this.conversationStates.keys())) {
+      if (this.isConversationSession(sessionKey, conversationId)) {
+        this.conversationStates.delete(sessionKey);
+      }
+    }
+    log.logInfo(`[${conversationId}] Model switched; cleared cached session runners`);
+    return true;
+  }
+
+  private isConversationSession(sessionKey: string, conversationId: string): boolean {
+    return sessionKey === conversationId || sessionKey.startsWith(`${conversationId}:`);
   }
 
   private async getOrCreateState({

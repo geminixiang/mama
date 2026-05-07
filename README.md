@@ -115,14 +115,15 @@ For local testing you can set just `MAMA_LINK_PORT`; mama will use `http://local
 - `/login` (DM only) returns a 15-minute link to store API keys or run built-in OAuth flows ([GitHub](docs/oauth/github.md), [Google Workspace](docs/oauth/google-workspace.md)).
 - `session` / `/session` (DM only) returns a read-only link showing the current session timeline.
 - `new` / `/new` (DM only) resets the current session and starts fresh.
+- `model` / `/model` / `/pi-model provider/model` switches the LLM for the current conversation, e.g. `/pi-model openai/gpt-4o`.
 - `stop` / `/stop` stops the current run. On Slack, use text commands so thread-local stop routing remains accurate.
-- On Slack you can also register native commands like `/pi-login`, `/pi-session`, and `/pi-new`.
+- On Slack you can also register native commands like `/pi-login`, `/pi-session`, `/pi-model`, and `/pi-new`.
 
 Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Vault env is only injected in `container`, `image`, `firecracker`, and `cloudflare` modes.
 
 ## Configuration
 
-mama reads `<state-dir>/settings.json` (default `~/.mama/settings.json`, override via `--state-dir` or `MAMA_STATE_DIR`). Settings written via `/login` and friends are saved to the same file.
+mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/settings.json`, override via `--state-dir` or `MAMA_STATE_DIR`). Per-conversation settings live at `<workingDir>/<conversationId>/settings.json` and override global settings for that conversation.
 
 ```json
 {
@@ -143,6 +144,17 @@ mama reads `<state-dir>/settings.json` (default `~/.mama/settings.json`, overrid
 | `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
 | `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
 | `sentryDsn`     | unset               | Sentry DSN; sensitive prompt/tool content is redacted    |
+
+Conversation-local settings written by `/pi-model` use a nested shape so future local settings can share the same file:
+
+```json
+{
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o"
+  }
+}
+```
 
 For GCP Cloud Logging, set `logFormat: "json"`, give the VM service account `roles/logging.logWriter`, and export `GOOGLE_CLOUD_PROJECT`. Logs land under log name `mama`.
 

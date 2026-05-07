@@ -1,13 +1,15 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   loadAgentConfig,
+  loadAgentConfigForConversation,
   resolveSentryDsn,
   resolveStateDirFromArgv,
   resolveWorkspaceDirFromArgv,
   saveAgentConfig,
+  saveConversationModelConfig,
 } from "../src/config.js";
 
 describe("loadAgentConfig", () => {
@@ -110,6 +112,20 @@ describe("loadAgentConfig", () => {
   test("throws on settings.json whose top-level value is not an object", () => {
     writeFileSync(join(stateDir, "settings.json"), "[]", "utf-8");
     expect(() => loadAgentConfig()).toThrow(/expected a JSON object/);
+  });
+
+  test("conversation model config overrides global provider and model only", () => {
+    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5", sessionScope: "channel" });
+    const conversationDir = join(stateDir, "workspace", "C123");
+    saveConversationModelConfig(conversationDir, { provider: "openai", model: "gpt-4o" });
+
+    const config = loadAgentConfigForConversation(conversationDir);
+    expect(config.provider).toBe("openai");
+    expect(config.model).toBe("gpt-4o");
+    expect(config.sessionScope).toBe("channel");
+    expect(JSON.parse(readFileSync(join(conversationDir, "settings.json"), "utf-8"))).toEqual({
+      llm: { provider: "openai", model: "gpt-4o" },
+    });
   });
 });
 

@@ -22,7 +22,7 @@ import type {
   ConversationKind,
   PlatformInfo,
 } from "./adapter.js";
-import { loadAgentConfig } from "./config.js";
+import { loadAgentConfigForConversation } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
@@ -436,7 +436,7 @@ export async function createRunner(
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
 ): Promise<AgentRunner> {
-  const agentConfig = loadAgentConfig();
+  const agentConfig = loadAgentConfigForConversation(conversationDir);
 
   // Initialize logger with settings from config
   log.initLogger({

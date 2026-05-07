@@ -1,4 +1,5 @@
 import { LoginCommandHandler } from "./login.js";
+import { ModelCommandHandler } from "./model.js";
 import { NewCommandHandler } from "./new.js";
 import { CommandRegistry } from "./registry.js";
 import { SessionViewCommandHandler } from "./session-view.js";
@@ -10,6 +11,7 @@ export function createDefaultCommandRegistry(): CommandRegistry {
   return new CommandRegistry([
     new LoginCommandHandler(),
     new SessionViewCommandHandler(),
+    new ModelCommandHandler(),
     new NewCommandHandler(),
   ]);
 }

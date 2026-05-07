@@ -54,9 +54,7 @@ function loadRawAgentConfig(): Partial<AgentConfig> {
   return loadConfigFile(join(getStateDir(), "settings.json")) ?? {};
 }
 
-export function loadAgentConfig(): AgentConfig {
-  const fromFile = loadRawAgentConfig();
-
+function mergeAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const provider = fromFile.provider || process.env.MAMA_AI_PROVIDER || DEFAULTS.provider;
   const model = fromFile.model || process.env.MAMA_AI_MODEL || DEFAULTS.model;
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
@@ -78,6 +76,45 @@ export function loadAgentConfig(): AgentConfig {
     sandboxCpus,
     sandboxMemory,
   };
+}
+
+export function loadAgentConfig(): AgentConfig {
+  return mergeAgentConfig(loadRawAgentConfig());
+}
+
+interface ConversationModelConfig {
+  llm?: Partial<Pick<AgentConfig, "provider" | "model">>;
+}
+
+function normalizeConversationConfig(config: ConversationModelConfig): Partial<AgentConfig> {
+  return {
+    provider: config.llm?.provider,
+    model: config.llm?.model,
+  };
+}
+
+export function loadAgentConfigForConversation(conversationDir: string): AgentConfig {
+  const globalConfig = loadRawAgentConfig();
+  const rawConversationConfig =
+    (loadConfigFile(join(conversationDir, "settings.json")) as
+      | ConversationModelConfig
+      | undefined) ?? {};
+  const conversationConfig = normalizeConversationConfig(rawConversationConfig);
+  return mergeAgentConfig({ ...globalConfig, ...conversationConfig });
+}
+
+export function saveConversationModelConfig(
+  conversationDir: string,
+  config: Pick<AgentConfig, "provider" | "model">,
+): void {
+  if (!existsSync(conversationDir)) {
+    mkdirSync(conversationDir, { recursive: true });
+  }
+  const scopedConfig = { llm: config };
+  atomicWritePrivateFile(
+    join(conversationDir, "settings.json"),
+    JSON.stringify(scopedConfig, null, 2),
+  );
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {

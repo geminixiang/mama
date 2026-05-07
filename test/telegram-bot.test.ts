@@ -285,6 +285,7 @@ describe("TelegramBot startup", () => {
     expect(setMyCommands).toHaveBeenCalledWith([
       { command: "login", description: "Store credentials in your private vault" },
       { command: "session", description: "Open the current session in the web viewer" },
+      { command: "model", description: "Switch this conversation's LLM model" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
     ]);

@@ -1,4 +1,5 @@
 import {
+  ApplicationCommandOptionType,
   Client,
   Events,
   GatewayIntentBits,
@@ -117,6 +118,18 @@ export class DiscordBot implements Bot {
             {
               name: "stop",
               description: "Stop the current conversation",
+            },
+            {
+              name: "pi-model",
+              description: "Switch this conversation's LLM model",
+              options: [
+                {
+                  name: "model",
+                  description: "provider/model, e.g. openai/gpt-4o",
+                  type: ApplicationCommandOptionType.String,
+                  required: false,
+                },
+              ],
             },
           ]);
         } catch (err) {
@@ -471,7 +484,8 @@ export class DiscordBot implements Bot {
         interaction.commandName !== "login" &&
         interaction.commandName !== "session" &&
         interaction.commandName !== "new" &&
-        interaction.commandName !== "stop"
+        interaction.commandName !== "stop" &&
+        interaction.commandName !== "pi-model"
       ) {
         return;
       }
@@ -493,7 +507,14 @@ export class DiscordBot implements Bot {
         persistentTopLevel: true,
         threadTs,
       });
-      const commandText = `/${interaction.commandName}`;
+      const modelOption =
+        interaction.commandName === "pi-model"
+          ? interaction.options.getString("model")?.trim()
+          : undefined;
+      const commandText =
+        interaction.commandName === "pi-model" && modelOption
+          ? `/${interaction.commandName} ${modelOption}`
+          : `/${interaction.commandName}`;
 
       this.logToFile(conversationId, {
         date: new Date(interaction.createdTimestamp).toISOString(),
