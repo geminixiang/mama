@@ -19,6 +19,7 @@ import {
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
+import { parseNewCommand } from "./commands/new.js";
 import * as log from "./log.js";
 
 // ============================================================================
@@ -128,22 +129,23 @@ export async function syncLogToSessionManager(
   // Read log.jsonl and find user messages not in context
   const logContent = await readFile(logFile, "utf-8");
   const logLines = logContent.trim().split("\n").filter(Boolean);
-
-  const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];
+  const logEntries: ConversationLogMessage[] = [];
 
   for (let lineIdx = 0; lineIdx < logLines.length; lineIdx++) {
-    const line = logLines[lineIdx];
-    let logMsg: ConversationLogMessage;
     try {
-      logMsg = JSON.parse(line) as ConversationLogMessage;
+      logEntries.push(JSON.parse(logLines[lineIdx]) as ConversationLogMessage);
     } catch (err) {
       log.logWarning(
         `Skipping malformed log entry at ${logFile}:${lineIdx + 1}`,
         err instanceof Error ? err.message : String(err),
       );
-      continue;
     }
+  }
 
+  const resetCutoff = findLatestResetCutoff(logEntries, excludeSlackTs, threadFilter);
+  const newMessages: Array<{ timestamp: number; message: UserMessage }> = [];
+
+  for (const logMsg of logEntries) {
     const slackTs = logMsg.ts;
     const date = logMsg.date;
     if (!slackTs || !date) continue;
@@ -159,37 +161,15 @@ export async function syncLogToSessionManager(
     // Skip bot messages - added through agent flow
     if (logMsg.isBot) continue;
 
-    // Thread filtering: only sync messages belonging to this session's thread
-    if (threadFilter) {
-      if (threadFilter.scope === "top-level") {
-        // Persistent top-level sessions should only ingest top-level messages.
-        // This avoids pulling in unrelated replies from other threads.
-        if (logMsg.threadTs) {
-          continue;
-        }
-      } else {
-        if (logMsg.threadTs) {
-          // Thread reply: only include if threadTs matches our thread anchor or rootTs
-          if (
-            logMsg.threadTs !== threadFilter.threadTs &&
-            logMsg.threadTs !== threadFilter.rootTs
-          ) {
-            continue;
-          }
-        } else {
-          // Top-level message: only include if it's this session's root message
-          if (slackTs !== threadFilter.rootTs) {
-            continue;
-          }
-        }
-      }
-    }
+    const msgTime = new Date(date).getTime() || Date.now();
+    if (resetCutoff !== null && msgTime <= resetCutoff) continue;
+
+    if (!isLogMessageInThreadScope(logMsg, threadFilter)) continue;
 
     // Build the message text as it would appear in context
     const threadContext = logMsg.threadTs ? ` [in-thread:${logMsg.threadTs}]` : "";
     const messageText = `[${logMsg.userName || logMsg.user || "unknown"}]${threadContext}: ${logMsg.text || ""}`;
 
-    const msgTime = new Date(date).getTime() || Date.now();
     const messageKey = `${msgTime}:${messageText}`;
     if (existingMessageKeys.has(messageKey)) continue;
     if (hasExistingSessionMessage(existingMessages, msgTime, messageText)) continue;
@@ -262,6 +242,44 @@ export async function findLogMessageById(
   }
 
   return null;
+}
+
+function findLatestResetCutoff(
+  entries: ConversationLogMessage[],
+  currentMessageId?: string,
+  threadFilter?: ThreadFilter,
+): number | null {
+  let cutoff: number | null = null;
+
+  for (const entry of entries) {
+    if (!entry.ts || !entry.date) continue;
+    if (!isMessageAtOrBeforeCurrent(entry.ts, currentMessageId)) continue;
+    if (!isResetCommandLogMessage(entry)) continue;
+    if (!isLogMessageInThreadScope(entry, threadFilter)) continue;
+
+    const timestamp = new Date(entry.date).getTime();
+    if (!Number.isFinite(timestamp)) continue;
+    cutoff = cutoff === null ? timestamp : Math.max(cutoff, timestamp);
+  }
+
+  return cutoff;
+}
+
+function isResetCommandLogMessage(entry: ConversationLogMessage): boolean {
+  if (entry.isBot) return false;
+  return parseNewCommand(entry.text ?? "") !== null;
+}
+
+function isLogMessageInThreadScope(
+  entry: ConversationLogMessage,
+  threadFilter?: ThreadFilter,
+): boolean {
+  if (!threadFilter) return true;
+  if (threadFilter.scope === "top-level") return !entry.threadTs;
+  if (entry.threadTs) {
+    return entry.threadTs === threadFilter.threadTs || entry.threadTs === threadFilter.rootTs;
+  }
+  return entry.ts === threadFilter.rootTs;
 }
 
 function stripSlackAttachmentBlock(text: string): string {

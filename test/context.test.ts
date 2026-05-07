@@ -89,6 +89,80 @@ describe("syncLogToSessionManager", () => {
     ]);
   });
 
+  test("skips top-level messages logged before the latest /pi-new reset", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "old message",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:01:00.000Z",
+        ts: "1000.0020",
+        user: "U001",
+        userName: "alice",
+        text: "/pi-new",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:02:00.000Z",
+        ts: "1000.0030",
+        user: "U001",
+        userName: "alice",
+        text: "fresh message",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    const synced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      "1000.0030",
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "D123" },
+    );
+
+    expect(synced).toBe(0);
+    expect(getMessageTexts(sessionManager)).toEqual([]);
+  });
+
+  test("does not let a later /pi-new hide earlier queued context", async () => {
+    writeLog([
+      {
+        date: "2026-04-01T10:00:00.000Z",
+        ts: "1000.0010",
+        user: "U001",
+        userName: "alice",
+        text: "old message",
+        isBot: false,
+      },
+      {
+        date: "2026-04-01T10:01:00.000Z",
+        ts: "1000.0020",
+        user: "U001",
+        userName: "alice",
+        text: "/pi-new",
+        isBot: false,
+      },
+    ]);
+
+    const sessionManager = SessionManager.inMemory(testDir);
+    const synced = await syncLogToSessionManager(
+      sessionManager,
+      testDir,
+      "1000.0015",
+      { start: 0, end: Number.MAX_SAFE_INTEGER },
+      { scope: "top-level", rootTs: "D123" },
+    );
+
+    expect(synced).toBe(1);
+    expect(getMessageTexts(sessionManager)).toEqual(["[alice]: old message"]);
+  });
+
   test("does not duplicate messages when sync runs again after new activity", async () => {
     writeLog([
       {
