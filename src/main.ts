@@ -19,7 +19,7 @@ import { startLinkServer } from "./login/portal.js";
 import { InMemoryLinkTokenStore } from "./login/session.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
 import { DockerContainerManager } from "./provisioner.js";
-import { loadAgentConfig } from "./config.js";
+import { createGlobalSettingsFile, loadAgentConfig, MissingGlobalSettingsError } from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { createSessionRuntime } from "./runtime/index.js";
@@ -66,6 +66,7 @@ interface ParsedArgs {
   stateDir?: string;
   sandbox: SandboxConfig;
   downloadChannel?: string;
+  showOnboard?: boolean;
   showVersion?: boolean;
 }
 
@@ -75,12 +76,15 @@ function parseArgs(): ParsedArgs {
   let workingDir: string | undefined;
   let stateDirArg: string | undefined;
   let downloadChannelId: string | undefined;
+  let showOnboard = false;
   let showVersion = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--version" || arg === "-v" || arg === "-V") {
       showVersion = true;
+    } else if (arg === "--onboard") {
+      showOnboard = true;
     } else if (arg.startsWith("--sandbox=")) {
       sandbox = parseSandboxArg(arg.slice("--sandbox=".length));
     } else if (arg === "--sandbox") {
@@ -103,6 +107,7 @@ function parseArgs(): ParsedArgs {
     stateDir: stateDirArg ? resolve(stateDirArg) : undefined,
     sandbox,
     downloadChannel: downloadChannelId,
+    showOnboard,
     showVersion,
   };
 }
@@ -154,7 +159,21 @@ function handleStartupError(error: unknown): never {
     }
     process.exit(1);
   }
-  throw error;
+  if (error instanceof MissingGlobalSettingsError) {
+    console.error(`Missing global settings: ${error.settingsPath}`);
+    console.error("");
+    console.error("Run onboarding to create it:");
+    console.error(`  mama --onboard --state-dir ${stateDir}`);
+    console.error("");
+    console.error("Then review the generated settings.json and start mama again.");
+    process.exit(1);
+  }
+  if (error instanceof Error) {
+    console.error(`Error: ${error.message}`);
+    process.exit(1);
+  }
+  console.error(String(error));
+  process.exit(1);
 }
 
 let parsedArgs: ParsedArgs;
@@ -168,6 +187,22 @@ try {
 if (parsedArgs.showVersion) {
   console.log(getVersion());
   process.exit(0);
+}
+
+// Handle --onboard mode
+if (parsedArgs.showOnboard) {
+  const stateDir = parsedArgs.stateDir ?? join(homedir(), ".mama");
+  process.env.MAMA_STATE_DIR = stateDir;
+  ensureSecureStateDir(stateDir);
+  try {
+    const settingsPath = createGlobalSettingsFile(stateDir);
+    console.log(`Created global settings at ${settingsPath}`);
+    console.log("Review the file, then start mama with your working directory.");
+    process.exit(0);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(1);
+  }
 }
 
 // Handle --download mode (Slack only)
@@ -185,6 +220,7 @@ if (!parsedArgs.workingDir) {
   console.error(
     "Usage: mama [--state-dir=<dir>] [--sandbox=host|container:<name>|image:<image>|firecracker:<vm-id>:<host-path>|cloudflare:<sandbox-id>] <working-directory>",
   );
+  console.error("       mama --onboard [--state-dir=<dir>]");
   console.error("       mama --download <channel-id>");
   process.exit(1);
 }
@@ -237,7 +273,13 @@ if (bindingStore.isEnabled()) {
   );
 }
 
-const startupConfig = loadAgentConfig();
+const startupConfig = (() => {
+  try {
+    return loadAgentConfig();
+  } catch (error) {
+    handleStartupError(error);
+  }
+})();
 const sandboxLimits =
   startupConfig.sandboxCpus || startupConfig.sandboxMemory
     ? { cpus: startupConfig.sandboxCpus, memory: startupConfig.sandboxMemory }

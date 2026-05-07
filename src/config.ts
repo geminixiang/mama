@@ -3,23 +3,34 @@ import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
+export class MissingGlobalSettingsError extends Error {
+  constructor(public readonly settingsPath: string) {
+    super(`Missing global settings file at ${settingsPath}`);
+    this.name = "MissingGlobalSettingsError";
+  }
+}
+
 export interface AgentConfig {
   provider: string;
   model: string;
-  thinkingLevel?: string;
-  logFormat?: "console" | "json";
-  logLevel?: "trace" | "debug" | "info" | "warn" | "error";
+  thinkingLevel: string;
+  logFormat: "console" | "json";
+  logLevel: "trace" | "debug" | "info" | "warn" | "error";
   sentryDsn?: string;
   sandboxCpus?: string;
   sandboxMemory?: string;
 }
 
-const DEFAULTS: AgentConfig = {
-  provider: "anthropic",
-  model: "claude-sonnet-4-5",
-  thinkingLevel: "off",
-  logFormat: "console",
-  logLevel: "info",
+const ONBOARD_SETTINGS: SettingsFileConfig = {
+  llm: {
+    provider: "anthropic",
+    model: "claude-sonnet-4-5",
+    thinkingLevel: "off",
+  },
+  log: {
+    format: "console",
+    level: "info",
+  },
 };
 
 interface SettingsFileConfig {
@@ -68,16 +79,49 @@ function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfi
   };
 }
 
-function loadRawAgentConfig(): Partial<AgentConfig> {
-  return normalizeSettingsConfig(loadSettingsFile(join(getStateDir(), "settings.json")) ?? {});
+function getSettingsPath(): string {
+  return join(getStateDir(), "settings.json");
 }
 
-function mergeAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
-  const provider = fromFile.provider || process.env.MAMA_AI_PROVIDER || DEFAULTS.provider;
-  const model = fromFile.model || process.env.MAMA_AI_MODEL || DEFAULTS.model;
-  const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
-  const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
-  const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
+function requireGlobalSettings(): SettingsFileConfig {
+  const settingsPath = getSettingsPath();
+  const config = loadSettingsFile(settingsPath);
+  if (!config) {
+    throw new MissingGlobalSettingsError(settingsPath);
+  }
+  return config;
+}
+
+function requireString(value: string | undefined, path: string): string {
+  if (!value) {
+    throw new Error(
+      `Missing required global setting: ${path}. Run \`mama --onboard\` to create settings.json.`,
+    );
+  }
+  return value;
+}
+
+function requireLogFormat(value: AgentConfig["logFormat"] | undefined): AgentConfig["logFormat"] {
+  if (value !== "console" && value !== "json") {
+    throw new Error("Missing or invalid required global setting: log.format");
+  }
+  return value;
+}
+
+function requireLogLevel(value: AgentConfig["logLevel"] | undefined): AgentConfig["logLevel"] {
+  const allowed = ["trace", "debug", "info", "warn", "error"];
+  if (!value || !allowed.includes(value)) {
+    throw new Error("Missing or invalid required global setting: log.level");
+  }
+  return value;
+}
+
+function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
+  const provider = requireString(fromFile.provider, "llm.provider");
+  const model = requireString(fromFile.model, "llm.model");
+  const thinkingLevel = requireString(fromFile.thinkingLevel, "llm.thinkingLevel");
+  const logFormat = requireLogFormat(fromFile.logFormat);
+  const logLevel = requireLogLevel(fromFile.logLevel);
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
   const sandboxCpus = fromFile.sandboxCpus;
   const sandboxMemory = fromFile.sandboxMemory;
@@ -94,8 +138,12 @@ function mergeAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   };
 }
 
+function loadRawAgentConfig(): Partial<AgentConfig> {
+  return normalizeSettingsConfig(requireGlobalSettings());
+}
+
 export function loadAgentConfig(): AgentConfig {
-  return mergeAgentConfig(loadRawAgentConfig());
+  return toAgentConfig(loadRawAgentConfig());
 }
 
 export function loadAgentConfigForConversation(conversationDir: string): AgentConfig {
@@ -103,7 +151,7 @@ export function loadAgentConfigForConversation(conversationDir: string): AgentCo
   const conversationConfig = normalizeSettingsConfig(
     loadSettingsFile(join(conversationDir, "settings.json")) ?? {},
   );
-  return mergeAgentConfig({ ...globalConfig, ...conversationConfig });
+  return toAgentConfig({ ...globalConfig, ...conversationConfig });
 }
 
 export function saveConversationModelConfig(
@@ -131,7 +179,7 @@ export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): strin
       continue;
     }
 
-    if (arg === "--version" || arg === "-v" || arg === "-V") {
+    if (arg === "--version" || arg === "-v" || arg === "-V" || arg === "--onboard") {
       continue;
     }
 
@@ -166,12 +214,24 @@ export function resolveStateDirFromArgv(args = process.argv.slice(2)): string {
 }
 
 export function resolveSentryDsn(): string | undefined {
-  const fromFile = loadRawAgentConfig();
+  const fromFile = normalizeSettingsConfig(loadSettingsFile(getSettingsPath()) ?? {});
   if (fromFile.sentryDsn) {
     return fromFile.sentryDsn;
   }
 
   return process.env.SENTRY_DSN;
+}
+
+export function createGlobalSettingsFile(stateDir: string): string {
+  const settingsPath = join(stateDir, "settings.json");
+  if (existsSync(settingsPath)) {
+    throw new Error(`Global settings already exists at ${settingsPath}`);
+  }
+  if (!existsSync(stateDir)) {
+    mkdirSync(stateDir, { recursive: true });
+  }
+  atomicWritePrivateFile(settingsPath, JSON.stringify(ONBOARD_SETTINGS, null, 2));
+  return settingsPath;
 }
 
 /**
@@ -231,7 +291,7 @@ function patchSettingsConfig(
 export function saveAgentConfig(config: Partial<AgentConfig>): void {
   const settingsPath = join(getStateDir(), "settings.json");
 
-  let existing: SettingsFileConfig = {};
+  let existing: SettingsFileConfig = ONBOARD_SETTINGS;
   if (existsSync(settingsPath)) {
     try {
       existing = loadSettingsFile(settingsPath) ?? {};

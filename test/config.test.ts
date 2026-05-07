@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
+  createGlobalSettingsFile,
   loadAgentConfig,
   loadAgentConfigForConversation,
   resolveSentryDsn,
@@ -28,11 +29,19 @@ describe("loadAgentConfig", () => {
     if (existsSync(stateDir)) rmSync(stateDir, { recursive: true });
   });
 
-  test("returns defaults when no settings.json and no env vars", () => {
+  test("throws when global settings.json is missing", () => {
+    expect(() => loadAgentConfig()).toThrow(/Missing global settings file/);
+  });
+
+  test("creates onboard settings", () => {
+    const settingsPath = createGlobalSettingsFile(stateDir);
+    expect(settingsPath).toBe(join(stateDir, "settings.json"));
     const config = loadAgentConfig();
     expect(config.provider).toBe("anthropic");
     expect(config.model).toBe("claude-sonnet-4-5");
     expect(config.thinkingLevel).toBe("off");
+    expect(config.logFormat).toBe("console");
+    expect(config.logLevel).toBe("info");
   });
 
   test("reads provider and model from settings.json", () => {
@@ -56,21 +65,13 @@ describe("loadAgentConfig", () => {
   });
 
   test("sandboxCpus and sandboxMemory are undefined when not set", () => {
+    createGlobalSettingsFile(stateDir);
     const config = loadAgentConfig();
     expect(config.sandboxCpus).toBeUndefined();
     expect(config.sandboxMemory).toBeUndefined();
   });
 
-  test("env vars override defaults but not settings.json", () => {
-    process.env.MAMA_AI_PROVIDER = "google";
-    process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
-
-    const config = loadAgentConfig();
-    expect(config.provider).toBe("google");
-    expect(config.model).toBe("gemini-2.0-flash");
-  });
-
-  test("settings.json values override env vars", () => {
+  test("provider and model come from settings.json, not env vars", () => {
     saveAgentConfig({ provider: "openai", model: "gpt-4o" });
     process.env.MAMA_AI_PROVIDER = "google";
     process.env.MAMA_AI_MODEL = "gemini-2.0-flash";
@@ -89,6 +90,7 @@ describe("loadAgentConfig", () => {
         JSON.stringify({ llm: { provider: "openai", model: "gpt-4o" } }),
         "utf-8",
       );
+      createGlobalSettingsFile(stateDir);
       const config = loadAgentConfig();
       expect(config.provider).toBe("anthropic");
       expect(config.model).toBe("claude-sonnet-4-5");
@@ -187,7 +189,8 @@ describe("saveAgentConfig", () => {
     expect(config.provider).toBe("google");
     expect(config.model).toBe("gemini-2.0-flash");
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
-      llm: { provider: "google", model: "gemini-2.0-flash" },
+      llm: { provider: "google", model: "gemini-2.0-flash", thinkingLevel: "off" },
+      log: { format: "console", level: "info" },
     });
   });
 
@@ -199,8 +202,8 @@ describe("saveAgentConfig", () => {
     expect(config.model).toBe("gpt-4o-mini");
     expect(config.logLevel).toBe("debug");
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
-      llm: { provider: "openai", model: "gpt-4o-mini" },
-      log: { level: "debug" },
+      llm: { provider: "openai", model: "gpt-4o-mini", thinkingLevel: "off" },
+      log: { format: "console", level: "debug" },
     });
   });
 

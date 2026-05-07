@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { loadAgentConfig } from "../src/config.js";
+import { createGlobalSettingsFile, loadAgentConfig, saveAgentConfig } from "../src/config.js";
 import * as log from "../src/log.js";
 
 describe("log config from settings.json", () => {
@@ -12,6 +12,7 @@ describe("log config from settings.json", () => {
     tmpDir = join(tmpdir(), `mama-test-log-${Date.now()}`);
     mkdirSync(tmpDir, { recursive: true });
     process.env.MAMA_STATE_DIR = tmpDir;
+    createGlobalSettingsFile(tmpDir);
   });
 
   afterEach(() => {
@@ -30,31 +31,19 @@ describe("log config from settings.json", () => {
   });
 
   test("reads logFormat from settings.json", () => {
-    writeFileSync(
-      join(tmpDir, "settings.json"),
-      JSON.stringify({ log: { format: "json" } }),
-      "utf-8",
-    );
+    saveAgentConfig({ logFormat: "json" });
     const config = loadAgentConfig();
     expect(config.logFormat).toBe("json");
   });
 
   test("reads logLevel from settings.json", () => {
-    writeFileSync(
-      join(tmpDir, "settings.json"),
-      JSON.stringify({ log: { level: "debug" } }),
-      "utf-8",
-    );
+    saveAgentConfig({ logLevel: "debug" });
     const config = loadAgentConfig();
     expect(config.logLevel).toBe("debug");
   });
 
   test("reads both logFormat and logLevel from settings.json", () => {
-    writeFileSync(
-      join(tmpDir, "settings.json"),
-      JSON.stringify({ log: { format: "json", level: "warn" } }),
-      "utf-8",
-    );
+    saveAgentConfig({ logFormat: "json", logLevel: "warn" });
     const config = loadAgentConfig();
     expect(config.logFormat).toBe("json");
     expect(config.logLevel).toBe("warn");

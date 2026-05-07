@@ -123,7 +123,7 @@ Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Va
 
 ## Configuration
 
-mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/settings.json`, override via `--state-dir` or `MAMA_STATE_DIR`). Per-conversation settings live at `<workingDir>/<conversationId>/settings.json` and override global settings for that conversation.
+mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/settings.json`, override via `--state-dir` or `MAMA_STATE_DIR`). This file is required and is created explicitly with `mama --onboard`. Per-conversation settings live at `<workingDir>/<conversationId>/settings.json` and override global settings for that conversation.
 
 ```json
 {
@@ -148,8 +148,8 @@ mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/se
 
 | Field               | Default             | Description                                              |
 | ------------------- | ------------------- | -------------------------------------------------------- |
-| `llm.provider`      | `anthropic`         | AI provider (env: `MAMA_AI_PROVIDER`)                    |
-| `llm.model`         | `claude-sonnet-4-5` | Model name (env: `MAMA_AI_MODEL`)                        |
+| `llm.provider`      | `anthropic`         | AI provider                                              |
+| `llm.model`         | `claude-sonnet-4-5` | Model name                                               |
 | `llm.thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
 | `log.format`        | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
 | `log.level`         | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
