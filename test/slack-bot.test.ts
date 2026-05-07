@@ -286,6 +286,62 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 
+  test("shared channel mentions preserve mentions of other users", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let mentionHandler:
+      | ((payload: {
+          event: {
+            text: string;
+            channel: string;
+            user: string;
+            ts: string;
+            thread_ts?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "B123";
+    (bot as any).logUserMessage = vi.fn().mockResolvedValue([]);
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "app_mention") mentionHandler = fn as typeof mentionHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const ack = vi.fn();
+
+    mentionHandler?.({
+      event: {
+        text: "<@B123> ask <@U999> about this",
+        channel: "C123",
+        user: "U123",
+        ts: "1001.00015",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+
+    const queue = (bot as any).getQueue("C123");
+    await queue.processNext();
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      text: "ask <@U999> about this",
+    });
+  });
+
   test("first shared-channel thread reply waits behind the channel queue until the thread session exists", async () => {
     const handler = makeHandler();
 
@@ -777,6 +833,43 @@ describe("SlackBot backfill", () => {
     expect(count).toBe(1);
     const logContent = readFileSync(join(workingDir, "C123", "log.jsonl"), "utf-8");
     expect(logContent).toContain('"threadTs":"1000.0001"');
+  });
+
+  test("backfill preserves mentions of other users while stripping mama", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {
+        processAttachments: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    (bot as any).botUserId = "B123";
+    (bot as any).users = new Map([
+      ["U123", { id: "U123", userName: "alice", displayName: "Alice" }],
+    ]);
+    (bot as any).webClient = {
+      conversations: {
+        history: vi.fn().mockResolvedValue({
+          messages: [
+            {
+              user: "U123",
+              text: "<@B123> ask <@U999> about this",
+              ts: "1000.0002",
+            },
+          ],
+          response_metadata: {},
+        }),
+      },
+    };
+
+    const count = await (bot as any).backfillChannel("C123");
+
+    expect(count).toBe(1);
+    const logContent = readFileSync(join(workingDir, "C123", "log.jsonl"), "utf-8");
+    expect(logContent).toContain('"text":"ask <@U999> about this"');
   });
 });
 

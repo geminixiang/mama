@@ -117,6 +117,7 @@ export class SlackBot implements Bot {
   private workingDir: string;
   private store: ChannelStore;
   private botUserId: string | null = null;
+  private ownMentionRegex: RegExp | null = null;
   private startupTs: string | null = null; // Messages older than this are just logged, not processed
 
   private users = new Map<string, SlackUser>();
@@ -175,6 +176,15 @@ export class SlackBot implements Bot {
 
   getAllChannels(): SlackChannel[] {
     return Array.from(this.channels.values());
+  }
+
+  private stripOwnMention(text: string | undefined): string {
+    const source = text ?? "";
+    if (!this.botUserId) return source.trim();
+    if (!this.ownMentionRegex || !this.ownMentionRegex.source.includes(this.botUserId)) {
+      this.ownMentionRegex = new RegExp(`<@${this.botUserId}>`, "gi");
+    }
+    return source.replace(this.ownMentionRegex, "").trim();
   }
 
   async postMessage(channel: string, text: string): Promise<string> {
@@ -847,7 +857,7 @@ export class SlackBot implements Bot {
         ts: e.ts,
         thread_ts: e.thread_ts,
         user: e.user,
-        text: e.text.replace(/<@[A-Z0-9]+>/gi, "").trim(),
+        text: this.stripOwnMention(e.text),
         files: e.files,
         sessionKey,
       };
@@ -946,7 +956,7 @@ export class SlackBot implements Bot {
         ts: e.ts,
         thread_ts: e.thread_ts,
         user: e.user,
-        text: (e.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim(),
+        text: this.stripOwnMention(e.text),
         files: e.files,
         sessionKey,
       };
@@ -1234,8 +1244,7 @@ export class SlackBot implements Bot {
     for (const msg of relevantMessages) {
       const isMamaMessage = msg.user === this.botUserId;
       const user = this.users.get(msg.user!);
-      // Strip @mentions from text (same as live messages)
-      const text = (msg.text || "").replace(/<@[A-Z0-9]+>/gi, "").trim();
+      const text = this.stripOwnMention(msg.text);
       const attachments = msg.files
         ? await this.store.processAttachments(channelId, msg.files, msg.ts!)
         : [];
