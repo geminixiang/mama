@@ -529,8 +529,7 @@ export async function createRunner(
     initialState: {
       systemPrompt,
       model,
-      thinkingLevel:
-        (agentConfig.thinkingLevel as "off" | "low" | "medium" | "high" | undefined) ?? "off",
+      thinkingLevel: agentConfig.thinkingLevel,
       tools,
     },
     convertToLlm,

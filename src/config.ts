@@ -1,3 +1,4 @@
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
@@ -13,7 +14,7 @@ export class MissingGlobalSettingsError extends Error {
 export interface AgentConfig {
   provider: string;
   model: string;
-  thinkingLevel: string;
+  thinkingLevel: ThinkingLevel;
   logFormat: "console" | "json";
   logLevel: "trace" | "debug" | "info" | "warn" | "error";
   sentryDsn?: string;
@@ -101,6 +102,10 @@ function requireString(value: string | undefined, path: string): string {
   return value;
 }
 
+function requireThinkingLevel(value: ThinkingLevel | undefined): ThinkingLevel {
+  return requireString(value, "llm.thinkingLevel") as ThinkingLevel;
+}
+
 function requireLogFormat(value: AgentConfig["logFormat"] | undefined): AgentConfig["logFormat"] {
   if (value !== "console" && value !== "json") {
     throw new Error("Missing or invalid required global setting: log.format");
@@ -119,7 +124,7 @@ function requireLogLevel(value: AgentConfig["logLevel"] | undefined): AgentConfi
 function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const provider = requireString(fromFile.provider, "llm.provider");
   const model = requireString(fromFile.model, "llm.model");
-  const thinkingLevel = requireString(fromFile.thinkingLevel, "llm.thinkingLevel");
+  const thinkingLevel = requireThinkingLevel(fromFile.thinkingLevel);
   const logFormat = requireLogFormat(fromFile.logFormat);
   const logLevel = requireLogLevel(fromFile.logLevel);
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
@@ -156,7 +161,7 @@ export function loadAgentConfigForConversation(conversationDir: string): AgentCo
 
 export function saveConversationModelConfig(
   conversationDir: string,
-  config: Pick<AgentConfig, "provider" | "model">,
+  config: Pick<AgentConfig, "provider" | "model"> & Partial<Pick<AgentConfig, "thinkingLevel">>,
 ): void {
   if (!existsSync(conversationDir)) {
     mkdirSync(conversationDir, { recursive: true });

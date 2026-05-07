@@ -112,13 +112,18 @@ describe("loadAgentConfig", () => {
   test("conversation model config overrides global provider and model only", () => {
     saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5" });
     const conversationDir = join(stateDir, "workspace", "C123");
-    saveConversationModelConfig(conversationDir, { provider: "openai", model: "gpt-4o" });
+    saveConversationModelConfig(conversationDir, {
+      provider: "openai",
+      model: "gpt-4o",
+      thinkingLevel: "low",
+    });
 
     const config = loadAgentConfigForConversation(conversationDir);
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
+    expect(config.thinkingLevel).toBe("low");
     expect(JSON.parse(readFileSync(join(conversationDir, "settings.json"), "utf-8"))).toEqual({
-      llm: { provider: "openai", model: "gpt-4o" },
+      llm: { provider: "openai", model: "gpt-4o", thinkingLevel: "low" },
     });
   });
 });

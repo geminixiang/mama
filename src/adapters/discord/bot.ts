@@ -125,7 +125,7 @@ export class DiscordBot implements Bot {
               options: [
                 {
                   name: "model",
-                  description: "provider/model, e.g. openai/gpt-4o",
+                  description: "provider/model[:thinking], e.g. anthropic/claude-sonnet-4-5:off",
                   type: ApplicationCommandOptionType.String,
                   required: false,
                 },

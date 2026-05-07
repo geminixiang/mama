@@ -1,3 +1,5 @@
+import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { ThinkingLevel as PiAiThinkingLevel } from "@mariozechner/pi-ai";
 import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import { homedir } from "os";
 import { join } from "path";
@@ -5,10 +7,20 @@ import { loadAgentConfigForConversation, saveConversationModelConfig } from "../
 import type { CommandContext, CommandHandler } from "./types.js";
 import { replyWithContext } from "./utils.js";
 
+const PI_AI_THINKING_LEVELS = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+] satisfies PiAiThinkingLevel[];
+const THINKING_LEVELS = new Set<ThinkingLevel>(["off", ...PI_AI_THINKING_LEVELS]);
+
 export interface ParsedModelCommand {
   command: "model" | "/model" | "/pi-model";
   provider?: string;
   model?: string;
+  thinkingLevel?: ThinkingLevel;
 }
 
 export function parseModelCommand(text: string): ParsedModelCommand | null {
@@ -30,11 +42,39 @@ export function parseModelCommand(text: string): ParsedModelCommand | null {
     return { command: command as ParsedModelCommand["command"] };
   }
 
+  const modelSpec = spec.slice(slash + 1);
+  const parsedModel = parseModelThinkingLevel(modelSpec);
+
   return {
     command: command as ParsedModelCommand["command"],
     provider: spec.slice(0, slash),
-    model: spec.slice(slash + 1),
+    model: parsedModel.model,
+    thinkingLevel: parsedModel.thinkingLevel,
   };
+}
+
+function parseModelThinkingLevel(modelSpec: string): {
+  model: string;
+  thinkingLevel?: ThinkingLevel;
+} {
+  const colon = modelSpec.lastIndexOf(":");
+  if (colon <= 0 || colon === modelSpec.length - 1) {
+    return { model: modelSpec };
+  }
+
+  const suffix = modelSpec.slice(colon + 1);
+  if (!THINKING_LEVELS.has(suffix as ThinkingLevel)) {
+    return { model: modelSpec };
+  }
+
+  return {
+    model: modelSpec.slice(0, colon),
+    thinkingLevel: suffix as ThinkingLevel,
+  };
+}
+
+function formatModelSpec(provider: string, model: string, thinkingLevel?: ThinkingLevel): string {
+  return `${provider}/${model}${thinkingLevel ? `:${thinkingLevel}` : ""}`;
 }
 
 export class ModelCommandHandler implements CommandHandler {
@@ -47,7 +87,7 @@ export class ModelCommandHandler implements CommandHandler {
       const current = loadAgentConfigForConversation(conversationDir);
       await replyWithContext(
         context.responseCtx,
-        `目前模型：\`${current.provider}/${current.model}\`\n用法：\`/pi-model provider/model\`，例如 \`/pi-model openai/gpt-4o\`。`,
+        `目前模型：\`${formatModelSpec(current.provider, current.model, current.thinkingLevel)}\`\n用法：\`/pi-model provider/model[:thinking]\`，例如 \`/pi-model anthropic/claude-sonnet-4-5:off\`。`,
       );
       return true;
     }
@@ -55,7 +95,7 @@ export class ModelCommandHandler implements CommandHandler {
     if (!this.isKnownModel(parsed.provider, parsed.model)) {
       await replyWithContext(
         context.responseCtx,
-        `找不到模型 \`${parsed.provider}/${parsed.model}\`。請確認 provider/model 名稱，或先在 pi models.json 註冊自訂模型。`,
+        `找不到模型 \`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\`。請確認 provider/model 名稱，或先在 pi models.json 註冊自訂模型。`,
       );
       return true;
     }
@@ -84,11 +124,12 @@ export class ModelCommandHandler implements CommandHandler {
     saveConversationModelConfig(conversationDir, {
       provider: parsed.provider,
       model: parsed.model,
+      ...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
     });
 
     await replyWithContext(
       context.responseCtx,
-      `已切換這個 conversation 的模型為 \`${parsed.provider}/${parsed.model}\`。下一則訊息會使用新模型。`,
+      `已切換這個 conversation 的模型為 \`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\`。下一則訊息會使用新模型。`,
     );
     return true;
   }

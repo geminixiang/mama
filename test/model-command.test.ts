@@ -1,0 +1,31 @@
+import { describe, expect, test } from "vitest";
+import { parseModelCommand } from "../src/commands/model.js";
+
+describe("model command parsing", () => {
+  test("parses provider/model", () => {
+    expect(parseModelCommand("/pi-model openai/gpt-4o")).toEqual({
+      command: "/pi-model",
+      provider: "openai",
+      model: "gpt-4o",
+      thinkingLevel: undefined,
+    });
+  });
+
+  test("parses provider/model:thinking shorthand", () => {
+    expect(parseModelCommand("/pi-model anthropic/claude-sonnet-4-5:off")).toEqual({
+      command: "/pi-model",
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      thinkingLevel: "off",
+    });
+  });
+
+  test("leaves unknown colon suffix as part of the model id", () => {
+    expect(parseModelCommand("/pi-model openrouter/openai/gpt-4o:extended")).toEqual({
+      command: "/pi-model",
+      provider: "openrouter",
+      model: "openai/gpt-4o:extended",
+      thinkingLevel: undefined,
+    });
+  });
+});
