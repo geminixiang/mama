@@ -33,7 +33,6 @@ describe("loadAgentConfig", () => {
     expect(config.provider).toBe("anthropic");
     expect(config.model).toBe("claude-sonnet-4-5");
     expect(config.thinkingLevel).toBe("off");
-    expect(config.sessionScope).toBe("thread");
   });
 
   test("reads provider and model from settings.json", () => {
@@ -41,12 +40,6 @@ describe("loadAgentConfig", () => {
     const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
-  });
-
-  test("reads sessionScope from settings.json", () => {
-    saveAgentConfig({ sessionScope: "channel" });
-    const config = loadAgentConfig();
-    expect(config.sessionScope).toBe("channel");
   });
 
   test("reads sentryDsn from settings.json", () => {
@@ -93,7 +86,7 @@ describe("loadAgentConfig", () => {
     try {
       writeFileSync(
         join(otherDir, "settings.json"),
-        JSON.stringify({ provider: "openai", model: "gpt-4o" }),
+        JSON.stringify({ llm: { provider: "openai", model: "gpt-4o" } }),
         "utf-8",
       );
       const config = loadAgentConfig();
@@ -115,14 +108,13 @@ describe("loadAgentConfig", () => {
   });
 
   test("conversation model config overrides global provider and model only", () => {
-    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5", sessionScope: "channel" });
+    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5" });
     const conversationDir = join(stateDir, "workspace", "C123");
     saveConversationModelConfig(conversationDir, { provider: "openai", model: "gpt-4o" });
 
     const config = loadAgentConfigForConversation(conversationDir);
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
-    expect(config.sessionScope).toBe("channel");
     expect(JSON.parse(readFileSync(join(conversationDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "openai", model: "gpt-4o" },
     });
@@ -194,15 +186,22 @@ describe("saveAgentConfig", () => {
     const config = loadAgentConfig();
     expect(config.provider).toBe("google");
     expect(config.model).toBe("gemini-2.0-flash");
+    expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
+      llm: { provider: "google", model: "gemini-2.0-flash" },
+    });
   });
 
   test("merges with existing settings — preserves unrelated fields", () => {
-    saveAgentConfig({ provider: "openai", model: "gpt-4o", sessionScope: "channel" });
+    saveAgentConfig({ provider: "openai", model: "gpt-4o", logLevel: "debug" });
     saveAgentConfig({ model: "gpt-4o-mini" });
     const config = loadAgentConfig();
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o-mini");
-    expect(config.sessionScope).toBe("channel");
+    expect(config.logLevel).toBe("debug");
+    expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
+      llm: { provider: "openai", model: "gpt-4o-mini" },
+      log: { level: "debug" },
+    });
   });
 
   test("creates parent directories if they don't exist", () => {

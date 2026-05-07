@@ -7,7 +7,6 @@ export interface AgentConfig {
   provider: string;
   model: string;
   thinkingLevel?: string;
-  sessionScope?: "thread" | "channel";
   logFormat?: "console" | "json";
   logLevel?: "trace" | "debug" | "info" | "warn" | "error";
   sentryDsn?: string;
@@ -19,12 +18,18 @@ const DEFAULTS: AgentConfig = {
   provider: "anthropic",
   model: "claude-sonnet-4-5",
   thinkingLevel: "off",
-  sessionScope: "thread",
   logFormat: "console",
   logLevel: "info",
 };
 
-function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined {
+interface SettingsFileConfig {
+  llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
+  log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
+  sentry?: { dsn?: string };
+  sandbox?: { cpus?: string; memory?: string };
+}
+
+function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
   if (!existsSync(settingsPath)) {
     return undefined;
   }
@@ -42,7 +47,7 @@ function loadConfigFile(settingsPath: string): Partial<AgentConfig> | undefined 
       `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
     );
   }
-  return parsed as Partial<AgentConfig>;
+  return parsed as SettingsFileConfig;
 }
 
 function getStateDir(): string {
@@ -50,15 +55,27 @@ function getStateDir(): string {
   return raw ? resolve(raw) : join(homedir(), ".mama");
 }
 
+function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfig> {
+  return {
+    ...(config.llm?.provider !== undefined ? { provider: config.llm.provider } : {}),
+    ...(config.llm?.model !== undefined ? { model: config.llm.model } : {}),
+    ...(config.llm?.thinkingLevel !== undefined ? { thinkingLevel: config.llm.thinkingLevel } : {}),
+    ...(config.log?.format !== undefined ? { logFormat: config.log.format } : {}),
+    ...(config.log?.level !== undefined ? { logLevel: config.log.level } : {}),
+    ...(config.sentry?.dsn !== undefined ? { sentryDsn: config.sentry.dsn } : {}),
+    ...(config.sandbox?.cpus !== undefined ? { sandboxCpus: config.sandbox.cpus } : {}),
+    ...(config.sandbox?.memory !== undefined ? { sandboxMemory: config.sandbox.memory } : {}),
+  };
+}
+
 function loadRawAgentConfig(): Partial<AgentConfig> {
-  return loadConfigFile(join(getStateDir(), "settings.json")) ?? {};
+  return normalizeSettingsConfig(loadSettingsFile(join(getStateDir(), "settings.json")) ?? {});
 }
 
 function mergeAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const provider = fromFile.provider || process.env.MAMA_AI_PROVIDER || DEFAULTS.provider;
   const model = fromFile.model || process.env.MAMA_AI_MODEL || DEFAULTS.model;
   const thinkingLevel = fromFile.thinkingLevel ?? DEFAULTS.thinkingLevel;
-  const sessionScope = fromFile.sessionScope ?? DEFAULTS.sessionScope;
   const logFormat = fromFile.logFormat ?? DEFAULTS.logFormat;
   const logLevel = fromFile.logLevel ?? DEFAULTS.logLevel;
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
@@ -69,7 +86,6 @@ function mergeAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
     provider,
     model,
     thinkingLevel,
-    sessionScope,
     logFormat,
     logLevel,
     sentryDsn,
@@ -82,24 +98,11 @@ export function loadAgentConfig(): AgentConfig {
   return mergeAgentConfig(loadRawAgentConfig());
 }
 
-interface ConversationModelConfig {
-  llm?: Partial<Pick<AgentConfig, "provider" | "model">>;
-}
-
-function normalizeConversationConfig(config: ConversationModelConfig): Partial<AgentConfig> {
-  return {
-    provider: config.llm?.provider,
-    model: config.llm?.model,
-  };
-}
-
 export function loadAgentConfigForConversation(conversationDir: string): AgentConfig {
   const globalConfig = loadRawAgentConfig();
-  const rawConversationConfig =
-    (loadConfigFile(join(conversationDir, "settings.json")) as
-      | ConversationModelConfig
-      | undefined) ?? {};
-  const conversationConfig = normalizeConversationConfig(rawConversationConfig);
+  const conversationConfig = normalizeSettingsConfig(
+    loadSettingsFile(join(conversationDir, "settings.json")) ?? {},
+  );
   return mergeAgentConfig({ ...globalConfig, ...conversationConfig });
 }
 
@@ -110,11 +113,13 @@ export function saveConversationModelConfig(
   if (!existsSync(conversationDir)) {
     mkdirSync(conversationDir, { recursive: true });
   }
-  const scopedConfig = { llm: config };
-  atomicWritePrivateFile(
-    join(conversationDir, "settings.json"),
-    JSON.stringify(scopedConfig, null, 2),
-  );
+  const settingsPath = join(conversationDir, "settings.json");
+  const existing = loadSettingsFile(settingsPath) ?? {};
+  const scopedConfig: SettingsFileConfig = {
+    ...existing,
+    llm: { ...existing.llm, ...config },
+  };
+  atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
@@ -180,30 +185,66 @@ export function resolveLinkBaseUrl(): string | undefined {
   return raw.replace(/\/+$/, "");
 }
 
+function hasDefinedValue(values: Record<string, unknown> | undefined): boolean {
+  return values !== undefined && Object.values(values).some((value) => value !== undefined);
+}
+
+function compactSettingsConfig(config: SettingsFileConfig): SettingsFileConfig {
+  return {
+    ...(hasDefinedValue(config.llm) ? { llm: config.llm } : {}),
+    ...(hasDefinedValue(config.log) ? { log: config.log } : {}),
+    ...(hasDefinedValue(config.sentry) ? { sentry: config.sentry } : {}),
+    ...(hasDefinedValue(config.sandbox) ? { sandbox: config.sandbox } : {}),
+  };
+}
+
+function patchSettingsConfig(
+  existing: SettingsFileConfig,
+  config: Partial<AgentConfig>,
+): SettingsFileConfig {
+  const patched: SettingsFileConfig = {
+    ...existing,
+    llm: {
+      ...existing.llm,
+      ...(config.provider !== undefined ? { provider: config.provider } : {}),
+      ...(config.model !== undefined ? { model: config.model } : {}),
+      ...(config.thinkingLevel !== undefined ? { thinkingLevel: config.thinkingLevel } : {}),
+    },
+    log: {
+      ...existing.log,
+      ...(config.logFormat !== undefined ? { format: config.logFormat } : {}),
+      ...(config.logLevel !== undefined ? { level: config.logLevel } : {}),
+    },
+    sentry: {
+      ...existing.sentry,
+      ...(config.sentryDsn !== undefined ? { dsn: config.sentryDsn } : {}),
+    },
+    sandbox: {
+      ...existing.sandbox,
+      ...(config.sandboxCpus !== undefined ? { cpus: config.sandboxCpus } : {}),
+      ...(config.sandboxMemory !== undefined ? { memory: config.sandboxMemory } : {}),
+    },
+  };
+  return compactSettingsConfig(patched);
+}
+
 export function saveAgentConfig(config: Partial<AgentConfig>): void {
   const settingsPath = join(getStateDir(), "settings.json");
 
-  let existing: Partial<AgentConfig> = {};
+  let existing: SettingsFileConfig = {};
   if (existsSync(settingsPath)) {
-    const raw = readFileSync(settingsPath, "utf-8");
-    let parsed: unknown;
     try {
-      parsed = JSON.parse(raw);
+      existing = loadSettingsFile(settingsPath) ?? {};
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      throw new Error(
-        `Refusing to overwrite malformed settings file at ${settingsPath}: ${detail}`,
-      );
+      const message = detail.startsWith("Malformed settings file")
+        ? detail.replace("Malformed settings file", "Refusing to overwrite malformed settings file")
+        : detail;
+      throw new Error(message);
     }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      throw new Error(
-        `Refusing to overwrite malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
-      );
-    }
-    existing = parsed as Partial<AgentConfig>;
   }
 
-  const merged = { ...existing, ...config };
+  const merged = patchSettingsConfig(existing, config);
 
   const dir = dirname(settingsPath);
   if (!existsSync(dir)) {

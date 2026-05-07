@@ -30,13 +30,21 @@ describe("log config from settings.json", () => {
   });
 
   test("reads logFormat from settings.json", () => {
-    writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ logFormat: "json" }), "utf-8");
+    writeFileSync(
+      join(tmpDir, "settings.json"),
+      JSON.stringify({ log: { format: "json" } }),
+      "utf-8",
+    );
     const config = loadAgentConfig();
     expect(config.logFormat).toBe("json");
   });
 
   test("reads logLevel from settings.json", () => {
-    writeFileSync(join(tmpDir, "settings.json"), JSON.stringify({ logLevel: "debug" }), "utf-8");
+    writeFileSync(
+      join(tmpDir, "settings.json"),
+      JSON.stringify({ log: { level: "debug" } }),
+      "utf-8",
+    );
     const config = loadAgentConfig();
     expect(config.logLevel).toBe("debug");
   });
@@ -44,7 +52,7 @@ describe("log config from settings.json", () => {
   test("reads both logFormat and logLevel from settings.json", () => {
     writeFileSync(
       join(tmpDir, "settings.json"),
-      JSON.stringify({ logFormat: "json", logLevel: "warn" }),
+      JSON.stringify({ log: { format: "json", level: "warn" } }),
       "utf-8",
     );
     const config = loadAgentConfig();
@@ -56,12 +64,8 @@ describe("log config from settings.json", () => {
     writeFileSync(
       join(tmpDir, "settings.json"),
       JSON.stringify({
-        provider: "openai",
-        model: "gpt-4o",
-        thinkingLevel: "on",
-        sessionScope: "channel",
-        logFormat: "json",
-        logLevel: "debug",
+        llm: { provider: "openai", model: "gpt-4o", thinkingLevel: "on" },
+        log: { format: "json", level: "debug" },
       }),
       "utf-8",
     );
@@ -69,7 +73,6 @@ describe("log config from settings.json", () => {
     expect(config.provider).toBe("openai");
     expect(config.model).toBe("gpt-4o");
     expect(config.thinkingLevel).toBe("on");
-    expect(config.sessionScope).toBe("channel");
     expect(config.logFormat).toBe("json");
     expect(config.logLevel).toBe("debug");
   });

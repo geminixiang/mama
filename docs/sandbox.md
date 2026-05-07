@@ -46,10 +46,7 @@ mama --state-dir=/secure/mama-state --sandbox=container:mama-tools /path/to/work
 /secure/mama-state/vaults/
 ```
 
-而設定檔的優先順序是：
-
-1. `<state-dir>/settings.json`
-2. `<working-directory>/settings.json`（只有前者不存在時才 fallback）
+全域設定檔位於 `<state-dir>/settings.json`。Conversation-local 設定位於 `<working-directory>/<conversationId>/settings.json`，用來覆蓋該 conversation 的全域預設。
 
 啟動時 mama 會拒絕使用 world-writable 或非目前使用者擁有的 `--state-dir`，避免本機其他使用者竄改 settings 或 vault。
 
@@ -192,15 +189,17 @@ vault key 選擇邏輯：
 
 ```json
 {
-  "sandboxCpus": "0.5",
-  "sandboxMemory": "512m"
+  "sandbox": {
+    "cpus": "0.5",
+    "memory": "512m"
+  }
 }
 ```
 
-| 欄位            | 說明                             | 範例值           |
-| --------------- | -------------------------------- | ---------------- |
-| `sandboxCpus`   | CPU 核心數上限（浮點數字串）     | `"0.5"`, `"2"`   |
-| `sandboxMemory` | 記憶體上限（Docker memory 格式） | `"512m"`, `"2g"` |
+| 欄位             | 說明                             | 範例值           |
+| ---------------- | -------------------------------- | ---------------- |
+| `sandbox.cpus`   | CPU 核心數上限（浮點數字串）     | `"0.5"`, `"2"`   |
+| `sandbox.memory` | 記憶體上限（Docker memory 格式） | `"512m"`, `"2g"` |
 
 - 建立新 container 時，限制直接加進 `docker run` 參數
 - 已在執行的 container 會在下次 provision 時透過 `docker update` 立即套用新限制，不需重新建立

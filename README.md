@@ -127,25 +127,37 @@ mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/se
 
 ```json
 {
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-5",
-  "thinkingLevel": "off",
-  "logFormat": "console",
-  "logLevel": "info",
-  "sentryDsn": "https://examplePublicKey@o0.ingest.sentry.io/0"
+  "llm": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "thinkingLevel": "off"
+  },
+  "log": {
+    "format": "console",
+    "level": "info"
+  },
+  "sentry": {
+    "dsn": "https://examplePublicKey@o0.ingest.sentry.io/0"
+  },
+  "sandbox": {
+    "cpus": "0.5",
+    "memory": "512m"
+  }
 }
 ```
 
-| Field           | Default             | Description                                              |
-| --------------- | ------------------- | -------------------------------------------------------- |
-| `provider`      | `anthropic`         | AI provider (env: `MAMA_AI_PROVIDER`)                    |
-| `model`         | `claude-sonnet-4-5` | Model name (env: `MAMA_AI_MODEL`)                        |
-| `thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
-| `logFormat`     | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
-| `logLevel`      | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
-| `sentryDsn`     | unset               | Sentry DSN; sensitive prompt/tool content is redacted    |
+| Field               | Default             | Description                                              |
+| ------------------- | ------------------- | -------------------------------------------------------- |
+| `llm.provider`      | `anthropic`         | AI provider (env: `MAMA_AI_PROVIDER`)                    |
+| `llm.model`         | `claude-sonnet-4-5` | Model name (env: `MAMA_AI_MODEL`)                        |
+| `llm.thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
+| `log.format`        | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
+| `log.level`         | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
+| `sentry.dsn`        | unset               | Sentry DSN; sensitive prompt/tool content is redacted    |
+| `sandbox.cpus`      | unset               | CPU limit for managed containers                         |
+| `sandbox.memory`    | unset               | Memory limit for managed containers                      |
 
-Conversation-local settings written by `/pi-model` use a nested shape so future local settings can share the same file:
+Conversation-local settings written by `/pi-model` use the same shape and usually only include the override:
 
 ```json
 {
@@ -156,7 +168,7 @@ Conversation-local settings written by `/pi-model` use a nested shape so future 
 }
 ```
 
-For GCP Cloud Logging, set `logFormat: "json"`, give the VM service account `roles/logging.logWriter`, and export `GOOGLE_CLOUD_PROJECT`. Logs land under log name `mama`.
+For GCP Cloud Logging, set `log.format: "json"`, give the VM service account `roles/logging.logWriter`, and export `GOOGLE_CLOUD_PROJECT`. Logs land under log name `mama`.
 
 ## Layout
 

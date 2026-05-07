@@ -44,10 +44,11 @@ flowchart LR
     ConversationDir["<workspace>/<conversation>/\nlog.jsonl / MEMORY.md / attachments / skills"]
     Sessions["sessions/\ncurrent + *.jsonl"]
     EventsDir["events/*.json"]
-    Settings["settings.json"]
+    LocalSettings["<conversation>/settings.json"]
   end
 
   subgraph StateDir["State Dir (~/.mama or --state-dir)"]
+    GlobalSettings["settings.json\nglobal defaults"]
     Vaults["vaults/\nvault.json + conversation-scoped secrets"]
     LinkTokens["login/session tokens\nin-memory stores"]
   end
@@ -219,10 +220,10 @@ sequenceDiagram
 
 ```text
 <workspace>/
-├── settings.json              # provider / model / sandbox limits
 ├── MEMORY.md                  # workspace 級記憶
 ├── events/                    # 排程與外部事件
 └── <conversationId>/
+    ├── settings.json          # conversation-local overrides
     ├── MEMORY.md              # conversation 級記憶
     ├── log.jsonl              # 可 grep 的人類可讀訊息歷史
     ├── attachments/           # 平台附件下載
