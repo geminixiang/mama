@@ -229,7 +229,7 @@ describe("respondDiagnostic()", () => {
     );
   });
 
-  test("respondToolResult formats and posts adapter-specific diagnostics", async () => {
+  test("respondToolResult hides bash diagnostics in Slack replies", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
@@ -241,11 +241,7 @@ describe("respondDiagnostic()", () => {
       isError: false,
       durationMs: 1200,
     });
-    expect(bot.postInThread).toHaveBeenCalledWith(
-      "C001",
-      "1000.0001",
-      expect.stringContaining("*✓ bash*: list files"),
-    );
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
   test("synthetic event diagnostics anchor to the bot message after respond", async () => {
