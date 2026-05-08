@@ -14,7 +14,7 @@ import {
 import { existsSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
-import { join } from "path";
+import { join, posix } from "path";
 import type {
   ChatMessage,
   ChatResponseContext,
@@ -143,6 +143,16 @@ function loadMamaSkills(conversationDir: string, workspacePath: string): Skill[]
   return Array.from(skillMap.values());
 }
 
+function buildRuntimePaths(workspacePath: string, conversationId: string) {
+  const workspaceRoot = workspacePath.replace(/\/+$/, "") || "/";
+  const conversationPath = posix.join(workspaceRoot, conversationId);
+  return {
+    workspaceRoot,
+    conversationPath,
+    scratchPath: posix.join(conversationPath, "scratch"),
+  };
+}
+
 function buildSystemPrompt(
   workspacePath: string,
   conversationId: string,
@@ -153,7 +163,10 @@ function buildSystemPrompt(
   platform: PlatformInfo,
   skills: Skill[],
 ): string {
-  const conversationPath = `${workspacePath}/${conversationId}`;
+  const { workspaceRoot, conversationPath, scratchPath } = buildRuntimePaths(
+    workspacePath,
+    conversationId,
+  );
   const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
   const isImageSandbox = sandboxConfig.type === "image";
   const isFirecracker = sandboxConfig.type === "firecracker";
@@ -173,26 +186,31 @@ function buildSystemPrompt(
 
   const envDescription = isImageSandbox
     ? `You are running inside a managed per-user container.
-- Bash working directory: / (use cd or absolute paths)
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
 - Install tools with the image's package manager
 - Your changes persist for this user's container until it is recreated`
     : isContainer
       ? `You are running inside a shared container.
-- Bash working directory: / (use cd or absolute paths)
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
 - Install tools with the container's package manager
 - Your changes persist across sessions`
       : isFirecracker
         ? `You are running inside a Firecracker microVM.
-- Bash working directory: / (use cd or absolute paths)
+- Runtime workspace root: ${workspaceRoot}
+- Use cd or absolute paths; project files are under ${workspaceRoot}
 - Install tools with: apt-get install <package> (Debian-based)
 - Your changes persist across sessions`
         : isCloudflareSandbox
           ? `You are running through a Cloudflare Sandbox bridge.
-- Bash working directory: /workspace
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
 - Your commands run in a remote container managed by Cloudflare
 - Important: the remote filesystem is not automatically synced back to the host workspace`
           : `You are running directly on the host machine.
-- Bash working directory: ${process.cwd()}
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${process.cwd()}
 - Be careful with system modifications`;
 
   return `You are mama, a ${platform.name} bot assistant. Be concise. No emojis.
@@ -217,9 +235,11 @@ When mentioning users, use <@username> format (e.g., <@mario>).
 
 ## Environment
 ${envDescription}
+- Default place for clones, downloads, and experiments: ${scratchPath}
+- Do not use host-only paths unless you are running in host mode and verified they exist.
 
 ## Workspace Layout
-${workspacePath}/
+${workspaceRoot}/
 ├── MEMORY.md                    # Global memory (all conversations)
 ├── skills/                      # Global CLI tools you create
 └── ${conversationId}/           # This conversation
@@ -230,14 +250,14 @@ ${workspacePath}/
     │   ├── <timestamp>_<id>.jsonl  # Top-level session files
     │   └── <scope_id>.jsonl        # Scoped thread/reply session files
     ├── attachments/             # User-shared files
-    ├── scratch/                 # Your working directory
+    ├── scratch/                 # Working directory for clones/downloads/experiments: ${scratchPath}
     └── skills/                  # Conversation-specific tools
 
 ## Skills (Custom CLI Tools)
 You can create reusable CLI tools for recurring tasks (email, APIs, data processing, etc.).
 
 ### Creating Skills
-Store in \`${workspacePath}/skills/<name>/\` (global) or \`${conversationPath}/skills/<name>/\` (conversation-specific).
+Store in \`${workspaceRoot}/skills/<name>/\` (global) or \`${conversationPath}/skills/<name>/\` (conversation-specific).
 Each skill directory needs a \`SKILL.md\` with YAML frontmatter:
 
 \`\`\`markdown
@@ -258,7 +278,7 @@ Scripts are in: {baseDir}/
 ${skills.length > 0 ? formatSkillsForPrompt(skills) : "(no skills installed yet)"}
 
 ## Events
-You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspacePath}/events/\`.
+You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspaceRoot}/events/\`.
 
 ### Event Types
 
@@ -297,16 +317,16 @@ Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\
 ### Creating Events
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
 \`\`\`bash
-cat > ${workspacePath}/events/dentist-reminder-$(date +%s).json << 'EOF'
+cat > ${workspaceRoot}/events/dentist-reminder-$(date +%s).json << 'EOF'
 {"type": "one-shot", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
 EOF
 \`\`\`
 Or check if file exists first before creating.
 
 ### Managing Events
-- List: \`ls ${workspacePath}/events/\`
-- View: \`cat ${workspacePath}/events/foo.json\`
-- Delete/cancel: \`rm ${workspacePath}/events/foo.json\`
+- List: \`ls ${workspaceRoot}/events/\`
+- View: \`cat ${workspaceRoot}/events/foo.json\`
+- Delete/cancel: \`rm ${workspaceRoot}/events/foo.json\`
 
 ### When Events Trigger
 You receive a message like:
@@ -326,7 +346,7 @@ Maximum 5 events can be queued. Don't create excessive immediate or periodic eve
 
 ## Memory
 Write to MEMORY.md files to persist context across conversations.
-- Global (${workspacePath}/MEMORY.md): skills, preferences, project info
+- Global (${workspaceRoot}/MEMORY.md): skills, preferences, project info
 - Conversation (${conversationPath}/MEMORY.md): conversation-specific decisions, ongoing work
 Update when you learn something important or when asked to remember something.
 
@@ -334,7 +354,7 @@ Update when you learn something important or when asked to remember something.
 ${memory}
 
 ## System Configuration Log
-Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
+Maintain ${workspaceRoot}/SYSTEM.md to log all environment modifications:
 - Installed packages (apt install, npm install, uv pip install)
 - Environment variables set
 - Config files modified (~/.gitconfig, cron jobs, etc.)
@@ -471,7 +491,7 @@ export async function createRunner(
       return activeExecutor.getSandboxConfig();
     },
   };
-  const workspaceBase = conversationDir.replace(`/${conversationId}`, "");
+  const workspaceBase = join(conversationDir, "..");
   const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
   let workspacePath = getWorkspacePath();
 
@@ -830,8 +850,8 @@ export async function createRunner(
       // Extract conversationId from sessionKey (format: "conversationId:rootTs" or just "conversationId")
       const sessionConversation = message.sessionKey.split(":")[0];
 
-      // Ensure conversation directory exists
-      await mkdir(conversationDir, { recursive: true });
+      // Ensure conversation workspace exists on the host side before it is mounted/routed.
+      await mkdir(join(conversationDir, "scratch"), { recursive: true });
 
       if (executionResolver) {
         executionResolver.refresh();
