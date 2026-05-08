@@ -42,6 +42,10 @@ describe("loadAgentConfig", () => {
     expect(config.thinkingLevel).toBe("off");
     expect(config.logFormat).toBe("console");
     expect(config.logLevel).toBe("info");
+    expect(config.sandboxCpus).toBe("0.5");
+    expect(config.sandboxMemory).toBe("1g");
+    expect(config.sandboxBoostCpus).toBe("2");
+    expect(config.sandboxBoostMemory).toBe("4g");
   });
 
   test("reads provider and model from settings.json", () => {
@@ -57,18 +61,34 @@ describe("loadAgentConfig", () => {
     expect(config.sentryDsn).toBe("https://examplePublicKey@o0.ingest.sentry.io/0");
   });
 
-  test("reads sandboxCpus and sandboxMemory from settings.json", () => {
-    saveAgentConfig({ sandboxCpus: "0.5", sandboxMemory: "512m" });
+  test("reads sandboxCpus, sandboxMemory, and sandbox boost from settings.json", () => {
+    saveAgentConfig({
+      sandboxCpus: "0.5",
+      sandboxMemory: "512m",
+      sandboxBoostCpus: "2",
+      sandboxBoostMemory: "4g",
+    });
     const config = loadAgentConfig();
     expect(config.sandboxCpus).toBe("0.5");
     expect(config.sandboxMemory).toBe("512m");
+    expect(config.sandboxBoostCpus).toBe("2");
+    expect(config.sandboxBoostMemory).toBe("4g");
   });
 
-  test("sandboxCpus and sandboxMemory are undefined when not set", () => {
-    createGlobalSettingsFile(stateDir);
+  test("sandboxCpus and sandboxMemory are undefined when omitted from settings", () => {
+    writeFileSync(
+      join(stateDir, "settings.json"),
+      JSON.stringify({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5", thinkingLevel: "off" },
+        log: { format: "console", level: "info" },
+      }),
+      "utf-8",
+    );
     const config = loadAgentConfig();
     expect(config.sandboxCpus).toBeUndefined();
     expect(config.sandboxMemory).toBeUndefined();
+    expect(config.sandboxBoostCpus).toBeUndefined();
+    expect(config.sandboxBoostMemory).toBeUndefined();
   });
 
   test("provider and model come from settings.json, not env vars", () => {
@@ -196,6 +216,7 @@ describe("saveAgentConfig", () => {
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "google", model: "gemini-2.0-flash", thinkingLevel: "off" },
       log: { format: "console", level: "info" },
+      sandbox: { cpus: "0.5", memory: "1g", boost: { cpus: "2", memory: "4g" } },
     });
   });
 
@@ -209,6 +230,7 @@ describe("saveAgentConfig", () => {
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "openai", model: "gpt-4o-mini", thinkingLevel: "off" },
       log: { format: "console", level: "debug" },
+      sandbox: { cpus: "0.5", memory: "1g", boost: { cpus: "2", memory: "4g" } },
     });
   });
 

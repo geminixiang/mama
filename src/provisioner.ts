@@ -40,6 +40,11 @@ export interface ResourceLimits {
   memory?: string;
 }
 
+export interface SandboxLimitStatus {
+  limits?: ResourceLimits;
+  boosted: boolean;
+}
+
 export interface ProvisionOptions {
   containerName?: string;
   mounts?: ContainerMount[];
@@ -48,6 +53,7 @@ export interface ProvisionOptions {
 
 export interface DockerContainerManagerOptions {
   limits?: ResourceLimits;
+  boostLimits?: ResourceLimits;
   execFileImpl?: ExecFileAsync;
 }
 
@@ -60,6 +66,8 @@ export class DockerContainerManager {
   private static readonly CONVERSATION_ID_LABEL_KEY = "mama.conversation-id";
 
   private readonly limits?: ResourceLimits;
+  private readonly boostLimits?: ResourceLimits;
+  private readonly boostedKeys = new Set<string>();
   private readonly execFileImpl: ExecFileAsync;
 
   constructor(
@@ -70,6 +78,7 @@ export class DockerContainerManager {
       this.execFileImpl = options;
     } else {
       this.limits = options.limits;
+      this.boostLimits = options.boostLimits;
       this.execFileImpl = options.execFileImpl ?? execFileAsync;
     }
   }
@@ -131,8 +140,34 @@ export class DockerContainerManager {
     }
 
     this.setState(containerKey, "running", containerName);
-    await this.applyResourceLimits(containerName);
+    await this.applyResourceLimits(containerKey, containerName);
     return containerName;
+  }
+
+  async boost(containerKey: string): Promise<SandboxLimitStatus> {
+    if (!this.boostLimits?.cpus && !this.boostLimits?.memory) {
+      return this.getLimitStatus(containerKey);
+    }
+
+    this.boostedKeys.add(containerKey);
+    const state = this.state.get(containerKey);
+    if (state?.status === "running") {
+      await this.applyResourceLimits(containerKey, state.containerName);
+    }
+    return this.getLimitStatus(containerKey);
+  }
+
+  getLimitStatus(containerKey: string): SandboxLimitStatus {
+    const boosted = this.boostedKeys.has(containerKey);
+    return { limits: this.effectiveLimits(containerKey), boosted };
+  }
+
+  getDefaultLimits(): ResourceLimits | undefined {
+    return this.limits;
+  }
+
+  getBoostLimits(): ResourceLimits | undefined {
+    return this.boostLimits;
   }
 
   async stop(containerKey: string): Promise<void> {
@@ -140,6 +175,7 @@ export class DockerContainerManager {
     try {
       await this.execFileImpl("docker", ["stop", containerName]);
       this.setState(containerKey, "stopped", containerName);
+      this.boostedKeys.delete(containerKey);
       log.logInfo(`Container ${containerName} stopped (idle)`);
     } catch (err) {
       log.logWarning(
@@ -170,6 +206,7 @@ export class DockerContainerManager {
     }
 
     this.state.delete(containerKey);
+    this.boostedKeys.delete(containerKey);
   }
 
   async stopIdle(maxIdleMs: number): Promise<void> {
@@ -276,7 +313,7 @@ export class DockerContainerManager {
       "--network",
       networkName,
       ...labels,
-      ...this.resourceLimitArgs(),
+      ...this.resourceLimitArgs(this.effectiveLimits(containerKey)),
       ...this.mountArgs(mounts),
       this.image,
       "sleep",
@@ -284,16 +321,22 @@ export class DockerContainerManager {
     ]);
   }
 
-  private resourceLimitArgs(): string[] {
+  private effectiveLimits(containerKey: string): ResourceLimits | undefined {
+    if (!this.boostedKeys.has(containerKey)) return this.limits;
+    return { ...this.limits, ...this.boostLimits };
+  }
+
+  private resourceLimitArgs(limits: ResourceLimits | undefined): string[] {
     const args: string[] = [];
-    if (this.limits?.cpus) args.push("--cpus", this.limits.cpus);
-    if (this.limits?.memory) args.push("--memory", this.limits.memory);
+    if (limits?.cpus) args.push("--cpus", limits.cpus);
+    if (limits?.memory) args.push("--memory", limits.memory);
     return args;
   }
 
-  private async applyResourceLimits(containerName: string): Promise<void> {
-    if (!this.limits?.cpus && !this.limits?.memory) return;
-    const args = ["update", ...this.resourceLimitArgs(), containerName];
+  private async applyResourceLimits(containerKey: string, containerName: string): Promise<void> {
+    const limitArgs = this.resourceLimitArgs(this.effectiveLimits(containerKey));
+    if (limitArgs.length === 0) return;
+    const args = ["update", ...limitArgs, containerName];
     try {
       await this.execFileImpl("docker", args);
     } catch (err) {

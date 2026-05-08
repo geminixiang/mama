@@ -780,6 +780,16 @@ export class SlackBot implements Bot {
     await this.handler.handleEvent(event, this, adapters, false);
   }
 
+  private async routeSlashSandboxCommand(payload: {
+    command: string;
+    text?: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    await this.routeSlashModelCommand(payload);
+  }
+
   private async routeSlashSessionCommand(payload: {
     command: string;
     channel_id: string;
@@ -1075,7 +1085,15 @@ export class SlackBot implements Bot {
                     user_id: payload.user_id,
                     user_name: payload.user_name,
                   })
-                : null;
+                : payload.command === "/pi-sandbox"
+                  ? this.routeSlashSandboxCommand({
+                      command: payload.command,
+                      text: payload.text,
+                      channel_id: payload.channel_id,
+                      user_id: payload.user_id,
+                      user_name: payload.user_name,
+                    })
+                  : null;
 
       if (!handlerPromise) {
         return;

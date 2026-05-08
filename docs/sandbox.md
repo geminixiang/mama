@@ -191,18 +191,26 @@ vault key 選擇邏輯：
 {
   "sandbox": {
     "cpus": "0.5",
-    "memory": "512m"
+    "memory": "512m",
+    "boost": {
+      "cpus": "2",
+      "memory": "4g"
+    }
   }
 }
 ```
 
-| 欄位             | 說明                             | 範例值           |
-| ---------------- | -------------------------------- | ---------------- |
-| `sandbox.cpus`   | CPU 核心數上限（浮點數字串）     | `"0.5"`, `"2"`   |
-| `sandbox.memory` | 記憶體上限（Docker memory 格式） | `"512m"`, `"2g"` |
+| 欄位                   | 說明                                       | 範例值           |
+| ---------------------- | ------------------------------------------ | ---------------- |
+| `sandbox.cpus`         | CPU 核心數上限（浮點數字串）               | `"0.5"`, `"2"`   |
+| `sandbox.memory`       | 記憶體上限（Docker memory 格式）           | `"512m"`, `"2g"` |
+| `sandbox.boost.cpus`   | `/pi-sandbox boost` 暫時套用的 CPU 上限    | `"2"`, `"4"`     |
+| `sandbox.boost.memory` | `/pi-sandbox boost` 暫時套用的 memory 上限 | `"4g"`, `"8g"`   |
 
 - 建立新 container 時，限制直接加進 `docker run` 參數
 - 已在執行的 container 會在下次 provision 時透過 `docker update` 立即套用新限制，不需重新建立
+- `/pi-sandbox` 會顯示目前 conversation 的有效限制
+- `/pi-sandbox boost` 會把目前 conversation 暫時升級到 `sandbox.boost` 規格；boost 狀態跟著 container，container stop 後就結束
 
 ---
 

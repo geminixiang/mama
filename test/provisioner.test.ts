@@ -442,6 +442,52 @@ describe("DockerContainerManager", () => {
     expect(updateCalls).toHaveLength(0);
   });
 
+  test("boost applies boost limits to a running container", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "true\n" })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
+      .mockResolvedValue({ stdout: "" });
+    const manager = new DockerContainerManager("ubuntu:24.04", {
+      limits: { cpus: "0.5", memory: "1g" },
+      boostLimits: { cpus: "2", memory: "4g" },
+      execFileImpl: execMock as any,
+    });
+
+    await manager.provision("slack-u123");
+    const status = await manager.boost("slack-u123");
+
+    expect(status).toEqual({ limits: { cpus: "2", memory: "4g" }, boosted: true });
+    expect(execMock.mock.calls.at(-1)).toEqual([
+      "docker",
+      ["update", "--cpus", "2", "--memory", "4g", "mama-sandbox-slack-u123"],
+    ]);
+  });
+
+  test("stopping a container clears boost state", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockResolvedValueOnce({ stdout: "true\n" })
+      .mockResolvedValueOnce({ stdout: "[]\n" })
+      .mockResolvedValueOnce({ stdout: "mama-sandbox-net-slack-u123\n" })
+      .mockResolvedValue({ stdout: "" });
+    const manager = new DockerContainerManager("ubuntu:24.04", {
+      limits: { cpus: "0.5", memory: "1g" },
+      boostLimits: { cpus: "2", memory: "4g" },
+      execFileImpl: execMock as any,
+    });
+
+    await manager.provision("slack-u123");
+    await manager.boost("slack-u123");
+    await manager.stop("slack-u123");
+
+    expect(manager.getLimitStatus("slack-u123")).toEqual({
+      limits: { cpus: "0.5", memory: "1g" },
+      boosted: false,
+    });
+  });
+
   test("provision succeeds even when docker update fails", async () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()

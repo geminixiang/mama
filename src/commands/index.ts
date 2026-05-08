@@ -2,6 +2,7 @@ import { LoginCommandHandler } from "./login.js";
 import { ModelCommandHandler } from "./model.js";
 import { NewCommandHandler } from "./new.js";
 import { CommandRegistry } from "./registry.js";
+import { SandboxCommandHandler } from "./sandbox.js";
 import { SessionViewCommandHandler } from "./session-view.js";
 
 export { CommandRegistry } from "./registry.js";
@@ -12,6 +13,7 @@ export function createDefaultCommandRegistry(): CommandRegistry {
     new LoginCommandHandler(),
     new SessionViewCommandHandler(),
     new ModelCommandHandler(),
+    new SandboxCommandHandler(),
     new NewCommandHandler(),
   ]);
 }

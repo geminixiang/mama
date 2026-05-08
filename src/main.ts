@@ -284,10 +284,17 @@ const sandboxLimits =
   startupConfig.sandboxCpus || startupConfig.sandboxMemory
     ? { cpus: startupConfig.sandboxCpus, memory: startupConfig.sandboxMemory }
     : undefined;
+const sandboxBoostLimits =
+  startupConfig.sandboxBoostCpus || startupConfig.sandboxBoostMemory
+    ? { cpus: startupConfig.sandboxBoostCpus, memory: startupConfig.sandboxBoostMemory }
+    : undefined;
 
 const provisioner =
   sandbox.type === "image"
-    ? new DockerContainerManager(sandbox.image, { limits: sandboxLimits })
+    ? new DockerContainerManager(sandbox.image, {
+        limits: sandboxLimits,
+        boostLimits: sandboxBoostLimits,
+      })
     : undefined;
 
 if (sandbox.type === "image") {

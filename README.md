@@ -141,21 +141,29 @@ mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/se
   },
   "sandbox": {
     "cpus": "0.5",
-    "memory": "512m"
+    "memory": "512m",
+    "boost": {
+      "cpus": "2",
+      "memory": "4g"
+    }
   }
 }
 ```
 
-| Field               | Default             | Description                                              |
-| ------------------- | ------------------- | -------------------------------------------------------- |
-| `llm.provider`      | `anthropic`         | AI provider                                              |
-| `llm.model`         | `claude-sonnet-4-5` | Model name                                               |
-| `llm.thinkingLevel` | `off`               | `off` / `low` / `medium` / `high`                        |
-| `log.format`        | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
-| `log.level`         | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
-| `sentry.dsn`        | unset               | Sentry DSN; sensitive prompt/tool content is redacted    |
-| `sandbox.cpus`      | unset               | CPU limit for managed containers                         |
-| `sandbox.memory`    | unset               | Memory limit for managed containers                      |
+| Field                  | Default             | Description                                              |
+| ---------------------- | ------------------- | -------------------------------------------------------- |
+| `llm.provider`         | `anthropic`         | AI provider                                              |
+| `llm.model`            | `claude-sonnet-4-5` | Model name                                               |
+| `llm.thinkingLevel`    | `off`               | `off` / `low` / `medium` / `high`                        |
+| `log.format`           | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
+| `log.level`            | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
+| `sentry.dsn`           | unset               | Sentry DSN; sensitive prompt/tool content is redacted    |
+| `sandbox.cpus`         | unset               | CPU limit for managed containers                         |
+| `sandbox.memory`       | unset               | Memory limit for managed containers                      |
+| `sandbox.boost.cpus`   | unset               | Temporary CPU limit used by `/pi-sandbox boost`          |
+| `sandbox.boost.memory` | unset               | Temporary memory limit used by `/pi-sandbox boost`       |
+
+`/pi-sandbox` shows the current managed-container CPU/memory limits. `/pi-sandbox boost` temporarily applies `sandbox.boost` to the current conversation; the boost ends when that sandbox container is stopped.
 
 Conversation-local settings written by `/pi-model` use the same shape and usually only include the override:
 

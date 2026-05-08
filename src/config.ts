@@ -20,6 +20,8 @@ export interface AgentConfig {
   sentryDsn?: string;
   sandboxCpus?: string;
   sandboxMemory?: string;
+  sandboxBoostCpus?: string;
+  sandboxBoostMemory?: string;
 }
 
 const ONBOARD_SETTINGS: SettingsFileConfig = {
@@ -32,13 +34,21 @@ const ONBOARD_SETTINGS: SettingsFileConfig = {
     format: "console",
     level: "info",
   },
+  sandbox: {
+    cpus: "0.5",
+    memory: "1g",
+    boost: {
+      cpus: "2",
+      memory: "4g",
+    },
+  },
 };
 
 interface SettingsFileConfig {
   llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
   log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
   sentry?: { dsn?: string };
-  sandbox?: { cpus?: string; memory?: string };
+  sandbox?: { cpus?: string; memory?: string; boost?: { cpus?: string; memory?: string } };
 }
 
 function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
@@ -77,6 +87,12 @@ function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfi
     ...(config.sentry?.dsn !== undefined ? { sentryDsn: config.sentry.dsn } : {}),
     ...(config.sandbox?.cpus !== undefined ? { sandboxCpus: config.sandbox.cpus } : {}),
     ...(config.sandbox?.memory !== undefined ? { sandboxMemory: config.sandbox.memory } : {}),
+    ...(config.sandbox?.boost?.cpus !== undefined
+      ? { sandboxBoostCpus: config.sandbox.boost.cpus }
+      : {}),
+    ...(config.sandbox?.boost?.memory !== undefined
+      ? { sandboxBoostMemory: config.sandbox.boost.memory }
+      : {}),
   };
 }
 
@@ -130,6 +146,8 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const sentryDsn = fromFile.sentryDsn ?? process.env.SENTRY_DSN;
   const sandboxCpus = fromFile.sandboxCpus;
   const sandboxMemory = fromFile.sandboxMemory;
+  const sandboxBoostCpus = fromFile.sandboxBoostCpus;
+  const sandboxBoostMemory = fromFile.sandboxBoostMemory;
 
   return {
     provider,
@@ -140,6 +158,8 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
     sentryDsn,
     sandboxCpus,
     sandboxMemory,
+    sandboxBoostCpus,
+    sandboxBoostMemory,
   };
 }
 
@@ -288,6 +308,17 @@ function patchSettingsConfig(
       ...existing.sandbox,
       ...(config.sandboxCpus !== undefined ? { cpus: config.sandboxCpus } : {}),
       ...(config.sandboxMemory !== undefined ? { memory: config.sandboxMemory } : {}),
+      ...(config.sandboxBoostCpus !== undefined || config.sandboxBoostMemory !== undefined
+        ? {
+            boost: {
+              ...existing.sandbox?.boost,
+              ...(config.sandboxBoostCpus !== undefined ? { cpus: config.sandboxBoostCpus } : {}),
+              ...(config.sandboxBoostMemory !== undefined
+                ? { memory: config.sandboxBoostMemory }
+                : {}),
+            },
+          }
+        : {}),
     },
   };
   return compactSettingsConfig(patched);

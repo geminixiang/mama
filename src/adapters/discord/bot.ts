@@ -120,12 +120,24 @@ export class DiscordBot implements Bot {
               description: "Stop the current conversation",
             },
             {
-              name: "pi-model",
+              name: "model",
               description: "Switch this conversation's LLM model",
               options: [
                 {
                   name: "model",
                   description: "provider/model[:thinking], e.g. anthropic/claude-sonnet-4-5:off",
+                  type: ApplicationCommandOptionType.String,
+                  required: false,
+                },
+              ],
+            },
+            {
+              name: "sandbox",
+              description: "Show or temporarily boost this conversation's sandbox limits",
+              options: [
+                {
+                  name: "action",
+                  description: "Use 'boost' to temporarily apply the configured boost limits",
                   type: ApplicationCommandOptionType.String,
                   required: false,
                 },
@@ -485,7 +497,8 @@ export class DiscordBot implements Bot {
         interaction.commandName !== "session" &&
         interaction.commandName !== "new" &&
         interaction.commandName !== "stop" &&
-        interaction.commandName !== "pi-model"
+        interaction.commandName !== "model" &&
+        interaction.commandName !== "sandbox"
       ) {
         return;
       }
@@ -508,13 +521,17 @@ export class DiscordBot implements Bot {
         threadTs,
       });
       const modelOption =
-        interaction.commandName === "pi-model"
+        interaction.commandName === "model"
           ? interaction.options.getString("model")?.trim()
           : undefined;
-      const commandText =
-        interaction.commandName === "pi-model" && modelOption
-          ? `/${interaction.commandName} ${modelOption}`
-          : `/${interaction.commandName}`;
+      const sandboxAction =
+        interaction.commandName === "sandbox"
+          ? interaction.options.getString("action")?.trim()
+          : undefined;
+      const commandArg = modelOption ?? sandboxAction;
+      const commandText = commandArg
+        ? `/${interaction.commandName} ${commandArg}`
+        : `/${interaction.commandName}`;
 
       this.logToFile(conversationId, {
         date: new Date(interaction.createdTimestamp).toISOString(),

@@ -90,6 +90,7 @@ export class TelegramBot implements Bot {
       { command: "login", description: "Store credentials in your private vault" },
       { command: "session", description: "Open the current session in the web viewer" },
       { command: "model", description: "Switch this conversation's LLM model" },
+      { command: "sandbox", description: "Show or boost sandbox limits" },
       { command: "stop", description: "Stop ongoing conversation" },
       { command: "new", description: "Reset conversation history and start fresh" },
     ]);
@@ -413,6 +414,36 @@ export class TelegramBot implements Bot {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
       await this.handler.handleNew(mc.sessionKey, mc.chatId, this);
+    });
+
+    this.client.command("sandbox", async (ctx) => {
+      const mc = this.extractMessageContext(ctx.message);
+      if (!mc) return;
+      const cleanedText = this.cleanText(mc.text).replace(/^\/sandbox(?:@\w+)?/i, "/pi-sandbox");
+      const event: TelegramEvent = {
+        type: "command",
+        conversationId: mc.chatId,
+        conversationKind: mc.conversationKind,
+        ts: mc.msgId,
+        thread_ts: mc.threadTs,
+        sessionKey: mc.sessionKey,
+        user: mc.userId,
+        userName: mc.userName,
+        text: cleanedText,
+        attachments: [],
+      };
+      this.logToFile(mc.chatId, {
+        date: new Date(mc.msg.date * 1000).toISOString(),
+        ts: mc.msgId,
+        ...(mc.conversationKind === "shared" && mc.threadTs ? { threadTs: mc.threadTs } : {}),
+        user: mc.userId,
+        userName: mc.userName,
+        text: cleanedText,
+        attachments: [],
+        isBot: false,
+      });
+      const adapters = createTelegramAdapters(event, this, false);
+      await this.handler.handleEvent(event, this, adapters, false);
     });
 
     // --- Catch-all for regular (non-command) messages ---
