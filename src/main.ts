@@ -19,6 +19,7 @@ import { startLinkServer } from "./login/portal.js";
 import { InMemoryLinkTokenStore } from "./login/session.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
 import { DockerContainerManager } from "./provisioner.js";
+import { SecretProxyManager } from "./execution-resolver.js";
 import { createGlobalSettingsFile, loadAgentConfig, MissingGlobalSettingsError } from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
@@ -289,11 +290,17 @@ const sandboxBoostLimits =
     ? { cpus: startupConfig.sandboxBoostCpus, memory: startupConfig.sandboxBoostMemory }
     : undefined;
 
+const secretProxyManager = sandbox.type === "image" ? new SecretProxyManager() : undefined;
+
 const provisioner =
   sandbox.type === "image"
     ? new DockerContainerManager(sandbox.image, {
         limits: sandboxLimits,
         boostLimits: sandboxBoostLimits,
+        lifecycleHooks: {
+          onStop: (key) => secretProxyManager!.stop(key),
+          onRemove: (key) => secretProxyManager!.remove(key),
+        },
       })
     : undefined;
 
@@ -331,6 +338,7 @@ const handler = createSessionRuntime({
   vaultManager,
   bindingStore,
   provisioner,
+  secretProxyManager,
   linkTokenStore,
   sessionViewTokenStore,
   portalBaseUrl: portalBaseUrl(),
