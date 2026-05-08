@@ -1,6 +1,6 @@
-import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
-import type { ThinkingLevel as PiAiThinkingLevel } from "@mariozechner/pi-ai";
-import { AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import type { ThinkingLevel as PiAiThinkingLevel } from "@earendil-works/pi-ai";
+import { AuthStorage, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import { homedir } from "os";
 import { join } from "path";
 import { loadAgentConfigForConversation, saveConversationModelConfig } from "../config.js";

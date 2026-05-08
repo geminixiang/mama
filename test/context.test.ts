@@ -1,4 +1,4 @@
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";

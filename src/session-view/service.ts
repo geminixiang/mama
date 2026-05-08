@@ -6,7 +6,7 @@ import {
   type CompactionEntry,
   type SessionEntry,
   type SessionMessageEntry,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   getThreadSessionFile,
   resolveChannelSessionFile,

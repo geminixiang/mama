@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import type { AssistantMessage, UserMessage } from "@mariozechner/pi-ai";
+import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
 import {
   createManagedSessionFile,
   createManagedSessionFileAtPath,

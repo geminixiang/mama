@@ -10,12 +10,12 @@
  * - createMamaSettingsManager: Creates an in-memory SettingsManager for AgentSession
  */
 
-import type { Message, UserMessage } from "@mariozechner/pi-ai";
+import type { Message, UserMessage } from "@earendil-works/pi-ai";
 import {
   type SessionManager,
   type SessionMessageEntry,
   SettingsManager,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";

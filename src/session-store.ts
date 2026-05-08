@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "fs";
 import { join } from "path";
-import { SessionManager } from "@mariozechner/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class ThreadRootNotFoundError extends Error {

@@ -39,10 +39,10 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.74.0",
+    "@earendil-works/pi-ai": "^0.74.0",
+    "@earendil-works/pi-coding-agent": "^0.74.0",
     "@google-cloud/logging": "^11.2.1",
-    "@mariozechner/pi-agent-core": "^0.71.1",
-    "@mariozechner/pi-ai": "^0.71.1",
-    "@mariozechner/pi-coding-agent": "^0.71.1",
     "@sentry/node": "^10.51.0",
     "@sinclair/typebox": "^0.34.49",
     "@slack/socket-mode": "^2.0.6",

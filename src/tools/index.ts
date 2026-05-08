@@ -1,4 +1,4 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { createAttachTool } from "../adapters/slack/tools/attach.js";
 import type { Executor } from "../sandbox.js";
 import { createBashTool } from "./bash.js";

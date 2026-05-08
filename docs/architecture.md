@@ -33,9 +33,9 @@ flowchart LR
   end
 
   subgraph AgentStack["Agent Stack"]
-    PiAgent["@mariozechner/pi-agent-core\nAgent"]
-    PiCoding["@mariozechner/pi-coding-agent\nAgentSession / SessionManager / Skills"]
-    PiAI["@mariozechner/pi-ai\nprovider + model"]
+    PiAgent["@earendil-works/pi-agent-core\nAgent"]
+    PiCoding["@earendil-works/pi-coding-agent\nAgentSession / SessionManager / Skills"]
+    PiAI["@earendil-works/pi-ai\nprovider + model"]
     MamaTools["src/tools/*\nread / bash / edit / write / event / attach"]
     Executor["src/sandbox/*\nExecutor"]
   end
