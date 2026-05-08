@@ -338,7 +338,6 @@ const handler = createSessionRuntime({
   vaultManager,
   bindingStore,
   provisioner,
-  secretProxyManager,
   linkTokenStore,
   sessionViewTokenStore,
   portalBaseUrl: portalBaseUrl(),

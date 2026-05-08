@@ -4,7 +4,6 @@ import type { DockerContainerManager } from "../provisioner.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
 import type { SandboxConfig } from "../sandbox.js";
 import type { VaultManager } from "../vault.js";
-import type { SecretProxyManager } from "../execution-resolver.js";
 
 export interface LinkTokenStoreLike {
   create(
@@ -33,7 +32,6 @@ export interface CommandServices {
   vaultManager: VaultManager;
   bindingStore?: UserBindingStore;
   provisioner?: DockerContainerManager;
-  secretProxyManager?: SecretProxyManager;
   linkTokenStore: LinkTokenStoreLike;
   sessionViewTokenStore: SessionViewTokenStoreLike;
   portalBaseUrl?: string;

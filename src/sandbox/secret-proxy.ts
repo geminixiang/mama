@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -165,10 +165,9 @@ export interface ProxyRoute {
 const PROXY_CONTAINER_PREFIX = "mama-proxy-";
 const PROXY_PORT = 8080;
 const PROXY_IMAGE = "node:20-alpine";
+const PROXY_SCRIPT_PATH = join(tmpdir(), "mama-proxy-server.mjs");
 
 export class SecretProxyManager {
-  private scriptDir: string | undefined;
-
   // ── public API ───────────────────────────────────────────────────────────────
 
   /**
@@ -283,10 +282,9 @@ export class SecretProxyManager {
     }
   }
 
-  /** Remove a proxy container and clean up temp files. */
+  /** Remove a proxy container. */
   async remove(containerKey: string): Promise<void> {
     await this.forceRemove(this.containerName(containerKey));
-    this.cleanupScriptDir();
   }
 
   /** Hostname reachable from within the Docker network. */
@@ -323,24 +321,12 @@ export class SecretProxyManager {
   }
 
   /**
-   * Write PROXY_SERVER_SCRIPT to a temp directory and return the script path.
-   * The dir persists for the lifetime of this manager (cleaned up in remove()).
+   * Write PROXY_SERVER_SCRIPT to a fixed temp path and return it.
+   * Using a stable path means multiple SecretProxyManager instances share
+   * the same script file without conflict (content is always identical).
    */
   private ensureScriptOnDisk(): string {
-    if (!this.scriptDir) {
-      const dir = mkdtempSync(join(tmpdir(), "mama-proxy-script-"));
-      chmodSync(dir, 0o700);
-      const scriptPath = join(dir, "proxy.mjs");
-      writeFileSync(scriptPath, PROXY_SERVER_SCRIPT, { mode: 0o600 });
-      this.scriptDir = dir;
-    }
-    return join(this.scriptDir, "proxy.mjs");
-  }
-
-  private cleanupScriptDir(): void {
-    if (this.scriptDir) {
-      rmSync(this.scriptDir, { recursive: true, force: true });
-      this.scriptDir = undefined;
-    }
+    writeFileSync(PROXY_SCRIPT_PATH, PROXY_SERVER_SCRIPT, { mode: 0o600 });
+    return PROXY_SCRIPT_PATH;
   }
 }

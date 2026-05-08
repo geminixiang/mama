@@ -16,14 +16,21 @@ export interface ActorContext {
 
 export class ActorExecutionResolver {
   private readonly ensuredConversationDirs = new Set<string>();
+  private readonly proxyManager: SecretProxyManager | undefined;
 
   constructor(
     private baseConfig: SandboxConfig,
     private vaultManager: VaultManager,
     private provisioner?: DockerContainerManager,
     private workspaceDir?: string,
-    private proxyManager?: SecretProxyManager,
-  ) {}
+  ) {
+    // SecretProxyManager is only needed for image:* sandboxes, where each
+    // sandbox runs in its own container and we can route API traffic through
+    // a sidecar proxy to keep real credentials out of the container env.
+    if (baseConfig.type === "image") {
+      this.proxyManager = new SecretProxyManager();
+    }
+  }
 
   refresh(): void {
     this.vaultManager.reload();
