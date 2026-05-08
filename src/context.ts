@@ -158,8 +158,9 @@ export async function syncLogToSessionManager(
     // current turn's context.
     if (!isMessageAtOrBeforeCurrent(slackTs, excludeSlackTs)) continue;
 
-    // Skip bot messages - added through agent flow
-    if (logMsg.isBot) continue;
+    // Skip mama's own responses - added through agent flow. Keep external app/bot
+    // messages (for example Sentry alerts) in context so mama can reason about them.
+    if (logMsg.isBot && logMsg.user === "bot") continue;
 
     const msgTime = new Date(date).getTime() || Date.now();
     if (resetCutoff !== null && msgTime <= resetCutoff) continue;

@@ -520,6 +520,67 @@ describe("SlackBot queues follow-up messages", () => {
     });
   });
 
+  test("external Slack app bot messages are logged but do not trigger mama", async () => {
+    const handler = makeHandler();
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    let messageHandler:
+      | ((payload: {
+          event: {
+            text?: string;
+            channel: string;
+            user?: string;
+            ts: string;
+            subtype?: string;
+            bot_id?: string;
+            app_id?: string;
+            username?: string;
+            channel_type?: string;
+          };
+          ack: () => void;
+        }) => void)
+      | undefined;
+
+    (bot as any).startupTs = "0";
+    (bot as any).botUserId = "U_MAMA";
+    (bot as any).botId = "B_MAMA";
+    (bot as any).logExternalBotMessage = vi.fn().mockResolvedValue([]);
+    (bot as any).socketClient = {
+      on: vi.fn((event: string, fn: unknown) => {
+        if (event === "message") messageHandler = fn as typeof messageHandler;
+      }),
+    };
+
+    (bot as any).setupEventHandlers();
+
+    const ack = vi.fn();
+    messageHandler?.({
+      event: {
+        text: "Test Issue\nProject: pi-agent",
+        channel: "C123",
+        ts: "1001.0003",
+        subtype: "bot_message",
+        bot_id: "B_SENTRY",
+        app_id: "A_SENTRY",
+        username: "Sentry",
+        channel_type: "channel",
+      },
+      ack,
+    });
+
+    expect(ack).toHaveBeenCalled();
+    expect((bot as any).logExternalBotMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ bot_id: "B_SENTRY", username: "Sentry" }),
+    );
+    expect(handler.handleEvent).not.toHaveBeenCalled();
+  });
+
   test("shared-channel bare thread replies do not trigger for unrelated threads", async () => {
     const handler = makeHandler();
 
@@ -882,6 +943,61 @@ describe("SlackBot backfill", () => {
     expect(count).toBe(1);
     const logContent = readFileSync(join(workingDir, "C123", "log.jsonl"), "utf-8");
     expect(logContent).toContain('"threadTs":"1000.0001"');
+  });
+
+  test("backfill logs external app bot messages", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {
+        processAttachments: vi.fn().mockResolvedValue([]),
+      } as any,
+    });
+
+    (bot as any).botUserId = "U_MAMA";
+    (bot as any).botId = "B_MAMA";
+    (bot as any).webClient = {
+      conversations: {
+        history: vi.fn().mockResolvedValue({
+          messages: [
+            {
+              bot_id: "B_SENTRY",
+              app_id: "A_SENTRY",
+              username: "Sentry",
+              subtype: "bot_message",
+              text: "[pi-agent] Test Issue",
+              blocks: [
+                {
+                  type: "section",
+                  text: { type: "mrkdwn", text: "*Test Issue*\npoll(.../sentry/scripts/views.js)" },
+                },
+                {
+                  type: "section",
+                  fields: [
+                    { type: "mrkdwn", text: "*State:* New" },
+                    { type: "mrkdwn", text: "*Short ID:* PI-AGENT-A" },
+                  ],
+                },
+              ],
+              ts: "1000.0002",
+            },
+          ],
+          response_metadata: {},
+        }),
+      },
+    };
+
+    const count = await (bot as any).backfillChannel("C123");
+
+    expect(count).toBe(1);
+    const logContent = readFileSync(join(workingDir, "C123", "log.jsonl"), "utf-8");
+    expect(logContent).toContain('"userName":"Sentry"');
+    expect(logContent).toContain("[pi-agent] Test Issue");
+    expect(logContent).toContain("poll(.../sentry/scripts/views.js)");
+    expect(logContent).toContain("PI-AGENT-A");
+    expect(logContent).toContain('"botId":"B_SENTRY"');
   });
 
   test("backfill preserves mentions of other users while stripping mama", async () => {

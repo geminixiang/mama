@@ -37,6 +37,42 @@ function slackIsRateLimited(err: Error): boolean {
 
 const slackRetry = <T>(fn: () => Promise<T>): Promise<T> =>
   withRetry(fn, { isRateLimited: slackIsRateLimited });
+
+function collectSlackText(value: unknown, parts: string[]): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) parts.push(trimmed);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectSlackText(item, parts);
+    return;
+  }
+  if (typeof value !== "object") return;
+
+  const obj = value as Record<string, unknown>;
+  for (const key of ["text", "fallback", "title", "value"] as const) {
+    collectSlackText(obj[key], parts);
+  }
+  collectSlackText(obj.fields, parts);
+  collectSlackText(obj.elements, parts);
+  collectSlackText(obj.blocks, parts);
+}
+
+function buildSlackAppMessageText(event: {
+  text?: string;
+  blocks?: unknown[];
+  attachments?: unknown[];
+}): string {
+  const parts: string[] = [];
+  collectSlackText(event.text, parts);
+  collectSlackText(event.blocks, parts);
+  collectSlackText(event.attachments, parts);
+  const deduped = parts.filter((part, index) => parts.indexOf(part) === index);
+  return deduped.join("\n");
+}
+
 import { createSlackAdapters } from "./context.js";
 import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
 import { resolveSlackSessionKey } from "./session.js";
@@ -117,6 +153,7 @@ export class SlackBot implements Bot {
   private workingDir: string;
   private store: ChannelStore;
   private botUserId: string | null = null;
+  private botId: string | null = null;
   private ownMentionRegex: RegExp | null = null;
   private startupTs: string | null = null; // Messages older than this are just logged, not processed
 
@@ -147,6 +184,7 @@ export class SlackBot implements Bot {
   async start(): Promise<void> {
     const auth = await this.webClient.auth.test();
     this.botUserId = auth.user_id as string;
+    this.botId = typeof auth.bot_id === "string" ? auth.bot_id : null;
 
     await Promise.all([this.fetchUsers(), this.fetchChannels()]);
     log.logInfo(`Loaded ${this.channels.size} channels, ${this.users.size} users`);
@@ -993,11 +1031,41 @@ export class SlackBot implements Bot {
         channel_type?: string;
         subtype?: string;
         bot_id?: string;
+        app_id?: string;
+        username?: string;
+        bot_profile?: { id?: string; app_id?: string; name?: string; real_name?: string };
+        blocks?: unknown[];
+        attachments?: unknown[];
         files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
       };
 
-      // Skip bot messages, edits, etc.
-      if (e.bot_id || !e.user || e.user === this.botUserId) {
+      const hasFiles = !!e.files && e.files.length > 0;
+      const hasSlackContent = !!e.text || hasFiles || !!e.blocks?.length || !!e.attachments?.length;
+      const isOwnBotMessage =
+        (!!e.user && e.user === this.botUserId) || (!!this.botId && e.bot_id === this.botId);
+      if (isOwnBotMessage) {
+        ack();
+        return;
+      }
+
+      const isExternalBotMessage = !!e.bot_id || e.subtype === "bot_message";
+      if (isExternalBotMessage) {
+        if (e.subtype !== undefined && e.subtype !== "bot_message" && e.subtype !== "file_share") {
+          ack();
+          return;
+        }
+        if (!hasSlackContent) {
+          ack();
+          return;
+        }
+        void this.logExternalBotMessage(e).catch((err) => {
+          log.logWarning("Failed to log Slack bot message", String(err));
+        });
+        ack();
+        return;
+      }
+
+      if (!e.user) {
         ack();
         return;
       }
@@ -1005,7 +1073,7 @@ export class SlackBot implements Bot {
         ack();
         return;
       }
-      if (!e.text && (!e.files || e.files.length === 0)) {
+      if (!hasSlackContent) {
         ack();
         return;
       }
@@ -1247,6 +1315,42 @@ export class SlackBot implements Bot {
     return attachments;
   }
 
+  private async logExternalBotMessage(event: {
+    channel: string;
+    ts: string;
+    thread_ts?: string;
+    text?: string;
+    subtype?: string;
+    bot_id?: string;
+    app_id?: string;
+    username?: string;
+    bot_profile?: { app_id?: string; name?: string; real_name?: string };
+    blocks?: unknown[];
+    attachments?: unknown[];
+    files?: Array<{ name: string; url_private_download?: string; url_private?: string }>;
+  }): Promise<Attachment[]> {
+    const attachments = event.files
+      ? await this.store.processAttachments(event.channel, event.files, event.ts)
+      : [];
+    const botName =
+      event.username ?? event.bot_profile?.name ?? event.bot_profile?.real_name ?? event.bot_id;
+    this.logToFile(event.channel, {
+      date: new Date(parseFloat(event.ts) * 1000).toISOString(),
+      ts: event.ts,
+      threadTs: event.thread_ts,
+      user: event.bot_id ? `bot:${event.bot_id}` : "external-bot",
+      userName: botName,
+      displayName: botName,
+      text: buildSlackAppMessageText(event),
+      attachments,
+      isBot: true,
+      botId: event.bot_id,
+      appId: event.app_id ?? event.bot_profile?.app_id,
+      subtype: event.subtype,
+    });
+    return attachments;
+  }
+
   // ==========================================================================
   // Private - Backfill
   // ==========================================================================
@@ -1284,6 +1388,11 @@ export class SlackBot implements Bot {
     type Message = {
       user?: string;
       bot_id?: string;
+      app_id?: string;
+      username?: string;
+      bot_profile?: { app_id?: string; name?: string; real_name?: string };
+      blocks?: unknown[];
+      attachments?: unknown[];
       text?: string;
       ts?: string;
       thread_ts?: string;
@@ -1311,11 +1420,27 @@ export class SlackBot implements Bot {
       pageCount++;
     } while (cursor && pageCount < maxPages);
 
-    // Filter: include mama's messages, exclude other bots, skip already logged
+    // Filter: include mama's messages, external app/bot messages, and user messages.
     const relevantMessages = allMessages.filter((msg) => {
       if (!msg.ts || existingTs.has(msg.ts)) return false; // Skip duplicates
       if (msg.user === this.botUserId) return true;
-      if (msg.bot_id) return false;
+      const isExternalBotMessage = !!msg.bot_id || msg.subtype === "bot_message";
+      if (isExternalBotMessage) {
+        if (this.botId && msg.bot_id === this.botId) return false;
+        if (
+          msg.subtype !== undefined &&
+          msg.subtype !== "bot_message" &&
+          msg.subtype !== "file_share"
+        ) {
+          return false;
+        }
+        return (
+          !!msg.text ||
+          !!(msg.files && msg.files.length > 0) ||
+          !!msg.blocks?.length ||
+          !!msg.attachments?.length
+        );
+      }
       if (msg.subtype !== undefined && msg.subtype !== "file_share") return false;
       if (!msg.user) return false;
       if (!msg.text && (!msg.files || msg.files.length === 0)) return false;
@@ -1328,6 +1453,13 @@ export class SlackBot implements Bot {
     // Log each message to log.jsonl
     for (const msg of relevantMessages) {
       const isMamaMessage = msg.user === this.botUserId;
+      const isExternalBotMessage =
+        !isMamaMessage && (!!msg.bot_id || msg.subtype === "bot_message");
+      if (isExternalBotMessage) {
+        await this.logExternalBotMessage({ ...msg, channel: channelId, ts: msg.ts! });
+        continue;
+      }
+
       const user = this.users.get(msg.user!);
       const text = this.stripOwnMention(msg.text);
       const attachments = msg.files
