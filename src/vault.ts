@@ -1,10 +1,30 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync } from "fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+} from "fs";
 import { dirname, isAbsolute, join, normalize, sep } from "path";
 import type { PlatformName } from "./adapter.js";
 import type { SandboxConfig } from "./sandbox.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 const PRIVATE_DIR_MODE = 0o700;
+const SHARED_VAULT_DIR = "shared";
+
+export function normalizeSharedVaultName(name: string): string | undefined {
+  const trimmed = name.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+export function sharedVaultKey(name: string): string | undefined {
+  const normalized = normalizeSharedVaultName(name);
+  return normalized ? `${SHARED_VAULT_DIR}/${normalized}` : undefined;
+}
 
 function sanitizeCloudflareSandboxId(value: string): string {
   return (
@@ -93,6 +113,15 @@ export interface VaultManager {
   upsertEnv(key: string, env: Record<string, string>): void;
   /** Write a private file into vaults/<key>/ and ensure it is mounted into the sandbox. */
   upsertFile(key: string, relativePath: string, content: string, targetPath?: string): void;
+  /** List named shared login profiles under vaults/shared/. */
+  listSharedVaults(): string[];
+  /** Delete a named shared login profile. */
+  deleteSharedVault(name: string): boolean;
+  /** Merge-copy a shared login profile into another vault, with shared values winning. */
+  copySharedVaultTo(
+    name: string,
+    targetKey: string,
+  ): { filesCopied: number; envKeysCopied: number };
 }
 
 // ── parseEnvFile ───────────────────────────────────────────────────────────────
@@ -202,6 +231,43 @@ export class FileVaultManager implements VaultManager {
 
   hasEntry(key: string): boolean {
     return !!this.config?.vaults[key] || existsSync(join(this.vaultsDir, key));
+  }
+
+  listSharedVaults(): string[] {
+    const sharedDir = join(this.vaultsDir, SHARED_VAULT_DIR);
+    if (!existsSync(sharedDir)) return [];
+    return readdirSync(sharedDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && normalizeSharedVaultName(entry.name) === entry.name)
+      .map((entry) => entry.name)
+      .sort((left, right) => left.localeCompare(right));
+  }
+
+  deleteSharedVault(name: string): boolean {
+    const key = sharedVaultKey(name);
+    if (!key) throw new Error(`vault: invalid shared login name: ${name}`);
+    const dir = join(this.vaultsDir, key);
+    const existed = existsSync(dir) || !!this.config?.vaults[key];
+    rmSync(dir, { recursive: true, force: true });
+    if (this.config?.vaults[key]) {
+      delete this.config.vaults[key];
+      this.persistConfig();
+    }
+    return existed;
+  }
+
+  copySharedVaultTo(
+    name: string,
+    targetKey: string,
+  ): { filesCopied: number; envKeysCopied: number } {
+    const sourceKey = sharedVaultKey(name);
+    if (!sourceKey) throw new Error(`vault: invalid shared login name: ${name}`);
+    const sourceDir = join(this.vaultsDir, sourceKey);
+    if (!existsSync(sourceDir)) throw new Error(`vault: shared login "${name}" does not exist`);
+
+    const targetDir = join(this.vaultsDir, targetKey);
+    ensurePrivateDir(this.vaultsDir);
+    ensurePrivateDir(targetDir);
+    return copyVaultDir(sourceDir, targetDir);
   }
 
   resolve(userId: string): ResolvedVault | undefined {
@@ -494,6 +560,53 @@ export class FileVaultManager implements VaultManager {
 function ensurePrivateDir(path: string): void {
   mkdirSync(path, { recursive: true, mode: PRIVATE_DIR_MODE });
   chmodSync(path, PRIVATE_DIR_MODE);
+}
+
+function copyVaultDir(
+  sourceDir: string,
+  targetDir: string,
+): {
+  filesCopied: number;
+  envKeysCopied: number;
+} {
+  let filesCopied = 0;
+  let envKeysCopied = 0;
+
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const sourcePath = join(sourceDir, entry.name);
+    const targetPath = join(targetDir, entry.name);
+
+    if (entry.name === "env" && entry.isFile()) {
+      const sourceEnv = parseEnvFile(readFileSync(sourcePath, "utf-8"));
+      const targetEnv = existsSync(targetPath)
+        ? parseEnvFile(readFileSync(targetPath, "utf-8"))
+        : {};
+      const merged = { ...targetEnv, ...sourceEnv };
+      const content =
+        Object.entries(merged)
+          .sort(([left], [right]) => left.localeCompare(right))
+          .map(([envKey, value]) => `${envKey}=${value}`)
+          .join("\n") + "\n";
+      atomicWritePrivateFile(targetPath, content);
+      envKeysCopied += Object.keys(sourceEnv).length;
+      continue;
+    }
+
+    if (entry.isDirectory()) {
+      ensurePrivateDir(targetPath);
+      const nested = copyVaultDir(sourcePath, targetPath);
+      filesCopied += nested.filesCopied;
+      envKeysCopied += nested.envKeysCopied;
+      continue;
+    }
+
+    if (!entry.isFile()) continue;
+    copyFileSync(sourcePath, targetPath);
+    chmodSync(targetPath, 0o600);
+    filesCopied++;
+  }
+
+  return { filesCopied, envKeysCopied };
 }
 
 function normalizeVaultRelativePath(relativePath: string): string | undefined {

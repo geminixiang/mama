@@ -1,6 +1,7 @@
 import * as log from "../log.js";
 import { parseLoginCommand } from "../login/index.js";
 import { resolveActorVaultKey } from "../vault-routing.js";
+import { sharedVaultKey } from "../vault.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { replyWithContext } from "./utils.js";
 
@@ -26,6 +27,52 @@ export class LoginCommandHandler implements CommandHandler {
       return true;
     }
 
+    if (parsed.action === "shared_list") {
+      const profiles = context.services.vaultManager.listSharedVaults();
+      await replyWithContext(
+        context.responseCtx,
+        profiles.length > 0
+          ? `Shared login profiles:\n${profiles.map((name) => `- ${name}`).join("\n")}`
+          : "No shared login profiles found.",
+      );
+      return true;
+    }
+
+    if (parsed.action === "shared_delete") {
+      try {
+        const deleted = context.services.vaultManager.deleteSharedVault(parsed.name);
+        await replyWithContext(
+          context.responseCtx,
+          deleted
+            ? `Deleted shared login profile \`${parsed.name}\`.`
+            : `Shared login profile \`${parsed.name}\` does not exist.`,
+        );
+      } catch (error) {
+        await replyWithContext(
+          context.responseCtx,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return true;
+    }
+
+    if (parsed.action === "copy_shared") {
+      try {
+        const vaultId = ensureLoginVault(context);
+        const result = context.services.vaultManager.copySharedVaultTo(parsed.name, vaultId);
+        await replyWithContext(
+          context.responseCtx,
+          `Copied shared login profile \`${parsed.name}\` into this conversation. Shared values overwrite matching conversation values; conversation-only values are kept. (${result.envKeysCopied} env key(s), ${result.filesCopied} file(s))`,
+        );
+      } catch (error) {
+        await replyWithContext(
+          context.responseCtx,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      return true;
+    }
+
     if (!context.services.portalBaseUrl) {
       await replyWithContext(
         context.responseCtx,
@@ -34,9 +81,15 @@ export class LoginCommandHandler implements CommandHandler {
       return true;
     }
 
+    const isSharedSetup = parsed.action === "shared_create" || parsed.action === "shared_update";
     let vaultId: string;
     try {
-      vaultId = ensureLoginVault(context);
+      vaultId = isSharedSetup ? (sharedVaultKey(parsed.name) ?? "") : ensureLoginVault(context);
+      if (!vaultId) {
+        throw new Error(
+          isSharedSetup ? `Invalid shared login profile name: ${parsed.name}` : "Invalid vault id",
+        );
+      }
     } catch (error) {
       log.logWarning(
         `[${context.conversationId}] Failed to prepare login vault for ${context.platform}/${context.platformUserId}`,
@@ -56,8 +109,11 @@ export class LoginCommandHandler implements CommandHandler {
       vaultId,
       "",
     );
-    const vaultLabel =
-      context.services.sandbox.type === "container" ? `container vault (${vaultId})` : "your vault";
+    const vaultLabel = isSharedSetup
+      ? `shared login profile (${parsed.name})`
+      : context.services.sandbox.type === "container"
+        ? `container vault (${vaultId})`
+        : "your vault";
     await replyWithContext(
       context.responseCtx,
       `Open this link to store credentials in ${vaultLabel} (expires in 15 minutes):\n${context.services.portalBaseUrl}/link?token=${token.token}`,

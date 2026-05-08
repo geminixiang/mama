@@ -3,10 +3,40 @@ import { getOAuthServices, parseLoginCommand, resolveOAuthService } from "../src
 
 describe("login command parsing", () => {
   test("parseLoginCommand recognizes login commands only", () => {
-    expect(parseLoginCommand("/login")).toEqual({ command: "/login" });
-    expect(parseLoginCommand("login")).toEqual({ command: "login" });
-    expect(parseLoginCommand("/login github_oauth")).toEqual({ command: "/login" });
-    expect(parseLoginCommand("/pi-login github")).toEqual({ command: "/pi-login" });
+    expect(parseLoginCommand("/login")).toEqual({ command: "/login", action: "setup" });
+    expect(parseLoginCommand("login")).toEqual({ command: "login", action: "setup" });
+    expect(parseLoginCommand("/login github_oauth")).toEqual({
+      command: "/login",
+      action: "setup",
+    });
+    expect(parseLoginCommand("/pi-login github")).toEqual({
+      command: "/pi-login",
+      action: "setup",
+    });
+    expect(parseLoginCommand("/pi-login shared create gliaclaw")).toEqual({
+      command: "/pi-login",
+      action: "shared_create",
+      name: "gliaclaw",
+    });
+    expect(parseLoginCommand("/pi-login shared update gliaclaw")).toEqual({
+      command: "/pi-login",
+      action: "shared_update",
+      name: "gliaclaw",
+    });
+    expect(parseLoginCommand("/pi-login shared delete gliaclaw")).toEqual({
+      command: "/pi-login",
+      action: "shared_delete",
+      name: "gliaclaw",
+    });
+    expect(parseLoginCommand("/pi-login shared list")).toEqual({
+      command: "/pi-login",
+      action: "shared_list",
+    });
+    expect(parseLoginCommand("/pi-login copy gliaclaw")).toEqual({
+      command: "/pi-login",
+      action: "copy_shared",
+      name: "gliaclaw",
+    });
     expect(parseLoginCommand("help")).toBeNull();
   });
 

@@ -25,9 +25,15 @@ export interface OAuthService {
   fileOutput?: OAuthAuthorizedUserFileOutput;
 }
 
-export interface ParsedLoginCommand {
-  command: "login" | "/login" | "/pi-login";
-}
+export type ParsedLoginCommand =
+  | { command: "login" | "/login" | "/pi-login"; action: "setup" }
+  | {
+      command: "login" | "/login" | "/pi-login";
+      action: "shared_create" | "shared_update" | "shared_delete";
+      name: string;
+    }
+  | { command: "login" | "/login" | "/pi-login"; action: "shared_list" }
+  | { command: "login" | "/login" | "/pi-login"; action: "copy_shared"; name: string };
 
 const DEFAULT_GOOGLE_WORKSPACE_CLI_SCOPES = [
   "https://www.googleapis.com/auth/drive",
@@ -234,6 +240,33 @@ export function parseLoginCommand(text: string): ParsedLoginCommand | null {
   if (command !== "login" && command !== "/login" && command !== "/pi-login") {
     return null;
   }
+  const typedCommand = command as "login" | "/login" | "/pi-login";
+  const [subcommand, operation, name, ...extra] = tokens.slice(1);
 
-  return { command: command as "login" | "/login" | "/pi-login" };
+  if (!subcommand) return { command: typedCommand, action: "setup" };
+
+  if (subcommand.toLowerCase() === "shared") {
+    const op = operation?.toLowerCase();
+    if (op === "list" && !name && extra.length === 0) {
+      return { command: typedCommand, action: "shared_list" };
+    }
+    if ((op === "create" || op === "update" || op === "delete") && !!name && extra.length === 0) {
+      return {
+        command: typedCommand,
+        action: `shared_${op}` as "shared_create" | "shared_update" | "shared_delete",
+        name,
+      };
+    }
+    return null;
+  }
+
+  if (subcommand.toLowerCase() === "copy" && operation && !name && extra.length === 0) {
+    return { command: typedCommand, action: "copy_shared", name: operation };
+  }
+
+  // Backward-compatible: older `/pi-login gh` / `/pi-login gws` forms opened the
+  // generic login page and let the portal handle provider choice.
+  if (!operation && extra.length === 0) return { command: typedCommand, action: "setup" };
+
+  return null;
 }

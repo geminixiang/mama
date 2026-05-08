@@ -70,6 +70,9 @@ function fakeVaultManager(): VaultManager & { entries: Map<string, VaultEntry> }
     ensureImageSandboxEntry: (key, entry) => entries.set(key, entry),
     upsertEnv: () => {},
     upsertFile: () => {},
+    listSharedVaults: () => [],
+    deleteSharedVault: () => false,
+    copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
   };
 }
 
@@ -280,6 +283,66 @@ describe("LoginCommandHandler", () => {
     expect(ctx.responseCtx.responses[0]).toContain("https://portal.example/link?token=tok-link");
   });
 
+  test("creates a link token for shared profile setup", async () => {
+    const linkTokenStore = fakeLinkTokenStore();
+    const ctx = buildContext({
+      commandText: "/pi-login shared create gliaclaw",
+      privateConversation: true,
+      services: { linkTokenStore },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(linkTokenStore.created).toEqual([
+      {
+        platform: "slack",
+        platformUserId: "U123",
+        conversationId: "C123",
+        vaultId: "shared/gliaclaw",
+        providerId: "",
+      },
+    ]);
+    expect(ctx.responseCtx.responses[0]).toContain("shared login profile (gliaclaw)");
+  });
+
+  test("lists and deletes shared login profiles", async () => {
+    const vaultManager = fakeVaultManager();
+    vaultManager.listSharedVaults = vi.fn(() => ["gliaclaw"]);
+    vaultManager.deleteSharedVault = vi.fn(() => true);
+
+    const listCtx = buildContext({
+      commandText: "/pi-login shared list",
+      privateConversation: true,
+      services: { vaultManager },
+    });
+    expect(await handler.tryHandle(listCtx)).toBe(true);
+    expect(listCtx.responseCtx.responses[0]).toContain("gliaclaw");
+
+    const deleteCtx = buildContext({
+      commandText: "/pi-login shared delete gliaclaw",
+      privateConversation: true,
+      services: { vaultManager },
+    });
+    expect(await handler.tryHandle(deleteCtx)).toBe(true);
+    expect(vaultManager.deleteSharedVault).toHaveBeenCalledWith("gliaclaw");
+  });
+
+  test("copies shared login profile into the conversation vault", async () => {
+    const vaultManager = fakeVaultManager();
+    vaultManager.copySharedVaultTo = vi.fn(() => ({ envKeysCopied: 2, filesCopied: 1 }));
+    const ctx = buildContext({
+      commandText: "/pi-login copy gliaclaw",
+      privateConversation: true,
+      services: {
+        vaultManager,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(vaultManager.copySharedVaultTo).toHaveBeenCalledWith("gliaclaw", "c123");
+    expect(ctx.responseCtx.responses[0]).toContain("Copied shared login profile `gliaclaw`");
+  });
+
   test("uses vaultConversationId for vault routing when reply channel differs", async () => {
     const linkTokenStore = fakeLinkTokenStore();
     const entries = new Map<string, VaultEntry>();
@@ -305,6 +368,9 @@ describe("LoginCommandHandler", () => {
           ensureImageSandboxEntry: (key: string, entry: VaultEntry) => entries.set(key, entry),
           upsertEnv: () => {},
           upsertFile: () => {},
+          listSharedVaults: () => [],
+          deleteSharedVault: () => false,
+          copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
         } as VaultManager,
       },
     });

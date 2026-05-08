@@ -14,7 +14,7 @@ import { ActorExecutionResolver } from "../src/execution-resolver.js";
 import { DockerContainerManager } from "../src/provisioner.js";
 import { HostExecutor } from "../src/sandbox.js";
 import { resolveActorVaultKey } from "../src/vault-routing.js";
-import { FileVaultManager, parseEnvFile, type VaultConfig } from "../src/vault.js";
+import { FileVaultManager, parseEnvFile, sharedVaultKey, type VaultConfig } from "../src/vault.js";
 
 function mode(path: string): number {
   return statSync(path).mode & 0o777;
@@ -129,6 +129,46 @@ describe("FileVaultManager", () => {
     new FileVaultManager(tmpDir).upsertEnv("U123", { OPENAI_API_KEY: "sk-test" });
 
     expect(mode(envPath) & 0o077).toBe(0);
+  });
+
+  test("sharedVaultKey validates shared login profile names", () => {
+    expect(sharedVaultKey("gliaclaw")).toBe("shared/gliaclaw");
+    expect(sharedVaultKey("team.prod-1")).toBe("shared/team.prod-1");
+    expect(sharedVaultKey("../secret")).toBeUndefined();
+    expect(sharedVaultKey("bad/name")).toBeUndefined();
+  });
+
+  test("copySharedVaultTo merge-copies shared vault into target with shared values winning", () => {
+    const sharedDir = join(vaultsDir, "shared", "gliaclaw");
+    const targetDir = join(vaultsDir, "c123");
+    mkdirSync(join(sharedDir, ".config", "gh"), { recursive: true });
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(sharedDir, "env"), "A=profile-a\nB=profile-b\n");
+    writeFileSync(join(targetDir, "env"), "A=conversation-a\nD=conversation-d\n");
+    writeFileSync(join(sharedDir, ".config", "gh", "hosts.yml"), "github.com:\n  token: shared\n");
+
+    const result = new FileVaultManager(tmpDir).copySharedVaultTo("gliaclaw", "c123");
+
+    expect(result).toEqual({ envKeysCopied: 2, filesCopied: 1 });
+    expect(parseEnvFile(readFileSync(join(targetDir, "env"), "utf-8"))).toEqual({
+      A: "profile-a",
+      B: "profile-b",
+      D: "conversation-d",
+    });
+    expect(readFileSync(join(targetDir, ".config", "gh", "hosts.yml"), "utf-8")).toContain(
+      "shared",
+    );
+  });
+
+  test("lists and deletes shared vaults", () => {
+    mkdirSync(join(vaultsDir, "shared", "gliaclaw"), { recursive: true });
+    mkdirSync(join(vaultsDir, "shared", "another"), { recursive: true });
+    mkdirSync(join(vaultsDir, "shared", ".hidden"), { recursive: true });
+    const mgr = new FileVaultManager(tmpDir);
+
+    expect(mgr.listSharedVaults()).toEqual(["another", "gliaclaw"]);
+    expect(mgr.deleteSharedVault("gliaclaw")).toBe(true);
+    expect(existsSync(join(vaultsDir, "shared", "gliaclaw"))).toBe(false);
   });
 
   test("upsertFile writes private credential files and persists mount metadata", () => {
