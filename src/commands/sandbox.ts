@@ -1,6 +1,6 @@
 import { resolveActorVaultKey } from "../vault-routing.js";
 import type { CommandContext, CommandHandler } from "./types.js";
-import { replyWithContext } from "./utils.js";
+import { replyDiagnosticWithContext } from "./utils.js";
 
 export interface ParsedSandboxCommand {
   command: "/pi-sandbox" | "/sandbox";
@@ -20,15 +20,22 @@ export function parseSandboxCommand(text: string): ParsedSandboxCommand | null {
   return { command };
 }
 
+function formatSandboxCommandSummary(title: string, lines: string[]): string {
+  return [`_${title}_`, ...lines].join("\n");
+}
+
 export class SandboxCommandHandler implements CommandHandler {
   async tryHandle(context: CommandContext): Promise<boolean> {
     const parsed = parseSandboxCommand(context.commandText);
     if (!parsed) return false;
 
     if (context.services.sandbox.type !== "image" || !context.services.provisioner) {
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        "`/pi-sandbox` 目前只支援 `image:*` managed sandbox。",
+        formatSandboxCommandSummary("Sandbox", [
+          "`/pi-sandbox` 目前只支援 `image:*` managed sandbox。",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
@@ -42,17 +49,26 @@ export class SandboxCommandHandler implements CommandHandler {
     if (parsed.action === "boost") {
       const boostLimits = context.services.provisioner.getBoostLimits();
       if (!boostLimits?.cpus && !boostLimits?.memory) {
-        await replyWithContext(
+        await replyDiagnosticWithContext(
           context.responseCtx,
-          "此 mama instance 尚未設定 sandbox boost 規格，請先在全域 settings.json 設定 `sandbox.boost`。",
+          formatSandboxCommandSummary("Sandbox Boost", [
+            "此 mama instance 尚未設定 sandbox boost 規格。",
+            "請先在全域 settings.json 設定 `sandbox.boost`。",
+          ]),
+          { style: "muted" },
         );
         return true;
       }
 
       const status = await context.services.provisioner.boost(containerKey);
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        `已暫時提升此 conversation 的 sandbox 規格。\n\n目前：${formatLimits(status.limits)}\n\nboost 會在此 sandbox container 關閉後結束。`,
+        formatSandboxCommandSummary("Sandbox Boost", [
+          "已暫時提升此 conversation 的 sandbox 規格。",
+          `Current: ${formatLimits(status.limits)}`,
+          "boost 會在此 sandbox container 關閉後結束。",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
@@ -60,19 +76,19 @@ export class SandboxCommandHandler implements CommandHandler {
     const status = context.services.provisioner.getLimitStatus(containerKey);
     const defaultLimits = context.services.provisioner.getDefaultLimits();
     const boostLimits = context.services.provisioner.getBoostLimits();
-    await replyWithContext(
+    await replyDiagnosticWithContext(
       context.responseCtx,
-      [
-        "目前 sandbox 規格：",
-        "",
-        formatLimits(status.limits),
-        `狀態：${status.boosted ? "boosted" : "default"}`,
-        "",
-        `預設：${formatLimits(defaultLimits)}`,
-        boostLimits ? `boost：${formatLimits({ ...defaultLimits, ...boostLimits })}` : undefined,
-      ]
-        .filter(Boolean)
-        .join("\n"),
+      formatSandboxCommandSummary(
+        "Sandbox",
+        [
+          `Current: ${formatLimits(status.limits)}`,
+          `Status: ${status.boosted ? "boosted" : "default"}`,
+          "",
+          `Default: ${formatLimits(defaultLimits)}`,
+          boostLimits ? `Boost: ${formatLimits({ ...defaultLimits, ...boostLimits })}` : undefined,
+        ].filter((line): line is string => line !== undefined),
+      ),
+      { style: "muted" },
     );
     return true;
   }

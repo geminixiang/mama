@@ -5,7 +5,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { loadAgentConfigForConversation, saveConversationModelConfig } from "../config.js";
 import type { CommandContext, CommandHandler } from "./types.js";
-import { replyWithContext } from "./utils.js";
+import { replyDiagnosticWithContext } from "./utils.js";
 
 const PI_AI_THINKING_LEVELS = [
   "minimal",
@@ -77,6 +77,10 @@ function formatModelSpec(provider: string, model: string, thinkingLevel?: Thinki
   return `${provider}/${model}${thinkingLevel ? `:${thinkingLevel}` : ""}`;
 }
 
+function formatModelCommandSummary(lines: string[]): string {
+  return ["_Model_", ...lines].join("\n");
+}
+
 export class ModelCommandHandler implements CommandHandler {
   async tryHandle(context: CommandContext): Promise<boolean> {
     const parsed = parseModelCommand(context.commandText);
@@ -85,25 +89,38 @@ export class ModelCommandHandler implements CommandHandler {
     const conversationDir = join(context.services.workingDir, context.conversationId);
     if (!parsed.provider || !parsed.model) {
       const current = loadAgentConfigForConversation(conversationDir);
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        `目前模型：\`${formatModelSpec(current.provider, current.model, current.thinkingLevel)}\`\n用法：\`/pi-model provider/model[:thinking]\`，例如 \`/pi-model anthropic/claude-sonnet-4-5:off\`。`,
+        formatModelCommandSummary([
+          `Current: \`${formatModelSpec(current.provider, current.model, current.thinkingLevel)}\``,
+          "",
+          "Usage: `/pi-model provider/model[:thinking]`",
+          "Example: `/pi-model anthropic/claude-sonnet-4-5:off`",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
 
     if (!this.isKnownModel(parsed.provider, parsed.model)) {
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        `找不到模型 \`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\`。請確認 provider/model 名稱，或先在 pi models.json 註冊自訂模型。`,
+        formatModelCommandSummary([
+          `找不到模型：\`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\``,
+          "請確認 provider/model 名稱，或先在 pi models.json 註冊自訂模型。",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
 
     if (!context.services.runtime) {
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        "Model command is not configured correctly on the server. Please try again later.",
+        formatModelCommandSummary([
+          "Model command is not configured correctly on the server. Please try again later.",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
@@ -114,9 +131,12 @@ export class ModelCommandHandler implements CommandHandler {
       parsed.model,
     );
     if (!switched) {
-      await replyWithContext(
+      await replyDiagnosticWithContext(
         context.responseCtx,
-        "目前這個 conversation 有執行中的工作，請等它完成或先 `/stop` 後再切換模型。",
+        formatModelCommandSummary([
+          "目前這個 conversation 有執行中的工作，請等它完成或先 `/stop` 後再切換模型。",
+        ]),
+        { style: "muted" },
       );
       return true;
     }
@@ -127,9 +147,13 @@ export class ModelCommandHandler implements CommandHandler {
       ...(parsed.thinkingLevel ? { thinkingLevel: parsed.thinkingLevel } : {}),
     });
 
-    await replyWithContext(
+    await replyDiagnosticWithContext(
       context.responseCtx,
-      `已切換這個 conversation 的模型為 \`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\`。下一則訊息會使用新模型。`,
+      formatModelCommandSummary([
+        `Switched: \`${formatModelSpec(parsed.provider, parsed.model, parsed.thinkingLevel)}\``,
+        "下一則訊息會使用新模型。",
+      ]),
+      { style: "muted" },
     );
     return true;
   }

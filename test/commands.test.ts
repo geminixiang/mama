@@ -27,7 +27,9 @@ function fakeResponseCtx(): RecordingResponseCtx {
       responses.push(text);
     }),
     replaceResponse: vi.fn(async () => {}),
-    respondDiagnostic: vi.fn(async () => {}),
+    respondDiagnostic: vi.fn(async (text: string) => {
+      responses.push(text);
+    }),
     respondToolResult: vi.fn(async () => {}),
     setTyping: vi.fn(async () => {}),
     setWorking: vi.fn(async () => {}),

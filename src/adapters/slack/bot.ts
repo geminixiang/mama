@@ -200,8 +200,54 @@ export class SlackBot implements Bot {
     });
   }
 
+  async postEphemeralBlocks(
+    channel: string,
+    user: string,
+    text: string,
+    blocks: object[],
+  ): Promise<void> {
+    return slackRetry(async () => {
+      await this.webClient.chat.postEphemeral({ channel, user, text, blocks: blocks as any });
+    });
+  }
+
+  async postMessageBlocks(channel: string, text: string, blocks: object[]): Promise<string> {
+    return slackRetry(async () => {
+      const result = await this.webClient.chat.postMessage({
+        channel,
+        text,
+        blocks: blocks as any,
+      });
+      return result.ts as string;
+    });
+  }
+
   async postPrivate(conversationId: string, userId: string, text: string): Promise<void> {
     await this.postEphemeral(conversationId, userId, text);
+  }
+
+  async postPrivateDiagnostic(
+    conversationId: string,
+    userId: string,
+    text: string,
+    options?: { style?: "muted" | "error" },
+  ): Promise<void> {
+    if (options?.style !== "muted") {
+      await this.postPrivate(
+        conversationId,
+        userId,
+        options?.style === "error" ? `_${text}_` : text,
+      );
+      return;
+    }
+    const CONTEXT_TEXT_LIMIT = 3000;
+    const blockText =
+      text.length > CONTEXT_TEXT_LIMIT
+        ? text.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
+        : text;
+    await this.postEphemeralBlocks(conversationId, userId, text, [
+      { type: "context", elements: [{ type: "mrkdwn", text: blockText }] },
+    ]);
   }
 
   async openDirectMessage(userId: string): Promise<string> {
@@ -596,10 +642,31 @@ export class SlackBot implements Bot {
       this.logBotResponse(conversationId, responseText, messageTs);
     };
 
+    const respondMuted = async (responseText: string) => {
+      const CONTEXT_TEXT_LIMIT = 3000;
+      const blockText =
+        responseText.length > CONTEXT_TEXT_LIMIT
+          ? responseText.substring(0, CONTEXT_TEXT_LIMIT - 20) + "\n_(truncated)_"
+          : responseText;
+      const blocks = [{ type: "context", elements: [{ type: "mrkdwn", text: blockText }] }];
+      if (options.ephemeralChannelId) {
+        await this.postEphemeralBlocks(options.ephemeralChannelId, userId, responseText, blocks);
+        return;
+      }
+      const messageTs = await this.postMessageBlocks(conversationId, responseText, blocks);
+      this.logBotResponse(conversationId, responseText, messageTs);
+    };
+
     const responseCtx: ChatResponseContext = {
       respond,
       replaceResponse: respond,
-      respondDiagnostic: respond,
+      respondDiagnostic: async (responseText: string, options?: { style?: "muted" | "error" }) => {
+        if (options?.style === "muted") {
+          await respondMuted(responseText);
+          return;
+        }
+        await respond(options?.style === "error" ? `_${responseText}_` : responseText);
+      },
       respondToolResult: async (result: ChatToolResult) => {
         const duration = (result.durationMs / 1000).toFixed(1);
         await respond(

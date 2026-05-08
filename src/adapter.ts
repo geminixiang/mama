@@ -94,6 +94,12 @@ export interface Bot {
    * any other private channel. Absent on platforms with no private delivery.
    */
   postPrivate?(conversationId: string, userId: string, text: string): Promise<void>;
+  postPrivateDiagnostic?(
+    conversationId: string,
+    userId: string,
+    text: string,
+    options?: { style?: "muted" | "error" },
+  ): Promise<void>;
 }
 
 /** Pre-created platform adapters passed to the handler */
