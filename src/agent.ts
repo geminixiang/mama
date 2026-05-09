@@ -38,6 +38,7 @@ import {
   type ResolvedSessionScope,
   type ThreadRootMessage,
 } from "./session-store.js";
+import { shouldSurfaceToolDiagnostic } from "./tool-diagnostics.js";
 import { createMamaTools } from "./tools/index.js";
 import * as Sentry from "@sentry/node";
 
@@ -400,9 +401,9 @@ function truncate(text: string, maxLen: number): string {
   return `${text.substring(0, maxLen - 3)}...`;
 }
 
-// Tools whose output is interesting in the structured session log but too noisy
-// to surface as a per-tool diagnostic to the user.
-const QUIET_TOOLS = new Set(["read", "write", "edit"]);
+function initialWorkspacePath(sandboxConfig: SandboxConfig, hostWorkspacePath: string): string {
+  return sandboxConfig.type === "host" ? hostWorkspacePath : "/workspace";
+}
 
 // Cap raw tool output before handing it to adapters. Bash output can be MB; without
 // this each adapter's splitter would fan it out into many sequential platform posts.
@@ -493,7 +494,7 @@ export async function createRunner(
   };
   const workspaceBase = join(conversationDir, "..");
   const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
-  let workspacePath = getWorkspacePath();
+  let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
 
   // Create tools (per-runner, with per-runner upload function setter)
   const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
@@ -530,7 +531,7 @@ export async function createRunner(
   const isThread = sessionKey.includes(":");
   const rootTs = extractSessionSuffix(sessionKey);
   const { sessionDir, contextFile, threadRootMessage } = sessionScope;
-  const sessionManager = openManagedSession(contextFile, sessionDir, conversationDir);
+  const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
   const threadSessionName = buildThreadSessionName(threadRootMessage);
   if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
     sessionManager.appendSessionInfo(threadSessionName);
@@ -602,7 +603,7 @@ export async function createRunner(
     agent,
     sessionManager,
     settingsManager,
-    cwd: workspaceDir,
+    cwd: workspacePath,
     modelRegistry,
     resourceLoader,
     baseToolsOverride,
@@ -697,7 +698,7 @@ export async function createRunner(
         log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
       }
 
-      if (!QUIET_TOOLS.has(agentEvent.toolName)) {
+      if (shouldSurfaceToolDiagnostic(agentEvent.toolName)) {
         const toolResult: ChatToolResult = {
           toolName: agentEvent.toolName,
           label: pending?.args ? (pending.args as { label?: string }).label : undefined,

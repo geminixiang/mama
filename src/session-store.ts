@@ -27,6 +27,7 @@ export interface ResolvedSessionScope {
 export interface ResolveGenericSessionScopeOptions {
   conversationDir: string;
   sessionKey: string;
+  cwd?: string;
 }
 
 interface SessionMessageEntryLike {
@@ -183,12 +184,13 @@ export function resolveGenericSessionScope(
   options: ResolveGenericSessionScopeOptions,
 ): ResolvedSessionScope {
   const { conversationDir, sessionKey } = options;
+  const cwd = options.cwd ?? conversationDir;
   const sessionDir = getChannelSessionDir(conversationDir);
 
   if (!sessionKey.includes(":")) {
     return {
       sessionDir,
-      contextFile: resolveManagedSessionFile(sessionDir, conversationDir),
+      contextFile: resolveManagedSessionFile(sessionDir, cwd),
       threadRootMessage: null,
     };
   }
@@ -197,8 +199,7 @@ export function resolveGenericSessionScope(
   return {
     sessionDir,
     contextFile:
-      tryResolveThreadSession(threadFile) ??
-      createManagedSessionFileAtPath(threadFile, conversationDir),
+      tryResolveThreadSession(threadFile) ?? createManagedSessionFileAtPath(threadFile, cwd),
     threadRootMessage: null,
   };
 }

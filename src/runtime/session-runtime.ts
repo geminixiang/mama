@@ -67,6 +67,13 @@ export interface SessionRuntime extends BotHandler {
 const MAX_SESSIONS = 500;
 const IDLE_TIMEOUT_MS = 3_600_000;
 
+function runtimeCwdForSandbox(
+  type: SessionRuntimeOptions["sandbox"]["type"],
+  hostCwd: string,
+): string {
+  return type === "host" ? hostCwd : "/workspace";
+}
+
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntime {
   return new MamaSessionRuntime(options);
 }
@@ -133,13 +140,11 @@ class MamaSessionRuntime implements SessionRuntime {
     }
 
     const conversationDir = join(this.options.workingDir, conversationId);
+    const runtimeCwd = runtimeCwdForSandbox(this.options.sandbox.type, conversationDir);
     if (sessionKey.includes(":")) {
-      createManagedSessionFileAtPath(
-        getThreadSessionFile(conversationDir, sessionKey),
-        conversationDir,
-      );
+      createManagedSessionFileAtPath(getThreadSessionFile(conversationDir, sessionKey), runtimeCwd);
     } else {
-      createManagedSessionFile(getChannelSessionDir(conversationDir), conversationDir);
+      createManagedSessionFile(getChannelSessionDir(conversationDir), runtimeCwd);
     }
 
     this.conversationStates.delete(sessionKey);
@@ -365,7 +370,13 @@ class MamaSessionRuntime implements SessionRuntime {
     }
 
     const conversationDir = join(this.options.workingDir, conversationId);
-    const sessionScope = await this.resolveSessionScope(platformName, conversationDir, sessionKey);
+    const runtimeCwd = runtimeCwdForSandbox(this.options.sandbox.type, conversationDir);
+    const sessionScope = await this.resolveSessionScope(
+      platformName,
+      conversationDir,
+      sessionKey,
+      runtimeCwd,
+    );
     const state: ConversationState = {
       running: false,
       runner: await createRunner(
@@ -405,11 +416,12 @@ class MamaSessionRuntime implements SessionRuntime {
     platformName: string,
     conversationDir: string,
     sessionKey: string,
+    cwd: string,
   ): Promise<ResolvedSessionScope> {
     if (platformName === "slack") {
-      return resolveSlackSessionScope({ conversationDir, sessionKey });
+      return resolveSlackSessionScope({ conversationDir, sessionKey, cwd });
     }
-    return resolveGenericSessionScope({ conversationDir, sessionKey });
+    return resolveGenericSessionScope({ conversationDir, sessionKey, cwd });
   }
 
   private evictIdleSessions(): void {

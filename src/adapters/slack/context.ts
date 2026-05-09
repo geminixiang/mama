@@ -221,12 +221,6 @@ export function createSlackAdapters(
     },
 
     respondToolResult: async (result: ChatToolResult) => {
-      if (result.toolName === "bash") {
-        // Temporarily hide bash tool diagnostics from Slack replies.
-        // await responseCtx.respondDiagnostic(formatSlackToolResult(result));
-        return;
-      }
-
       await responseCtx.respondDiagnostic(formatSlackToolResult(result));
     },
 

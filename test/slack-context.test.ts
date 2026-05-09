@@ -229,19 +229,23 @@ describe("respondDiagnostic()", () => {
     );
   });
 
-  test("respondToolResult hides bash diagnostics in Slack replies", async () => {
+  test("respondToolResult formats tool diagnostics; quiet-tool filtering is runner-level", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respondToolResult({
-      toolName: "bash",
+      toolName: "custom-tool",
       label: "list files",
       args: { label: "list files", command: "ls" },
       result: "ok",
       isError: false,
       durationMs: 1200,
     });
-    expect(bot.postInThread).not.toHaveBeenCalled();
+    expect(bot.postInThread).toHaveBeenCalledWith(
+      "C001",
+      "1000.0001",
+      expect.stringContaining("custom-tool"),
+    );
   });
 
   test("synthetic event diagnostics anchor to the bot message after respond", async () => {

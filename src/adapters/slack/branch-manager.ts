@@ -29,6 +29,7 @@ export type SlackResolvedSessionScope = ResolvedSessionScope;
 export interface ResolveSlackSessionScopeOptions {
   conversationDir: string;
   sessionKey: string;
+  cwd?: string;
   sleep?: (ms: number) => Promise<void>;
   retryCount?: number;
   retryDelayMs?: number;
@@ -73,19 +74,19 @@ async function forkThreadSessionFromRootWithRetry(
 
 function createThreadSessionFromRootOrEmpty(
   threadFile: string,
-  conversationDir: string,
+  cwd: string,
   threadRootMessage: ThreadRootMessage | null,
   parentSession?: string,
 ): string {
   if (threadRootMessage) {
     return createThreadSessionFileFromRootMessage(
       threadFile,
-      conversationDir,
+      cwd,
       threadRootMessage,
       parentSession,
     );
   }
-  return createManagedSessionFileAtPath(threadFile, conversationDir);
+  return createManagedSessionFileAtPath(threadFile, cwd);
 }
 
 export function hasMaterializedSlackBranchSession(
@@ -131,12 +132,13 @@ export async function resolveSlackSessionScope(
     retryCount = 5,
     retryDelayMs = 100,
   } = options;
+  const cwd = options.cwd ?? conversationDir;
 
   const sessionDir = getChannelSessionDir(conversationDir);
   if (!sessionKey.includes(":")) {
     return {
       sessionDir,
-      contextFile: resolveManagedSessionFile(sessionDir, conversationDir),
+      contextFile: resolveManagedSessionFile(sessionDir, cwd),
       threadRootMessage: null,
     };
   }
@@ -154,11 +156,7 @@ export async function resolveSlackSessionScope(
   if (!conversationSource) {
     return {
       sessionDir,
-      contextFile: createThreadSessionFromRootOrEmpty(
-        threadFile,
-        conversationDir,
-        threadRootMessage,
-      ),
+      contextFile: createThreadSessionFromRootOrEmpty(threadFile, cwd, threadRootMessage),
       threadRootMessage,
     };
   }
@@ -168,20 +166,20 @@ export async function resolveSlackSessionScope(
       ? await forkThreadSessionFromRootWithRetry(
           conversationSource,
           threadFile,
-          conversationDir,
+          cwd,
           threadRootLogMessage!,
           sleep,
           retryCount,
           retryDelayMs,
         )
-      : forkThreadSessionFile(conversationSource, threadFile, conversationDir);
+      : forkThreadSessionFile(conversationSource, threadFile, cwd);
     return { sessionDir, contextFile, threadRootMessage };
   } catch {
     return {
       sessionDir,
       contextFile: createThreadSessionFromRootOrEmpty(
         threadFile,
-        conversationDir,
+        cwd,
         threadRootMessage,
         conversationSource,
       ),
