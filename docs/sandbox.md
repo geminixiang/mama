@@ -14,6 +14,8 @@
 
 `docker:*` 不是可用模式；請改用 `container:*` 或 `image:*`。
 
+`image:*` 可搭配 `sandbox.credentials.mode = "agent-vault"` 使用 Infisical Agent Vault transparent proxy，讓 HTTP/API secret 不直接進入 sandbox；詳見 [agent-vault.md](./agent-vault.md)。
+
 ---
 
 ## State directory 與 vault 位置

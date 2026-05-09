@@ -26,6 +26,7 @@ import { loadAgentConfigForConversation } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
+import type { SandboxCredentialRuntime } from "./agent-vault.js";
 import type { UserBindingStore } from "./bindings.js";
 import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
@@ -455,6 +456,7 @@ export async function createRunner(
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
+  sandboxCredentials?: SandboxCredentialRuntime,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfigForConversation(conversationDir);
 
@@ -472,7 +474,13 @@ export async function createRunner(
       sandboxConfig.type === "image" ||
       sandboxConfig.type === "cloudflare" ||
       sandboxConfig.type === "firecracker")
-      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
+      ? new ActorExecutionResolver(
+          sandboxConfig,
+          vaultManager,
+          provisioner,
+          workspaceDir,
+          sandboxCredentials,
+        )
       : undefined;
   // activeExecutor is replaced at the start of each run() call when executionResolver
   // is present, so the stable `executor` wrapper always delegates to the latest resolved value.

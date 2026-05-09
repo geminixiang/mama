@@ -55,6 +55,7 @@ export interface DockerContainerManagerOptions {
   limits?: ResourceLimits;
   boostLimits?: ResourceLimits;
   execFileImpl?: ExecFileAsync;
+  addHostGateway?: boolean;
 }
 
 export class DockerContainerManager {
@@ -69,6 +70,7 @@ export class DockerContainerManager {
   private readonly boostLimits?: ResourceLimits;
   private readonly boostedKeys = new Set<string>();
   private readonly execFileImpl: ExecFileAsync;
+  private readonly addHostGateway: boolean;
 
   constructor(
     private readonly image: string,
@@ -76,10 +78,12 @@ export class DockerContainerManager {
   ) {
     if (typeof options === "function") {
       this.execFileImpl = options;
+      this.addHostGateway = false;
     } else {
       this.limits = options.limits;
       this.boostLimits = options.boostLimits;
       this.execFileImpl = options.execFileImpl ?? execFileAsync;
+      this.addHostGateway = options.addHostGateway ?? false;
     }
   }
 
@@ -313,12 +317,17 @@ export class DockerContainerManager {
       "--network",
       networkName,
       ...labels,
+      ...this.hostGatewayArgs(),
       ...this.resourceLimitArgs(this.effectiveLimits(containerKey)),
       ...this.mountArgs(mounts),
       this.image,
       "sleep",
       "infinity",
     ]);
+  }
+
+  private hostGatewayArgs(): string[] {
+    return this.addHostGateway ? ["--add-host", "host.docker.internal:host-gateway"] : [];
   }
 
   private effectiveLimits(containerKey: string): ResourceLimits | undefined {

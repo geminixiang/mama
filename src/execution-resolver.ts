@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
+import type { SandboxCredentialRuntime } from "./agent-vault.js";
 import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { ResolvedVault, VaultManager } from "./vault.js";
@@ -19,6 +20,7 @@ export class ActorExecutionResolver {
     private vaultManager: VaultManager,
     private provisioner?: DockerContainerManager,
     private workspaceDir?: string,
+    private sandboxCredentials?: SandboxCredentialRuntime,
   ) {}
 
   refresh(): void {
@@ -30,8 +32,7 @@ export class ActorExecutionResolver {
 
     const vault = this.vaultManager.resolve(vaultKey);
     const config = this.resolveSandboxConfig(vaultKey);
-    const env =
-      config.type !== "host" && vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
+    const env = this.resolveEnv(config, vault);
     return createExecutor(
       config,
       env,
@@ -53,6 +54,15 @@ export class ActorExecutionResolver {
       type: "container",
       container: DockerContainerManager.containerName(vaultKey),
     };
+  }
+
+  private resolveEnv(
+    config: SandboxConfig,
+    vault?: ResolvedVault,
+  ): Record<string, string> | undefined {
+    if (config.type === "host") return undefined;
+    if (this.sandboxCredentials) return this.sandboxCredentials.env;
+    return vault && Object.keys(vault.env).length > 0 ? vault.env : undefined;
   }
 
   private getEnsureReady(
@@ -85,9 +95,15 @@ export class ActorExecutionResolver {
     for (const mount of this.buildImageSandboxMounts(conversationId)) {
       mountsByTarget.set(mount.target, mount);
     }
-    for (const mount of vault?.mounts ?? []) {
+    for (const mount of this.sandboxCredentials?.mounts ?? []) {
       if (!existsSync(mount.source)) continue;
       mountsByTarget.set(mount.target, { source: mount.source, target: mount.target });
+    }
+    if (!this.sandboxCredentials?.disableVaultInjection) {
+      for (const mount of vault?.mounts ?? []) {
+        if (!existsSync(mount.source)) continue;
+        mountsByTarget.set(mount.target, { source: mount.source, target: mount.target });
+      }
     }
     return [...mountsByTarget.values()];
   }

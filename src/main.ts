@@ -18,6 +18,7 @@ import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./login/portal.js";
 import { InMemoryLinkTokenStore } from "./login/session.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
+import { createAgentVaultRuntime } from "./agent-vault.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { createGlobalSettingsFile, loadAgentConfig, MissingGlobalSettingsError } from "./config.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
@@ -288,12 +289,20 @@ const sandboxBoostLimits =
   startupConfig.sandboxBoostCpus || startupConfig.sandboxBoostMemory
     ? { cpus: startupConfig.sandboxBoostCpus, memory: startupConfig.sandboxBoostMemory }
     : undefined;
+if (startupConfig.agentVault.mode === "agent-vault" && sandbox.type !== "image") {
+  console.error(
+    'Error: sandbox.credentials.mode="agent-vault" currently requires --sandbox=image:<image>',
+  );
+  process.exit(1);
+}
+const sandboxCredentials = await createAgentVaultRuntime(startupConfig.agentVault);
 
 const provisioner =
   sandbox.type === "image"
     ? new DockerContainerManager(sandbox.image, {
         limits: sandboxLimits,
         boostLimits: sandboxBoostLimits,
+        addHostGateway: !!sandboxCredentials,
       })
     : undefined;
 
@@ -334,6 +343,7 @@ const handler = createSessionRuntime({
   linkTokenStore,
   sessionViewTokenStore,
   portalBaseUrl: portalBaseUrl(),
+  sandboxCredentials,
 });
 
 // ============================================================================

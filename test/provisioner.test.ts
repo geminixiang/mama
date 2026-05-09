@@ -253,6 +253,41 @@ describe("DockerContainerManager", () => {
     ]);
   });
 
+  test("adds host-gateway mapping when requested", async () => {
+    const execMock = vi
+      .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
+      .mockRejectedValueOnce(new Error("No such object"))
+      .mockRejectedValueOnce(new Error("No such network"))
+      .mockResolvedValueOnce({ stdout: "network-id\n" })
+      .mockResolvedValueOnce({ stdout: "new-container-id\n" });
+    const manager = new DockerContainerManager("ubuntu:24.04", {
+      execFileImpl: execMock as any,
+      addHostGateway: true,
+    });
+
+    await manager.provision("alice");
+
+    expect(execMock).toHaveBeenNthCalledWith(4, "docker", [
+      "run",
+      "-d",
+      "--name",
+      "mama-sandbox-alice",
+      "--network",
+      "mama-sandbox-net-alice",
+      "--label",
+      "mama.managed=true",
+      "--label",
+      "mama.sandbox=image",
+      "--label",
+      "mama.vault-id=alice",
+      "--add-host",
+      "host.docker.internal:host-gateway",
+      "ubuntu:24.04",
+      "sleep",
+      "infinity",
+    ]);
+  });
+
   test("stopIdle stops only containers idle longer than threshold", async () => {
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()

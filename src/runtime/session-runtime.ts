@@ -378,6 +378,7 @@ class MamaSessionRuntime implements SessionRuntime {
         this.options.vaultManager,
         this.options.bindingStore,
         this.options.provisioner,
+        this.options.sandboxCredentials,
       ),
       stopRequested: false,
       lastAccessedAt: Date.now(),

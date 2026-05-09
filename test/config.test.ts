@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
@@ -73,6 +73,35 @@ describe("loadAgentConfig", () => {
     expect(config.sandboxMemory).toBe("512m");
     expect(config.sandboxBoostCpus).toBe("2");
     expect(config.sandboxBoostMemory).toBe("4g");
+  });
+
+  test("reads agent-vault credential settings", () => {
+    writeFileSync(
+      join(stateDir, "settings.json"),
+      JSON.stringify({
+        llm: { provider: "anthropic", model: "claude-sonnet-4-5", thinkingLevel: "off" },
+        log: { format: "console", level: "info" },
+        sandbox: {
+          credentials: {
+            mode: "agent-vault",
+            address: "http://127.0.0.1:14321",
+            vault: "mama",
+            ttlSeconds: 600,
+            caPath: "~/custom-agent-vault-ca.pem",
+            proxyHost: "host.docker.internal",
+            proxyPort: 14322,
+            ghTokenPlaceholder: "placeholder",
+          },
+        },
+      }),
+      "utf-8",
+    );
+    const config = loadAgentConfig();
+    expect(config.agentVault.mode).toBe("agent-vault");
+    expect(config.agentVault.vault).toBe("mama");
+    expect(config.agentVault.ttlSeconds).toBe(600);
+    expect(config.agentVault.caPath).toBe(join(homedir(), "custom-agent-vault-ca.pem"));
+    expect(config.agentVault.ghTokenPlaceholder).toBe("placeholder");
   });
 
   test("sandboxCpus and sandboxMemory are undefined when omitted from settings", () => {

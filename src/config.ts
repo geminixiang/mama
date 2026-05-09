@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { existsSync, mkdirSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { defaultAgentVaultConfig, type AgentVaultConfig } from "./agent-vault.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class MissingGlobalSettingsError extends Error {
@@ -22,6 +23,7 @@ export interface AgentConfig {
   sandboxMemory?: string;
   sandboxBoostCpus?: string;
   sandboxBoostMemory?: string;
+  agentVault: AgentVaultConfig;
 }
 
 const ONBOARD_SETTINGS: SettingsFileConfig = {
@@ -44,11 +46,27 @@ const ONBOARD_SETTINGS: SettingsFileConfig = {
   },
 };
 
+interface SettingsAgentVaultConfig {
+  mode?: "off" | "agent-vault";
+  address?: string;
+  vault?: string;
+  ttlSeconds?: number;
+  caPath?: string;
+  proxyHost?: string;
+  proxyPort?: number;
+  ghTokenPlaceholder?: string;
+}
+
 interface SettingsFileConfig {
   llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
   log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
   sentry?: { dsn?: string };
-  sandbox?: { cpus?: string; memory?: string; boost?: { cpus?: string; memory?: string } };
+  sandbox?: {
+    cpus?: string;
+    memory?: string;
+    boost?: { cpus?: string; memory?: string };
+    credentials?: SettingsAgentVaultConfig;
+  };
 }
 
 function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
@@ -77,6 +95,37 @@ function getStateDir(): string {
   return raw ? resolve(raw) : join(homedir(), ".mama");
 }
 
+function expandHomePath(path: string): string {
+  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : resolve(path);
+}
+
+function normalizeAgentVaultConfig(
+  credentials: SettingsAgentVaultConfig | undefined,
+): AgentVaultConfig | undefined {
+  if (!credentials) return undefined;
+  const defaults = defaultAgentVaultConfig(getStateDir());
+  const mode = credentials.mode ?? "off";
+  if (mode !== "off" && mode !== "agent-vault") {
+    throw new Error("Invalid global setting: sandbox.credentials.mode");
+  }
+  if (credentials.ttlSeconds !== undefined && credentials.ttlSeconds < 300) {
+    throw new Error("Invalid global setting: sandbox.credentials.ttlSeconds must be >= 300");
+  }
+  return {
+    ...defaults,
+    mode,
+    ...(credentials.address !== undefined ? { address: credentials.address } : {}),
+    ...(credentials.vault !== undefined ? { vault: credentials.vault } : {}),
+    ...(credentials.ttlSeconds !== undefined ? { ttlSeconds: credentials.ttlSeconds } : {}),
+    ...(credentials.caPath !== undefined ? { caPath: expandHomePath(credentials.caPath) } : {}),
+    ...(credentials.proxyHost !== undefined ? { proxyHost: credentials.proxyHost } : {}),
+    ...(credentials.proxyPort !== undefined ? { proxyPort: credentials.proxyPort } : {}),
+    ...(credentials.ghTokenPlaceholder !== undefined
+      ? { ghTokenPlaceholder: credentials.ghTokenPlaceholder }
+      : {}),
+  };
+}
+
 function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfig> {
   return {
     ...(config.llm?.provider !== undefined ? { provider: config.llm.provider } : {}),
@@ -92,6 +141,9 @@ function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfi
       : {}),
     ...(config.sandbox?.boost?.memory !== undefined
       ? { sandboxBoostMemory: config.sandbox.boost.memory }
+      : {}),
+    ...(config.sandbox?.credentials !== undefined
+      ? { agentVault: normalizeAgentVaultConfig(config.sandbox.credentials) }
       : {}),
   };
 }
@@ -148,6 +200,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const sandboxMemory = fromFile.sandboxMemory;
   const sandboxBoostCpus = fromFile.sandboxBoostCpus;
   const sandboxBoostMemory = fromFile.sandboxBoostMemory;
+  const agentVault = fromFile.agentVault ?? defaultAgentVaultConfig(getStateDir());
 
   return {
     provider,
@@ -160,6 +213,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
     sandboxMemory,
     sandboxBoostCpus,
     sandboxBoostMemory,
+    agentVault,
   };
 }
 
@@ -319,6 +373,7 @@ function patchSettingsConfig(
             },
           }
         : {}),
+      ...(config.agentVault !== undefined ? { credentials: config.agentVault } : {}),
     },
   };
   return compactSettingsConfig(patched);
