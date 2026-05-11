@@ -1,7 +1,10 @@
 import { createHash, randomBytes } from "crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "http";
 import { resolveLinkBaseUrl } from "../config.js";
-import { handleSessionViewRequest } from "../session-view/portal.js";
+import {
+  handleSessionViewRequest,
+  type SessionViewInteractiveOptions,
+} from "../session-view/portal.js";
 import type { InMemorySessionViewTokenStore } from "../session-view/store.js";
 import type { InMemoryLinkTokenStore } from "./session.js";
 import {
@@ -248,6 +251,7 @@ export function startLinkServer(
   vaultManager: VaultManager,
   notify: NotifyFn,
   sessionViewTokenStore?: InMemorySessionViewTokenStore,
+  sessionViewInteractive?: SessionViewInteractiveOptions,
 ): Server {
   const oauthStates = new Map<string, PendingOAuthState>();
 
@@ -261,7 +265,9 @@ export function startLinkServer(
         return;
       }
 
-      if (await handleSessionViewRequest(req, res, url, sessionViewTokenStore)) {
+      if (
+        await handleSessionViewRequest(req, res, url, sessionViewTokenStore, sessionViewInteractive)
+      ) {
         return;
       }
 

@@ -80,6 +80,7 @@ export function createSessionRuntime(options: SessionRuntimeOptions): SessionRun
 
 class MamaSessionRuntime implements SessionRuntime {
   private readonly conversationStates = new Map<string, ConversationState>();
+  private readonly sessionQueues = new Map<string, Promise<void>>();
   private readonly inFlightRuns = new Set<Promise<void>>();
   private readonly commandRegistry: CommandRegistry;
   private isShuttingDown = false;
@@ -159,7 +160,19 @@ class MamaSessionRuntime implements SessionRuntime {
     adapters: BotAdapters,
     isEvent?: boolean,
   ): Promise<void> {
-    await this.runSession({ event, bot, adapters, isEvent });
+    const sessionKey = event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`;
+    const previous = this.sessionQueues.get(sessionKey) ?? Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(() => this.runSession({ event, bot, adapters, isEvent }));
+    this.sessionQueues.set(sessionKey, next);
+    try {
+      await next;
+    } finally {
+      if (this.sessionQueues.get(sessionKey) === next) {
+        this.sessionQueues.delete(sessionKey);
+      }
+    }
   }
 
   async runSession({ event, bot, adapters, isEvent }: RunSessionOptions): Promise<void> {

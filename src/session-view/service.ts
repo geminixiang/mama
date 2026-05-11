@@ -371,6 +371,7 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
     cancelled?: boolean;
     truncated?: boolean;
     stopReason?: string;
+    errorMessage?: string;
     customType?: string;
     summary?: string;
   };
@@ -385,7 +386,9 @@ function mapMessageEntry(entry: SessionMessageEntry): SessionViewItem {
         entryId: entry.id,
       };
     case "assistant": {
-      const assistantBody = assistantContentToText(message.content);
+      const assistantBody =
+        assistantContentToText(message.content) ||
+        (message.errorMessage ? `_${message.errorMessage}_` : "");
       const metaParts = [message.provider, message.model, message.stopReason].filter(Boolean);
       return {
         kind: "assistant",

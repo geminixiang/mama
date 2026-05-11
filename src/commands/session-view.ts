@@ -66,12 +66,18 @@ export class SessionViewCommandHandler implements CommandHandler {
       return true;
     }
 
+    const platformUser = context.bot
+      .getPlatformInfo()
+      .users.find((user) => user.id === context.platformUserId);
+    const platformUserName = platformUser?.userName || platformUser?.displayName;
+
     const token = context.services.sessionViewTokenStore.create(
       context.platform,
       context.platformUserId,
       context.conversationId,
       context.sessionKey,
       sessionFile,
+      platformUserName,
     );
 
     await sendSessionViewReply([

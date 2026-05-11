@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "http";
+import { basename } from "path";
+import MarkdownIt from "markdown-it";
+import type { Bot, BotAdapters, BotEvent, BotHandler, ChatResponseContext } from "../adapter.js";
 import * as log from "../log.js";
+import { inferConversationKind } from "../session-policy.js";
 import {
   loadSessionViewModel,
   resolveRequestedSessionFile,
@@ -8,12 +12,86 @@ import {
 } from "./service.js";
 import type { InMemorySessionViewTokenStore } from "./store.js";
 
+const markdown = new MarkdownIt({
+  html: false,
+  linkify: true,
+  breaks: true,
+});
+
+const defaultLinkOpen = markdown.renderer.rules.link_open;
+type LinkOpenRule = NonNullable<typeof defaultLinkOpen>;
+markdown.renderer.rules.link_open = (...args: Parameters<LinkOpenRule>) => {
+  const [tokens, idx, options, env, self] = args;
+  const token = tokens[idx];
+  token.attrSet("target", "_blank");
+  token.attrSet("rel", "noreferrer noopener");
+  return defaultLinkOpen
+    ? defaultLinkOpen(tokens, idx, options, env, self)
+    : self.renderToken(tokens, idx, options);
+};
+
+type SessionStreamEvent =
+  | { type: "status"; running: boolean }
+  | { type: "user"; html: string }
+  | { type: "assistant"; html: string }
+  | { type: "assistant_remove" }
+  | { type: "tool"; html: string }
+  | { type: "system"; html: string }
+  | {
+      type: "refresh";
+      timelineHtml: string;
+      updatedAt: string;
+      entryCount: number;
+      running: boolean;
+    }
+  | { type: "error"; message: string };
+
+class SessionViewStreamHub {
+  private listeners = new Map<string, Set<(event: SessionStreamEvent) => void>>();
+
+  subscribe(key: string, listener: (event: SessionStreamEvent) => void): () => void {
+    const set = this.listeners.get(key) ?? new Set<(event: SessionStreamEvent) => void>();
+    set.add(listener);
+    this.listeners.set(key, set);
+    return () => {
+      const current = this.listeners.get(key);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) this.listeners.delete(key);
+    };
+  }
+
+  publish(key: string, event: SessionStreamEvent): void {
+    const set = this.listeners.get(key);
+    if (!set) return;
+    for (const listener of set) listener(event);
+  }
+}
+
+const sessionViewStreamHub = new SessionViewStreamHub();
+
+export interface SessionViewInteractiveOptions {
+  handler: BotHandler;
+  botsByPlatform: Partial<Record<string, Bot>>;
+}
+
 export async function handleSessionViewRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
   sessionViewTokenStore?: InMemorySessionViewTokenStore,
+  interactive?: SessionViewInteractiveOptions,
 ): Promise<boolean> {
+  if (req.method === "POST" && url.pathname === "/session/message") {
+    await handleSessionMessageRequest(req, res, sessionViewTokenStore, interactive);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/session/stream") {
+    await handleSessionStreamRequest(req, res, url, sessionViewTokenStore, interactive);
+    return true;
+  }
+
   if (req.method !== "GET" || url.pathname !== "/session") {
     return false;
   }
@@ -59,11 +137,22 @@ export async function handleSessionViewRequest(
 
   try {
     const model = loadSessionViewModel(targetSessionFile);
+    const displayedSessionKey = resolveDisplayedSessionKey(entry, targetSessionFile);
+    const isRunning = interactive?.handler.isRunning(displayedSessionKey) ?? false;
     res.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
     });
-    res.end(renderSessionPage(model, entry.token, entry.expiresAt));
+    res.end(
+      renderSessionPage(
+        model,
+        entry.token,
+        entry.expiresAt,
+        isRunning,
+        displayedSessionKey,
+        entry.conversationId,
+      ),
+    );
   } catch (error) {
     log.logWarning(
       `[${entry.conversationId}] Failed to render session ${entry.sessionFile}`,
@@ -74,6 +163,34 @@ export async function handleSessionViewRequest(
   }
 
   return true;
+}
+
+function resolveDisplayedSessionKey(
+  entry: { platform: string; conversationId: string; sessionKey: string },
+  sessionFile: string,
+): string {
+  if (entry.platform === "slack") {
+    const fileName = basename(sessionFile, ".jsonl");
+    if (/^\d+\.\d+$/.test(fileName)) {
+      return `${entry.conversationId}:${fileName}`;
+    }
+    return entry.conversationId;
+  }
+  return entry.sessionKey;
+}
+
+function sessionStreamKey(entry: {
+  platform: string;
+  conversationId: string;
+  sessionKey: string;
+}): string {
+  return `${entry.platform}:${entry.conversationId}:${entry.sessionKey}`;
+}
+
+function renderTimelineItems(items: SessionViewItem[], token: string): string {
+  return items.length > 0
+    ? items.map((item) => renderItem(item, token)).join("\n")
+    : `<div class="system-event"><span class="event-dot"></span><span class="event-text">No messages yet — send one to the bot, then refresh.</span></div>`;
 }
 
 function renderSessionPage(
@@ -90,11 +207,11 @@ function renderSessionPage(
   },
   token: string,
   expiresAt: number,
+  isRunning: boolean,
+  displayedSessionKey: string,
+  conversationId: string,
 ): string {
-  const items =
-    model.items.length > 0
-      ? model.items.map((item) => renderItem(item, token)).join("\n")
-      : `<div class="system-event"><span class="event-dot"></span><span class="event-text">No messages yet — send one to the bot, then refresh.</span></div>`;
+  const items = renderTimelineItems(model.items, token);
 
   const relatedSections = model.parent
     ? `<section class="related-card stack">
@@ -110,34 +227,52 @@ function renderSessionPage(
         <div class="hero-title-group">
           <span class="hero-wordmark">mama</span>
           <h1 class="hero-title">${esc(model.title)}</h1>
+          <div class="hero-meta-line">
+            <span>Created ${esc(formatDate(model.createdAt))}</span>
+            <span>Updated <strong data-session-updated>${esc(formatDate(model.updatedAt))}</strong></span>
+            <span><strong data-session-entries>${esc(String(model.entryCount))}</strong> entries</span>
+          </div>
         </div>
-        <button class="refresh-btn" onclick="window.location.reload()">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M12.5 2.5A6 6 0 1 0 13 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M10 2.5h2.5V5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          Refresh
-        </button>
+        <div class="hero-side">
+          <span class="hero-badge hero-badge-status${isRunning ? " is-running" : ""}"><span class="hero-badge-dot"></span><strong data-session-status>${esc(isRunning ? "Running" : "Idle")}</strong></span>
+          <span class="hero-badge">${esc(displayedSessionKey === conversationId ? "Channel" : "Thread")}</span>
+        </div>
       </div>
-      <div class="stat-row">
-        ${renderSummaryItem("ID", model.sessionId.slice(0, 8))}
-        ${renderSummaryItem("File", model.fileName)}
-        ${renderSummaryItem("Created", formatDate(model.createdAt))}
-        ${renderSummaryItem("Updated", formatDate(model.updatedAt))}
-        ${renderSummaryItem("Entries", String(model.entryCount))}
-        ${renderSummaryItem("Expires", formatDate(new Date(expiresAt).toISOString()))}
+      <div class="hero-detail-row">
+        <span class="hero-detail"><span class="hero-detail-label">Session</span><code>${esc(model.sessionId.slice(0, 8))}</code></span>
+        <span class="hero-detail"><span class="hero-detail-label">File</span><code>${esc(model.fileName)}</code></span>
+        <span class="hero-detail"><span class="hero-detail-label">Expires</span><span>${esc(formatDate(new Date(expiresAt).toISOString()))}</span></span>
       </div>
     </header>
 
     ${relatedSections}
 
     <main class="timeline-shell">
-      <div class="timeline-list">
+      <div class="timeline-list" data-timeline-list>
         ${items}
       </div>
-    </main>`,
-  );
-}
+    </main>
 
-function renderSummaryItem(label: string, value: string): string {
-  return `<span class="stat-chip"><span class="stat-label">${esc(label)}</span><strong class="stat-value">${esc(value)}</strong></span>`;
+    <button class="jump-latest-btn" type="button" hidden data-jump-latest aria-label="Jump to latest" title="Jump to latest">↓</button>
+
+    <section class="composer-card">
+      <div class="composer-copy">
+        <p class="eyebrow">Interactive preview</p>
+        <p>Ask mama in this same session. Replies stay in Session View and do not post back to Slack.</p>
+      </div>
+      <form class="composer-form" data-session-composer>
+        <input type="hidden" name="token" value="${esc(token)}">
+        <input type="hidden" name="session" value="${esc(model.fileName)}">
+        <input type="hidden" name="sessionKey" value="${esc(displayedSessionKey)}">
+        <textarea name="text" rows="3" placeholder="Ask a follow-up…" required></textarea>
+        <div class="composer-actions">
+          <span class="composer-status" data-composer-status></span>
+          <button class="composer-send-btn" type="submit" aria-label="Send" title="Send">↑</button>
+        </div>
+      </form>
+    </section>`,
+    isRunning,
+  );
 }
 
 function renderRelationCard(relation: SessionViewRelation, token: string): string {
@@ -238,7 +373,7 @@ function renderItem(item: SessionViewItem, token?: string): string {
     const { username, threadTs, header, content } = parsed;
     const initial = username ? esc(username.slice(0, 2).toUpperCase()) : "U";
     const rawHeader = header ? `<div class="msg-raw-header">${esc(header)}</div>` : "";
-    const body = content ? `<pre class="msg-body">${esc(content)}</pre>` : "";
+    const body = content ? renderMarkdownBlock(content, "user") : "";
     const threadBadge = threadTs
       ? `<div class="thread-badge" title="Thread ${esc(threadTs)}">Thread · <code>${esc(threadTs)}</code></div>`
       : "";
@@ -256,7 +391,7 @@ function renderItem(item: SessionViewItem, token?: string): string {
   }
 
   // assistant
-  const body = item.body ? `<pre class="msg-body">${esc(item.body)}</pre>` : "";
+  const body = item.body ? renderMarkdownBlock(item.body, "assistant") : "";
   const forks = renderForkLinks(item.forks, token ?? "");
   return `<div class="msg-row msg-assistant">
   <div class="msg-avatar asst-avatar" aria-hidden="true">A</div>
@@ -268,6 +403,294 @@ function renderItem(item: SessionViewItem, token?: string): string {
 </div>`;
 }
 
+function renderMarkdownBlock(text: string, variant: "user" | "assistant"): string {
+  return `<div class="msg-body markdown-body markdown-${variant}">${markdown.render(text)}</div>`;
+}
+
+function renderLiveUserMessage(text: string, userName: string): string {
+  const initial = esc(userName.slice(0, 2).toUpperCase());
+  return `<div class="msg-row msg-user" data-live-item>
+  <div class="user-bubble">
+    ${renderMarkdownBlock(text, "user")}
+  </div>
+  <div class="msg-avatar user-avatar" title="${esc(userName)}">${initial}</div>
+</div>`;
+}
+
+function renderLiveAssistantMessage(text: string): string {
+  return `<div class="msg-row msg-assistant" data-live-assistant>
+  <div class="msg-avatar asst-avatar" aria-hidden="true">A</div>
+  <div class="asst-card">
+    ${renderMarkdownBlock(text, "assistant")}
+  </div>
+</div>`;
+}
+
+function renderLiveToolResult(result: {
+  toolName: string;
+  result: string;
+  isError: boolean;
+}): string {
+  const toneClass = result.isError ? " tone-err" : " tone-ok";
+  return `<div class="tool-block" data-live-item>
+  <div class="tool-header">
+    <span class="tool-icon"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M1.5 2L5 5.5 1.5 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M6 9h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span>
+    <span class="tool-name">${esc(result.toolName)}</span>
+  </div>
+  <pre class="tool-output${toneClass}">${esc(result.result)}</pre>
+</div>`;
+}
+
+function renderLiveSystemEvent(text: string, tone: "default" | "err" = "default"): string {
+  const cls = tone === "err" ? " system-event-err" : "";
+  return `<div class="system-event${cls}" data-live-item><span class="event-dot"></span><span class="event-text">${esc(text)}</span></div>`;
+}
+
+async function handleSessionStreamRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  sessionViewTokenStore?: InMemorySessionViewTokenStore,
+  interactive?: SessionViewInteractiveOptions,
+): Promise<void> {
+  const token = url.searchParams.get("token")?.trim() ?? "";
+  if (!token || !sessionViewTokenStore || !interactive) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Session stream unavailable");
+    return;
+  }
+
+  const entry = sessionViewTokenStore.peek(token);
+  if (!entry) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Invalid session token");
+    return;
+  }
+
+  const requestedSession = url.searchParams.get("session");
+  const targetSessionFile = resolveRequestedSessionFile(entry.sessionFile, requestedSession);
+  if (!targetSessionFile) {
+    res.writeHead(400, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("Invalid session file");
+    return;
+  }
+  const activeSessionKey = resolveDisplayedSessionKey(entry, targetSessionFile);
+  const streamKey = sessionStreamKey({ ...entry, sessionKey: activeSessionKey });
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    Connection: "keep-alive",
+  });
+  res.write(
+    `data: ${JSON.stringify({ type: "status", running: interactive.handler.isRunning(activeSessionKey) })}\n\n`,
+  );
+
+  const unsubscribe = sessionViewStreamHub.subscribe(streamKey, (event) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  });
+  const heartbeat = setInterval(() => {
+    res.write(": keep-alive\n\n");
+  }, 15000);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+  });
+}
+
+async function handleSessionMessageRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  sessionViewTokenStore?: InMemorySessionViewTokenStore,
+  interactive?: SessionViewInteractiveOptions,
+): Promise<void> {
+  if (!sessionViewTokenStore || !interactive) {
+    json(res, 503, { ok: false, error: "Session chat is not configured." });
+    return;
+  }
+
+  let body: { token?: string; text?: string; session?: string; sessionKey?: string };
+  try {
+    body = JSON.parse(await readRequestBody(req)) as {
+      token?: string;
+      text?: string;
+      session?: string;
+      sessionKey?: string;
+    };
+  } catch {
+    json(res, 400, { ok: false, error: "Invalid request body." });
+    return;
+  }
+
+  const token = body.token?.trim() ?? "";
+  const text = body.text?.trim() ?? "";
+  const requestedSession = body.session?.trim() || null;
+  const requestedSessionKey = body.sessionKey?.trim() || "";
+  if (!token || !text) {
+    json(res, 400, { ok: false, error: "Missing token or text." });
+    return;
+  }
+
+  const entry = sessionViewTokenStore.peek(token);
+  if (!entry) {
+    json(res, 400, { ok: false, error: "This session link is invalid or has expired." });
+    return;
+  }
+
+  const targetSessionFile = resolveRequestedSessionFile(entry.sessionFile, requestedSession);
+  if (!targetSessionFile) {
+    json(res, 400, { ok: false, error: "Invalid session file." });
+    return;
+  }
+  const activeSessionKey = resolveDisplayedSessionKey(entry, targetSessionFile);
+  if (requestedSessionKey && requestedSessionKey !== activeSessionKey) {
+    json(res, 400, { ok: false, error: "Session target mismatch." });
+    return;
+  }
+
+  const bot = interactive.botsByPlatform[entry.platform];
+  if (!bot) {
+    json(res, 503, { ok: false, error: `No bot configured for ${entry.platform}.` });
+    return;
+  }
+
+  const streamKey = sessionStreamKey({ ...entry, sessionKey: activeSessionKey });
+  const conversationKind = inferConversationKind(entry.platform, entry.conversationId);
+  const ts = (Date.now() / 1000).toFixed(6);
+  const platformInfo = bot.getPlatformInfo();
+  const platformUserName =
+    entry.platformUserName ||
+    platformInfo.users.find((user) => user.id === entry.platformUserId)?.userName ||
+    platformInfo.users.find((user) => user.id === entry.platformUserId)?.displayName ||
+    "unknown";
+  const responseCtx = createSessionViewResponseContext((event) => {
+    sessionViewStreamHub.publish(streamKey, event);
+  });
+  const event: BotEvent = {
+    type: "session_view",
+    conversationId: entry.conversationId,
+    conversationKind,
+    ts,
+    user: entry.platformUserId,
+    text,
+    attachments: [],
+    sessionKey: activeSessionKey,
+    ...(activeSessionKey.includes(":")
+      ? { thread_ts: activeSessionKey.split(":").slice(1).join(":") }
+      : {}),
+  };
+  const adapters: BotAdapters = {
+    message: {
+      id: ts,
+      sessionKey: activeSessionKey,
+      conversationKind,
+      userId: entry.platformUserId,
+      userName: platformUserName,
+      text,
+      attachments: [],
+      threadTs: event.thread_ts,
+    },
+    responseCtx,
+    platform: { ...platformInfo, diagnostics: { showUsageSummary: false } },
+  };
+
+  sessionViewStreamHub.publish(streamKey, { type: "status", running: true });
+  sessionViewStreamHub.publish(streamKey, {
+    type: "user",
+    html: renderLiveUserMessage(text, platformUserName),
+  });
+
+  void interactive.handler
+    .handleEvent(event, bot, adapters, false)
+    .then(() => {
+      if (!targetSessionFile) {
+        sessionViewStreamHub.publish(streamKey, { type: "status", running: false });
+        return;
+      }
+      const model = loadSessionViewModel(targetSessionFile);
+      sessionViewStreamHub.publish(streamKey, {
+        type: "refresh",
+        timelineHtml: renderTimelineItems(model.items, token),
+        updatedAt: formatDate(model.updatedAt),
+        entryCount: model.entryCount,
+        running: false,
+      });
+    })
+    .catch((error) => {
+      log.logWarning(
+        `[${entry.conversationId}] Session view message failed`,
+        error instanceof Error ? error.message : String(error),
+      );
+      sessionViewStreamHub.publish(streamKey, {
+        type: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      sessionViewStreamHub.publish(streamKey, { type: "status", running: false });
+    });
+
+  json(res, 202, { ok: true, accepted: true });
+}
+
+function createSessionViewResponseContext(
+  publish: (event: SessionStreamEvent) => void,
+): ChatResponseContext {
+  let accumulatedText = "";
+
+  return {
+    respond: async (text: string) => {
+      accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
+      publish({ type: "assistant", html: renderLiveAssistantMessage(accumulatedText) });
+    },
+    replaceResponse: async (text: string) => {
+      accumulatedText = text;
+      publish({ type: "assistant", html: renderLiveAssistantMessage(accumulatedText) });
+    },
+    respondDiagnostic: async (text: string, options?: { style?: "muted" | "error" }) => {
+      if (options?.style === "error") {
+        publish({ type: "system", html: renderLiveSystemEvent(text, "err") });
+      }
+    },
+    respondToolResult: async (result) => {
+      publish({ type: "tool", html: renderLiveToolResult(result) });
+    },
+    setTyping: async () => {
+      publish({ type: "status", running: true });
+    },
+    setWorking: async (working: boolean) => {
+      publish({ type: "status", running: working });
+    },
+    uploadFile: async () => {},
+    deleteResponse: async () => {
+      accumulatedText = "";
+      publish({ type: "assistant_remove" });
+    },
+  };
+}
+
+function readRequestBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
+      data += chunk;
+      if (data.length > 1024 * 1024) {
+        reject(new Error("Request body too large"));
+        req.destroy();
+      }
+    });
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
+function json(res: ServerResponse, status: number, body: unknown): void {
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  });
+  res.end(JSON.stringify(body));
+}
+
 function renderStatusPage(title: string, message: string): string {
   return renderHtmlDocument(
     title,
@@ -276,10 +699,11 @@ function renderStatusPage(title: string, message: string): string {
       <h1>${esc(title)}</h1>
       <div class="status err">${esc(message)}</div>
     </section>`,
+    false,
   );
 }
 
-function renderHtmlDocument(title: string, shellContent: string): string {
+function renderHtmlDocument(title: string, shellContent: string, isRunning: boolean): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -288,10 +712,154 @@ function renderHtmlDocument(title: string, shellContent: string): string {
   <title>${esc(title)}</title>
   <style>${styles}</style>
 </head>
-<body>
+<body data-session-running="${isRunning ? "true" : "false"}">
   <main class="shell">
     ${shellContent}
   </main>
+  <script>
+    const form = document.querySelector('[data-session-composer]');
+    const timelineList = document.querySelector('[data-timeline-list]');
+    const jumpLatestBtn = document.querySelector('[data-jump-latest]');
+    const statusEl = document.querySelector('[data-session-status]');
+    const updatedEl = document.querySelector('[data-session-updated]');
+    const entriesEl = document.querySelector('[data-session-entries]');
+    const composerStatus = form?.querySelector('[data-composer-status]');
+    const textarea = form?.querySelector('textarea[name="text"]');
+    const submitButton = form?.querySelector('button[type="submit"]');
+    let liveAssistant = null;
+    let running = document.body.dataset.sessionRunning === 'true';
+
+    const isNearBottom = () => window.innerHeight + window.scrollY >= document.body.offsetHeight - 120;
+    const scrollToLatest = (behavior = 'smooth') => window.scrollTo({ top: document.body.scrollHeight, behavior });
+    const toggleJumpButton = () => {
+      if (!jumpLatestBtn) return;
+      jumpLatestBtn.hidden = isNearBottom();
+    };
+    const maybeFollow = () => {
+      if (isNearBottom()) scrollToLatest('smooth');
+      else toggleJumpButton();
+    };
+    const canSubmit = () => Boolean(textarea && textarea.value.trim()) && !running;
+    const syncSubmitState = () => {
+      if (submitButton) submitButton.disabled = !canSubmit();
+    };
+    const setRunning = (value) => {
+      running = value;
+      document.body.dataset.sessionRunning = value ? 'true' : 'false';
+      if (statusEl) statusEl.textContent = value ? 'Running' : 'Idle';
+      syncSubmitState();
+      if (composerStatus && !value && composerStatus.textContent === 'Thinking…') {
+        composerStatus.textContent = '';
+      }
+    };
+
+    jumpLatestBtn?.addEventListener('click', () => {
+      scrollToLatest('smooth');
+      toggleJumpButton();
+    });
+    window.addEventListener('scroll', toggleJumpButton, { passive: true });
+
+    if (textarea) {
+      const resize = () => {
+        textarea.style.height = 'auto';
+        textarea.style.height = Math.min(textarea.scrollHeight, 240) + 'px';
+      };
+      textarea.addEventListener('input', () => {
+        resize();
+        syncSubmitState();
+      });
+      textarea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && !event.shiftKey) {
+          event.preventDefault();
+          if (!running) form?.requestSubmit();
+        }
+      });
+      resize();
+    }
+
+    setRunning(running);
+    syncSubmitState();
+
+    const streamUrl = form
+      ? '/session/stream?token=' + encodeURIComponent(form.token.value) + '&session=' + encodeURIComponent(form.session.value)
+      : null;
+    if (streamUrl) {
+      const source = new EventSource(streamUrl);
+      source.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        switch (payload.type) {
+          case 'status':
+            setRunning(Boolean(payload.running));
+            if (payload.running && composerStatus) composerStatus.textContent = 'Thinking…';
+            break;
+          case 'user':
+          case 'tool':
+          case 'system': {
+            timelineList?.insertAdjacentHTML('beforeend', payload.html);
+            maybeFollow();
+            break;
+          }
+          case 'assistant': {
+            if (!liveAssistant || !liveAssistant.isConnected) {
+              timelineList?.insertAdjacentHTML('beforeend', payload.html);
+              liveAssistant = timelineList?.querySelector('[data-live-assistant]:last-of-type') || null;
+            } else {
+              liveAssistant.outerHTML = payload.html;
+              liveAssistant = timelineList?.querySelector('[data-live-assistant]:last-of-type') || null;
+            }
+            maybeFollow();
+            break;
+          }
+          case 'assistant_remove':
+            if (liveAssistant?.isConnected) liveAssistant.remove();
+            liveAssistant = null;
+            break;
+          case 'refresh':
+            if (timelineList) timelineList.innerHTML = payload.timelineHtml;
+            liveAssistant = null;
+            if (updatedEl) updatedEl.textContent = payload.updatedAt;
+            if (entriesEl) entriesEl.textContent = String(payload.entryCount);
+            setRunning(Boolean(payload.running));
+            if (composerStatus) composerStatus.textContent = '';
+            maybeFollow();
+            break;
+          case 'error':
+            if (composerStatus) composerStatus.textContent = payload.message || 'Something went wrong';
+            setRunning(false);
+            break;
+        }
+      };
+    }
+
+    form?.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!textarea || !composerStatus) return;
+      const text = textarea.value.trim();
+      if (!text || running) return;
+      composerStatus.textContent = 'Sending…';
+      syncSubmitState();
+      try {
+        const response = await fetch('/session/message', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: form.token.value, session: form.session.value, sessionKey: form.sessionKey.value, text }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || 'Request failed');
+        textarea.value = '';
+        textarea.style.height = 'auto';
+        composerStatus.textContent = 'Thinking…';
+        setRunning(true);
+        syncSubmitState();
+        scrollToLatest('smooth');
+      } catch (err) {
+        composerStatus.textContent = err && err.message ? err.message : String(err);
+        submitButton.disabled = false;
+      }
+    });
+
+    toggleJumpButton();
+  </script>
 </body>
 </html>`;
 }
@@ -352,6 +920,7 @@ const styles = `
     display: flex;
     flex-direction: column;
     align-items: center;
+    overflow-x: hidden;
     background-color: var(--bg);
     background-image:
       radial-gradient(ellipse 80% 40% at 50% -10%, rgba(255,255,255,0.6) 0%, transparent 70%);
@@ -365,6 +934,7 @@ const styles = `
   .shell {
     width: 100%;
     max-width: 780px;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -384,8 +954,8 @@ const styles = `
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 16px;
-    margin-bottom: 20px;
+    gap: 20px;
+    margin-bottom: 18px;
   }
 
   .hero-wordmark {
@@ -406,61 +976,103 @@ const styles = `
     letter-spacing: -0.01em;
     color: var(--text);
     text-wrap: balance;
+    margin-bottom: 8px;
   }
 
-  .refresh-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-    padding: 7px 14px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: transparent;
-    color: var(--muted);
-    font: 500 0.8rem/1 'DM Sans', sans-serif;
-    cursor: pointer;
-    transition: color 120ms, border-color 120ms, background 120ms;
-    white-space: nowrap;
-  }
-
-  .refresh-btn:hover {
-    color: var(--text);
-    border-color: rgba(0,0,0,0.2);
-    background: rgba(0,0,0,0.03);
-  }
-
-  .refresh-btn:focus-visible {
-    outline: 2px solid var(--text);
-    outline-offset: 2px;
-  }
-
-  .stat-row {
+  .hero-meta-line {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 8px 14px;
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.4;
   }
 
-  .stat-chip {
+  .hero-meta-line strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .hero-side {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .hero-badge {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
+    gap: 8px;
+    padding: 6px 11px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    background: #f4f4f5;
-    font-size: 0.775rem;
+    background: rgba(255,255,255,0.7);
+    font-size: 0.78rem;
+    color: var(--muted);
     line-height: 1;
   }
 
-  .stat-label {
-    color: var(--muted);
-    font-weight: 500;
-  }
-
-  .stat-value {
+  .hero-badge strong {
     color: var(--text);
     font-weight: 600;
+  }
+
+  .hero-badge-status.is-running {
+    background: #fff7ed;
+    border-color: rgba(217, 119, 6, 0.18);
+    color: #9a3412;
+  }
+
+  .hero-badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #a1a1aa;
+    flex-shrink: 0;
+  }
+
+  .hero-badge-status.is-running .hero-badge-dot {
+    background: #d97706;
+    box-shadow: 0 0 0 4px rgba(217, 119, 6, 0.14);
+  }
+
+  .hero-detail-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(0, 0, 0, 0.06);
+  }
+
+  .hero-detail {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    padding: 6px 10px;
+    border-radius: 12px;
+    background: rgba(0, 0, 0, 0.025);
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  .hero-detail-label {
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-size: 0.68rem;
+    color: var(--subtle);
+  }
+
+  .hero-detail code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 0.74rem;
+    color: var(--text);
   }
 
   /* ── Timeline shell ───────────────────────────────────────────────────── */
@@ -582,6 +1194,7 @@ const styles = `
     display: flex;
     flex-direction: column;
     gap: 4px;
+    min-width: 0;
   }
 
   /* ── Message rows ─────────────────────────────────────────────────────── */
@@ -591,6 +1204,7 @@ const styles = `
     align-items: flex-end;
     gap: 8px;
     padding: 2px 0;
+    min-width: 0;
   }
 
   /* ── User messages ────────────────────────────────────────────────────── */
@@ -601,6 +1215,7 @@ const styles = `
 
   .user-bubble {
     max-width: 85%;
+    min-width: 0;
     padding: 12px 16px;
     border-radius: 18px 18px 4px 18px;
     background: var(--user-bg);
@@ -642,11 +1257,6 @@ const styles = `
   }
 
   .msg-user .msg-body {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.9rem;
-    line-height: 1.6;
-    white-space: pre-wrap;
-    word-break: break-word;
     color: var(--user-text);
   }
 
@@ -697,6 +1307,7 @@ const styles = `
 
   .asst-card {
     min-width: 0;
+    max-width: 100%;
     padding: 14px 18px;
     border: 1px solid var(--border);
     border-radius: 18px 18px 18px 4px;
@@ -705,11 +1316,6 @@ const styles = `
   }
 
   .msg-assistant .msg-body {
-    font-family: 'DM Sans', system-ui, sans-serif;
-    font-size: 0.9rem;
-    line-height: 1.65;
-    white-space: pre-wrap;
-    word-break: break-word;
     color: var(--text);
   }
 
@@ -785,6 +1391,138 @@ const styles = `
   .tool-output.tone-ok { color: var(--tool-ok); }
   .tool-output.tone-err { color: var(--tool-err); }
 
+  /* ── Markdown blocks ──────────────────────────────────────────────────── */
+
+  .markdown-body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    font-size: 0.9rem;
+    line-height: 1.65;
+    word-break: break-word;
+  }
+
+  .markdown-body > *:first-child { margin-top: 0; }
+  .markdown-body > *:last-child { margin-bottom: 0; }
+  .markdown-body p,
+  .markdown-body ul,
+  .markdown-body ol,
+  .markdown-body blockquote,
+  .markdown-body pre,
+  .markdown-body table,
+  .markdown-body hr {
+    margin: 0 0 0.85em;
+  }
+
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3,
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 {
+    margin: 0 0 0.55em;
+    line-height: 1.25;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+
+  .markdown-body h1 { font-size: 1.4rem; }
+  .markdown-body h2 { font-size: 1.22rem; }
+  .markdown-body h3 { font-size: 1.08rem; }
+  .markdown-body h4,
+  .markdown-body h5,
+  .markdown-body h6 { font-size: 0.95rem; }
+
+  .markdown-body ul,
+  .markdown-body ol {
+    padding-left: 1.3em;
+  }
+
+  .markdown-body li + li {
+    margin-top: 0.22em;
+  }
+
+  .markdown-body blockquote {
+    padding-left: 12px;
+    border-left: 3px solid rgba(34, 197, 94, 0.35);
+    opacity: 0.95;
+  }
+
+  .markdown-body a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .markdown-body code {
+    font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+    font-size: 0.82em;
+    padding: 0.16em 0.38em;
+    border-radius: 6px;
+  }
+
+  .markdown-body pre {
+    overflow-x: auto;
+    border-radius: 12px;
+    padding: 12px 14px;
+  }
+
+  .markdown-body pre code {
+    display: block;
+    padding: 0;
+    border-radius: 0;
+    background: transparent;
+    font-size: 0.82rem;
+    line-height: 1.6;
+  }
+
+  .markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.85rem;
+  }
+
+  .markdown-body th,
+  .markdown-body td {
+    padding: 8px 10px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .markdown-body img {
+    max-width: 100%;
+    border-radius: 12px;
+  }
+
+  .markdown-user code {
+    background: rgba(255,255,255,0.14);
+    color: var(--user-text);
+  }
+
+  .markdown-user pre {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .markdown-user table th,
+  .markdown-user table td {
+    border-color: rgba(255,255,255,0.16);
+  }
+
+  .markdown-assistant code {
+    background: #f4f4f5;
+    color: #27272a;
+  }
+
+  .markdown-assistant pre {
+    background: #0f172a;
+    color: #e5e7eb;
+  }
+
+  .markdown-assistant table th,
+  .markdown-assistant table td {
+    border-color: rgba(0, 0, 0, 0.08);
+  }
+
   /* ── System events ────────────────────────────────────────────────────── */
 
   .system-event {
@@ -808,6 +1546,10 @@ const styles = `
 
   .event-text {
     color: var(--muted);
+  }
+
+  .system-event-err .event-text {
+    color: var(--err-text);
   }
 
   .event-time {
@@ -857,6 +1599,119 @@ const styles = `
     border: 1px solid rgba(185, 28, 28, 0.12);
   }
 
+  /* ── Composer ─────────────────────────────────────────────────────────── */
+
+  .composer-card {
+    padding: 8px 2px 0;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .jump-latest-btn {
+    position: fixed;
+    left: 50%;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+    z-index: 10;
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg);
+    color: var(--text);
+    font: 700 1rem/1 'DM Sans', sans-serif;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12);
+    cursor: pointer;
+    backdrop-filter: blur(10px);
+    transform: translateX(-50%);
+    outline: none;
+    appearance: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .jump-latest-btn:hover {
+    transform: translateX(-50%) translateY(-1px);
+    background: #e8e3d9;
+  }
+
+  .jump-latest-btn:focus,
+  .jump-latest-btn:active {
+    outline: none;
+  }
+
+  .jump-latest-btn:focus-visible {
+    box-shadow: 0 10px 30px rgba(0,0,0,0.12), 0 0 0 3px rgba(0,0,0,0.08);
+  }
+
+  .composer-copy { margin-bottom: 12px; color: var(--muted); }
+
+  .composer-form textarea {
+    width: 100%;
+    resize: none;
+    overflow-y: auto;
+    min-height: 84px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font: inherit;
+    color: var(--text);
+    background: #fafafa;
+  }
+
+  .composer-form textarea:focus {
+    outline: 2px solid rgba(34, 197, 94, 0.18);
+    border-color: rgba(34, 197, 94, 0.45);
+  }
+
+  .composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 10px;
+  }
+
+  .composer-status { color: var(--muted); font-size: 13px; }
+  .composer-actions button:disabled { opacity: 0.55; cursor: wait; }
+
+  .composer-send-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 42px;
+    border: none;
+    border-radius: 999px;
+    background: #d97706;
+    color: #ffffff;
+    font: 700 1rem/1 'DM Sans', sans-serif;
+    cursor: pointer;
+    box-shadow: 0 10px 24px rgba(217, 119, 6, 0.26);
+    transition: transform 120ms, filter 120ms, box-shadow 120ms, background 120ms;
+  }
+
+  .composer-send-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: saturate(1.06) brightness(0.98);
+    box-shadow: 0 12px 28px rgba(217, 119, 6, 0.32);
+  }
+
+  .composer-send-btn:focus-visible {
+    outline: 2px solid rgba(217, 119, 6, 0.28);
+    outline-offset: 3px;
+  }
+
+  .composer-send-btn:disabled {
+    background: #d4d4d8;
+    color: rgba(24, 24, 27, 0.45);
+    box-shadow: none;
+    transform: none;
+    filter: none;
+    cursor: not-allowed;
+    opacity: 1;
+  }
+
   /* ── Responsive ───────────────────────────────────────────────────────── */
 
   @media (max-width: 600px) {
@@ -865,10 +1720,12 @@ const styles = `
     .hero-card, .card { padding: 20px; border-radius: 16px; }
 
     .hero-top { flex-direction: column; gap: 12px; }
+    .hero-side { align-items: flex-start; }
+    .hero-detail-row { gap: 8px; }
 
-    .refresh-btn { align-self: flex-start; }
-
-    .user-bubble { max-width: 88%; }
+    .user-bubble,
+    .msg-assistant,
+    .tool-block { max-width: 100%; }
 
     .asst-avatar { display: none; }
 

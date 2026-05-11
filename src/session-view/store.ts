@@ -5,6 +5,7 @@ export interface SessionViewToken {
   token: string;
   platform: PlatformName;
   platformUserId: string;
+  platformUserName?: string;
   conversationId: string;
   sessionKey: string;
   sessionFile: string;
@@ -22,11 +23,13 @@ export class InMemorySessionViewTokenStore {
     conversationId: string,
     sessionKey: string,
     sessionFile: string,
+    platformUserName?: string,
   ): SessionViewToken {
     const token: SessionViewToken = {
       token: randomBytes(16).toString("hex"),
       platform,
       platformUserId,
+      ...(platformUserName ? { platformUserName } : {}),
       conversationId,
       sessionKey,
       sessionFile,

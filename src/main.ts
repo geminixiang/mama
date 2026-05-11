@@ -397,6 +397,7 @@ if (MAMA_LINK_PORT) {
       if (bot) await bot.postMessage(conversationId, message);
     },
     sessionViewTokenStore,
+    { handler, botsByPlatform },
   );
 }
 

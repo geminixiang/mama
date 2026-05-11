@@ -22,6 +22,7 @@ export interface SessionViewTokenStoreLike {
     conversationId: string,
     sessionKey: string,
     sessionFile: string,
+    platformUserName?: string,
   ): { token: string };
 }
 

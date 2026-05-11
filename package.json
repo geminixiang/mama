@@ -52,10 +52,12 @@
     "diff": "^8.0.4",
     "discord.js": "^14.26.2",
     "grammy": "^1.42.0",
+    "markdown-it": "^14.1.1",
     "pino": "^10.3.1"
   },
   "devDependencies": {
     "@types/diff": "^8.0.0",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^25.5.0",
     "@typescript/native-preview": "7.0.0-dev.20260328.1",
     "husky": "^9.1.7",
