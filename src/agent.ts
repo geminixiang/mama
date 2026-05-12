@@ -11,7 +11,7 @@ import {
   ModelRegistry,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync } from "fs";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join, posix } from "path";
@@ -26,6 +26,7 @@ import { loadAgentConfigForConversation } from "./config.js";
 import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
+import type { BrowserExtensionManager } from "./browser-extension.js";
 import type { UserBindingStore } from "./bindings.js";
 import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
@@ -391,6 +392,7 @@ ls -1 sessions/
 - write: Create/overwrite files
 - edit: Surgical file edits
 - attach: Share files to the platform
+- browser: Operate the user's paired Chrome browser extension for browser/tabs/page/screenshot tasks when available. If a user asks to inspect or operate their browser, use this tool instead of saying you lack browser access.
 
 Each tool requires a "label" parameter (shown to user).
 `;
@@ -456,6 +458,7 @@ export async function createRunner(
   vaultManager?: VaultManager,
   bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
+  browserExtensionManager?: BrowserExtensionManager,
 ): Promise<AgentRunner> {
   const agentConfig = loadAgentConfigForConversation(conversationDir);
 
@@ -497,7 +500,11 @@ export async function createRunner(
   let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
 
   // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
+  const { tools, setUploadFunction, setEventContext, setBrowserContext } = createMamaTools(
+    executor,
+    workspaceDir,
+    browserExtensionManager,
+  );
 
   // Resolve model from config
   // Use 'as any' cast because agentConfig.provider/model are plain strings,
@@ -919,8 +926,7 @@ export async function createRunner(
         threadTs: message.threadTs,
       });
 
-      // Set up file upload function
-      setUploadFunction(async (filePath: string, title?: string) => {
+      const uploadFile = async (filePath: string, title?: string) => {
         const hostPath = translateToHostPath(
           filePath,
           conversationDir,
@@ -928,6 +934,17 @@ export async function createRunner(
           conversationId,
         );
         await responseCtx.uploadFile(hostPath, title);
+      };
+
+      // Set up file upload function
+      setUploadFunction(uploadFile);
+
+      const browserOutputDir = join(conversationDir, "scratch", "browser");
+      mkdirSync(browserOutputDir, { recursive: true });
+      setBrowserContext({
+        conversationId,
+        hostOutputDir: browserOutputDir,
+        uploadFile,
       });
 
       // Reset per-run state

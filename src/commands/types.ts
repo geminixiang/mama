@@ -1,4 +1,5 @@
 import type { Bot, BotAdapters, PlatformName } from "../adapter.js";
+import type { BrowserExtensionManager } from "../browser-extension.js";
 import type { UserBindingStore } from "../bindings.js";
 import type { DockerContainerManager } from "../provisioner.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
@@ -36,6 +37,7 @@ export interface CommandServices {
   linkTokenStore: LinkTokenStoreLike;
   sessionViewTokenStore: SessionViewTokenStoreLike;
   portalBaseUrl?: string;
+  browserExtensionManager?: BrowserExtensionManager;
 }
 
 export interface CommandContext {
