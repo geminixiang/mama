@@ -9,6 +9,7 @@ import {
   getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
+  SettingsManager,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
@@ -23,10 +24,9 @@ import type {
   PlatformInfo,
 } from "./adapter.js";
 import { loadAgentConfigForConversation } from "./config.js";
-import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
+import { refreshSessionMessagesFromLog } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
-import type { UserBindingStore } from "./bindings.js";
 import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
@@ -440,6 +440,18 @@ interface RunnerSessionState {
   errorMessage: string | undefined;
 }
 
+interface PreparedRunContext {
+  sessionConversation: string;
+  runQueue: ReturnType<typeof createRunQueue>;
+  userMessage: string;
+  imageAttachments: ImageContent[];
+}
+
+interface ConfiguredAgentSession {
+  agent: Agent;
+  session: AgentSession;
+}
+
 function createRunnerExecutionContext(
   sandboxConfig: SandboxConfig,
   vaultManager: VaultManager | undefined,
@@ -486,6 +498,91 @@ function createRunnerExecutionContext(
       activeExecutor = await executionResolver.resolve(context);
     },
   };
+}
+
+async function createConfiguredAgentSession(params: {
+  conversationId: string;
+  workspaceDir: string;
+  workspacePath: string;
+  systemPrompt: string;
+  model: ReturnType<typeof getModel>;
+  thinkingLevel: string;
+  tools: Awaited<ReturnType<typeof createMamaTools>>["tools"];
+  sessionManager: SessionManager;
+  settingsManager: SettingsManager;
+}): Promise<ConfiguredAgentSession> {
+  const {
+    conversationId,
+    workspaceDir,
+    workspacePath,
+    systemPrompt,
+    model,
+    thinkingLevel,
+    tools,
+    sessionManager,
+    settingsManager,
+  } = params;
+
+  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage);
+  const agent = new Agent({
+    initialState: {
+      systemPrompt,
+      model,
+      thinkingLevel,
+      tools,
+    },
+    convertToLlm,
+    getApiKey: async () => {
+      const key = await modelRegistry.getApiKeyForProvider(model.provider);
+      if (!key) {
+        throw new Error(
+          `No API key for provider "${model.provider}". Set the appropriate environment variable or configure via auth.json`,
+        );
+      }
+      return key;
+    },
+  });
+
+  const loadedSession = sessionManager.buildSessionContext();
+  if (loadedSession.messages.length > 0) {
+    agent.state.messages = loadedSession.messages;
+    log.logInfo(
+      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
+    );
+  }
+
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: workspaceDir,
+    agentDir: getAgentDir(),
+    systemPrompt,
+  });
+  try {
+    await resourceLoader.reload();
+    const extResult = resourceLoader.getExtensions();
+    if (extResult.errors.length > 0) {
+      for (const err of extResult.errors) {
+        log.logWarning(`[${conversationId}] Extension load error: ${err.path}`, err.error);
+      }
+    }
+    log.logInfo(
+      `[${conversationId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((extension) => extension.path).join(", ")}`,
+    );
+  } catch (error) {
+    log.logWarning(`[${conversationId}] Failed to load resources`, String(error));
+  }
+
+  const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  const session = new AgentSession({
+    agent,
+    sessionManager,
+    settingsManager,
+    cwd: workspacePath,
+    modelRegistry,
+    resourceLoader,
+    baseToolsOverride,
+  });
+  return { agent, session };
 }
 
 function createEmptyUsageTotals() {
@@ -603,7 +700,165 @@ function collectMessageAttachments(
   return { imageAttachments, nonImagePaths };
 }
 
-async function syncSessionContext(
+function buildPromptPayload(
+  message: ChatMessage,
+  workspacePath: string,
+): {
+  userMessage: string;
+  imageAttachments: ImageContent[];
+} {
+  let userMessage = formatTimestampedUserMessage(message);
+  const { imageAttachments, nonImagePaths } = collectMessageAttachments(message, workspacePath);
+
+  if (nonImagePaths.length > 0) {
+    userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
+  }
+
+  return { userMessage, imageAttachments };
+}
+
+async function writePromptDebugContext(
+  conversationDir: string,
+  systemPrompt: string,
+  session: AgentSession,
+  userMessage: string,
+  imageAttachmentCount: number,
+): Promise<void> {
+  const debugContext = {
+    systemPrompt,
+    messages: session.messages,
+    newUserMessage: userMessage,
+    imageAttachmentCount,
+  };
+  await writeFile(
+    join(conversationDir, "last_prompt.jsonl"),
+    JSON.stringify(debugContext, null, 2),
+  );
+}
+
+function getFinalAssistantText(session: AgentSession): string {
+  const lastAssistant = session.messages.filter((message) => message.role === "assistant").pop();
+  return (
+    lastAssistant?.content
+      .filter((content): content is { type: "text"; text: string } => content.type === "text")
+      .map((content) => content.text)
+      .join("\n") || ""
+  );
+}
+
+async function finalizeRunResponse(
+  responseCtx: ChatResponseContext,
+  session: AgentSession,
+  runState: RunnerSessionState,
+): Promise<void> {
+  if (runState.stopReason === "error" && runState.errorMessage) {
+    try {
+      await responseCtx.replaceResponse("_Sorry, something went wrong_");
+      await responseCtx.respondDiagnostic(`Error: ${runState.errorMessage}`, {
+        style: "error",
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.logWarning("Failed to post error message", errMsg);
+    }
+    return;
+  }
+
+  const finalText = getFinalAssistantText(session);
+  if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
+    try {
+      await responseCtx.deleteResponse();
+      log.logInfo("Silent response - deleted message and thread");
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.logWarning("Failed to delete message for silent response", errMsg);
+    }
+    return;
+  }
+
+  if (!finalText.trim()) return;
+
+  try {
+    await responseCtx.replaceResponse(finalText);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    log.logWarning("Failed to replace message with final text", errMsg);
+  }
+}
+
+async function maybeReportUsageSummary(
+  session: AgentSession,
+  runState: RunnerSessionState,
+  responseCtx: ChatResponseContext,
+  platform: PlatformInfo,
+  model: ReturnType<typeof getModel>,
+  agentConfig: ReturnType<typeof loadAgentConfigForConversation>,
+  sessionConversation: string,
+  sessionUuid: string,
+  waitForQueue: () => Promise<void>,
+): Promise<void> {
+  if (runState.totalUsage.cost.total <= 0) return;
+
+  const lastAssistantMessage = session.messages
+    .slice()
+    .reverse()
+    .find(
+      (message) => message.role === "assistant" && (message as any).stopReason !== "aborted",
+    ) as any | undefined;
+
+  const contextTokens = lastAssistantMessage
+    ? lastAssistantMessage.usage.input +
+      lastAssistantMessage.usage.output +
+      lastAssistantMessage.usage.cacheRead +
+      lastAssistantMessage.usage.cacheWrite
+    : 0;
+  const contextWindow = model.contextWindow || 200000;
+
+  const { totalUsage } = runState;
+  const runMetricAttributes = metricAttributes({
+    provider: model.provider,
+    model: agentConfig.model,
+    channel_id: sessionConversation,
+    session_id: sessionUuid,
+    stop_reason: runState.stopReason,
+    llm_calls: runState.llmCallCount,
+  });
+  Sentry.metrics.distribution("agent.run.tokens_in", totalUsage.input, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.tokens_out", totalUsage.output, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cache_read", totalUsage.cacheRead, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cache_write", totalUsage.cacheWrite, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cost", totalUsage.cost.total, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.gauge("agent.context.utilization", contextTokens / contextWindow, {
+    unit: "ratio",
+    attributes: runMetricAttributes,
+  });
+
+  const summary = log.logUsageSummary(
+    runState.logCtx!,
+    runState.totalUsage,
+    contextTokens,
+    contextWindow,
+  );
+  if (platform.diagnostics?.showUsageSummary === true) {
+    runState.queue!.enqueue(
+      () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
+      "usage summary",
+    );
+    await waitForQueue();
+  }
+}
+
+async function syncSessionContextFromConversationLog(
   sessionManager: SessionManager,
   conversationDir: string,
   message: ChatMessage,
@@ -614,216 +869,154 @@ async function syncSessionContext(
   const threadFilter = message.sessionKey.includes(":")
     ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
     : { scope: "top-level" as const, rootTs };
-  const syncedCount = await syncLogToSessionManager(
+  const { syncedCount, messages } = await refreshSessionMessagesFromLog(
     sessionManager,
     conversationDir,
-    message.id,
-    undefined,
-    threadFilter,
+    { currentMessageId: message.id, threadFilter },
   );
   if (syncedCount > 0) {
     log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
   }
 
-  const reloadedSession = sessionManager.buildSessionContext();
-  if (reloadedSession.messages.length > 0) {
-    agent.state.messages = reloadedSession.messages;
-    log.logInfo(
-      `[${conversationId}] Reloaded ${reloadedSession.messages.length} messages from context`,
-    );
+  if (messages.length > 0) {
+    agent.state.messages = messages;
+    log.logInfo(`[${conversationId}] Reloaded ${messages.length} messages from context`);
   }
 }
 
-// Cap raw tool output before handing it to adapters. Bash output can be MB; without
-// this each adapter's splitter would fan it out into many sequential platform posts.
-const TOOL_RESULT_DIAGNOSTIC_CAP = 8000;
+async function prepareRunContext(params: {
+  message: ChatMessage;
+  responseCtx: ChatResponseContext;
+  platform: PlatformInfo;
+  conversationId: string;
+  conversationDir: string;
+  rootTs: string;
+  sessionUuid: string;
+  runState: RunnerSessionState;
+  executor: Executor;
+  executionResolver?: ActorExecutionResolver;
+  resolveExecutorForRun: RunnerExecutionContext["resolveExecutorForRun"];
+  getWorkspacePath: () => string;
+  sessionManager: SessionManager;
+  session: AgentSession;
+  agent: Agent;
+  setEventContext: (context: {
+    platform: string;
+    conversationId: string;
+    conversationKind: ConversationKind;
+    userId: string;
+    sessionKey: string;
+    threadTs?: string;
+  }) => void;
+  setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
+  workspacePath: string;
+}): Promise<PreparedRunContext & { workspacePath: string }> {
+  const {
+    message,
+    responseCtx,
+    platform,
+    conversationId,
+    conversationDir,
+    rootTs,
+    sessionUuid,
+    runState,
+    executor,
+    executionResolver,
+    resolveExecutorForRun,
+    getWorkspacePath,
+    sessionManager,
+    session,
+    agent,
+    setEventContext,
+    setUploadFunction,
+  } = params;
+  let workspacePath = params.workspacePath;
+  const sessionConversation = message.sessionKey.split(":")[0];
 
-function extractToolResultText(result: unknown): string {
-  if (typeof result === "string") {
-    return result;
+  await mkdir(join(conversationDir, "scratch"), { recursive: true });
+
+  if (executionResolver) {
+    await resolveExecutorForRun({
+      platform: platform.name,
+      userId: message.userId,
+      conversationId,
+    });
+    workspacePath = getWorkspacePath();
   }
 
-  if (
-    result &&
-    typeof result === "object" &&
-    "content" in result &&
-    Array.isArray((result as { content: unknown }).content)
-  ) {
-    const content = (result as { content: Array<{ type: string; text?: string }> }).content;
-    const textParts: string[] = [];
-    for (const part of content) {
-      if (part.type === "text" && part.text) {
-        textParts.push(part.text);
-      }
-    }
-    if (textParts.length > 0) {
-      return textParts.join("\n");
-    }
-  }
+  await syncSessionContextFromConversationLog(
+    sessionManager,
+    conversationDir,
+    message,
+    rootTs,
+    conversationId,
+    agent,
+  );
 
-  return JSON.stringify(result);
-}
-
-// ============================================================================
-// Agent runner
-// ============================================================================
-
-/**
- * Create a new AgentRunner for a channel.
- * Sets up the session and subscribes to events once.
- *
- * Runner caching is handled by the caller (channelStates in main.ts).
- * This is a stateless factory function.
- */
-export async function createRunner(
-  sandboxConfig: SandboxConfig,
-  sessionKey: string,
-  conversationId: string,
-  conversationDir: string,
-  workspaceDir: string,
-  sessionScope: ResolvedSessionScope,
-  vaultManager?: VaultManager,
-  bindingStore?: UserBindingStore,
-  provisioner?: DockerContainerManager,
-): Promise<AgentRunner> {
-  const agentConfig = loadAgentConfigForConversation(conversationDir);
-
-  // Initialize logger with settings from config
-  log.initLogger({
-    logFormat: agentConfig.logFormat,
-    logLevel: agentConfig.logLevel,
-  });
-
-  const workspaceBase = join(conversationDir, "..");
-  const { executionResolver, executor, getWorkspacePath, resolveExecutorForRun } =
-    createRunnerExecutionContext(
-      sandboxConfig,
-      vaultManager,
-      provisioner,
-      workspaceDir,
-      workspaceBase,
-    );
-  let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
-
-  // Create tools (per-runner, with per-runner upload function setter)
-  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
-
-  // Resolve model from config
-  // Use 'as any' cast because agentConfig.provider/model are plain strings,
-  // while getModel() has constrained generic types for known providers.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const model = (getModel as any)(agentConfig.provider, agentConfig.model);
-
-  // Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
   const memory = await getMemory(conversationDir);
   const skills = loadMamaSkills(conversationDir, workspacePath);
-  const emptyPlatform: PlatformInfo = {
-    name: "chat",
-    formattingGuide: "",
-    channels: [],
-    users: [],
-  };
   const systemPrompt = buildSystemPrompt(
     workspacePath,
     conversationId,
-    "shared",
-    undefined,
+    message.conversationKind,
+    message.userId,
     memory,
-    sandboxConfig,
-    emptyPlatform,
+    executor.getSandboxConfig(),
+    platform,
     skills,
   );
+  session.agent.state.systemPrompt = systemPrompt;
 
-  // Create session manager and settings manager. Top-level/private sessions
-  // use the conversation's current pointer; scoped sessions use fixed files.
-  // Platform-specific branch/fork behavior is resolved before runner creation.
-  const isThread = sessionKey.includes(":");
-  const rootTs = extractSessionSuffix(sessionKey);
-  const { sessionDir, contextFile, threadRootMessage } = sessionScope;
-  const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
-  const threadSessionName = buildThreadSessionName(threadRootMessage);
-  if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
-    sessionManager.appendSessionInfo(threadSessionName);
-  }
-
-  const sessionUuid = extractSessionUuid(contextFile);
-  const settingsManager = createMamaSettingsManager(join(conversationDir, ".."));
-
-  // Create AuthStorage and ModelRegistry
-  // Auth stored outside workspace so agent can't access it
-  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage);
-
-  // Create agent
-  const agent = new Agent({
-    initialState: {
-      systemPrompt,
-      model,
-      thinkingLevel: agentConfig.thinkingLevel,
-      tools,
-    },
-    convertToLlm,
-    getApiKey: async () => {
-      const key = await modelRegistry.getApiKeyForProvider(model.provider);
-      if (!key)
-        throw new Error(
-          `No API key for provider "${model.provider}". Set the appropriate environment variable or configure via auth.json`,
-        );
-      return key;
-    },
+  setEventContext({
+    platform: platform.name,
+    conversationId,
+    conversationKind: message.conversationKind,
+    userId: message.userId,
+    sessionKey: message.sessionKey,
+    threadTs: message.threadTs,
   });
 
-  // Load existing messages
-  const loadedSession = sessionManager.buildSessionContext();
-  if (loadedSession.messages.length > 0) {
-    agent.state.messages = loadedSession.messages;
-    log.logInfo(
-      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
-    );
-  }
+  setUploadFunction(async (filePath: string, title?: string) => {
+    const hostPath = translateToHostPath(filePath, conversationDir, workspacePath, conversationId);
+    await responseCtx.uploadFile(hostPath, title);
+  });
 
-  // Load extensions, skills, prompts, themes via DefaultResourceLoader
-  // This reads ~/.pi/agent/settings.json (packages, extensions enable/disable)
-  // and discovers resources from standard locations + npm/git packages.
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: workspaceDir,
-    agentDir: getAgentDir(),
+  resetRunState(runState, responseCtx, sessionConversation, message.userName, sessionUuid);
+  const runQueue = createRunQueue(responseCtx);
+  runState.queue = runQueue.queue;
+
+  log.logInfo(
+    `Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`,
+  );
+  log.logInfo(`Channels: ${platform.channels.length}, Users: ${platform.users.length}`);
+
+  const { userMessage, imageAttachments } = buildPromptPayload(message, workspacePath);
+  await writePromptDebugContext(
+    conversationDir,
     systemPrompt,
-  });
-  try {
-    await resourceLoader.reload();
-    const extResult = resourceLoader.getExtensions();
-    if (extResult.errors.length > 0) {
-      for (const err of extResult.errors) {
-        log.logWarning(`[${conversationId}] Extension load error: ${err.path}`, err.error);
-      }
-    }
-    log.logInfo(
-      `[${conversationId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
-    );
-  } catch (error) {
-    log.logWarning(`[${conversationId}] Failed to load resources`, String(error));
-  }
+    session,
+    userMessage,
+    imageAttachments.length,
+  );
 
-  const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  return {
+    sessionConversation,
+    runQueue,
+    userMessage,
+    imageAttachments,
+    workspacePath,
+  };
+}
 
-  // Create AgentSession wrapper
-  const session = new AgentSession({
-    agent,
-    sessionManager,
-    settingsManager,
-    cwd: workspacePath,
-    modelRegistry,
-    resourceLoader,
-    baseToolsOverride,
-  });
-
-  // Mutable per-run state - event handler references this
-  const runState = createRunState();
-
-  // Subscribe to events ONCE
+function attachSessionEventHandlers(params: {
+  session: AgentSession;
+  runState: RunnerSessionState;
+  conversationId: string;
+  model: ReturnType<typeof getModel>;
+  agentConfig: ReturnType<typeof loadAgentConfigForConversation>;
+}): void {
+  const { session, runState, conversationId, model, agentConfig } = params;
   session.subscribe(async (event) => {
-    // Skip if no active run
     if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
 
     const { responseCtx, logCtx, queue, pendingTools } = runState;
@@ -850,12 +1043,14 @@ export async function createRunner(
         label,
         agentEvent.args as Record<string, unknown>,
       );
-    } else if (event.type === "tool_execution_end") {
+      return;
+    }
+
+    if (event.type === "tool_execution_end") {
       const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
       const resultStr = extractToolResultText(agentEvent.result);
       const pending = pendingTools.get(agentEvent.toolCallId);
       pendingTools.delete(agentEvent.toolCallId);
-
       const durationMs = pending ? Date.now() - pending.startTime : 0;
 
       Sentry.metrics.count("agent.tool.calls", 1, {
@@ -903,7 +1098,10 @@ export async function createRunner(
           "tool error",
         );
       }
-    } else if (event.type === "message_start") {
+      return;
+    }
+
+    if (event.type === "message_start") {
       const agentEvent = event as AgentEvent & { type: "message_start" };
       if (agentEvent.message.role === "assistant") {
         runState.llmCallCount += 1;
@@ -915,7 +1113,10 @@ export async function createRunner(
         });
         log.logResponseStart(logCtx);
       }
-    } else if (event.type === "message_end") {
+      return;
+    }
+
+    if (event.type === "message_end") {
       const agentEvent = event as AgentEvent & { type: "message_end" };
       if (agentEvent.message.role === "assistant") {
         const assistantMsg = agentEvent.message as any;
@@ -938,7 +1139,6 @@ export async function createRunner(
           runState.totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
           runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
 
-          // Per-turn LLM metrics
           const llmAttributes = metricAttributes({
             provider: model.provider,
             model: agentConfig.model,
@@ -1005,17 +1205,26 @@ export async function createRunner(
           queue.enqueue(() => responseCtx.respond(text), "response main");
         }
       }
-    } else if (event.type === "compaction_start") {
+      return;
+    }
+
+    if (event.type === "compaction_start") {
       log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
       queue.enqueue(() => responseCtx.respond("_Compacting context..._"), "compaction start");
-    } else if (event.type === "compaction_end") {
+      return;
+    }
+
+    if (event.type === "compaction_end") {
       const compEvent = event as any;
       if (compEvent.result) {
         log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
       } else if (compEvent.aborted) {
         log.logInfo("Auto-compaction aborted");
       }
-    } else if (event.type === "auto_retry_start") {
+      return;
+    }
+
+    if (event.type === "auto_retry_start") {
       const retryEvent = event as any;
       log.logWarning(
         `Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`,
@@ -1028,6 +1237,136 @@ export async function createRunner(
       );
     }
   });
+}
+
+// Cap raw tool output before handing it to adapters. Bash output can be MB; without
+// this each adapter's splitter would fan it out into many sequential platform posts.
+const TOOL_RESULT_DIAGNOSTIC_CAP = 8000;
+
+function extractToolResultText(result: unknown): string {
+  if (typeof result === "string") {
+    return result;
+  }
+
+  if (
+    result &&
+    typeof result === "object" &&
+    "content" in result &&
+    Array.isArray((result as { content: unknown }).content)
+  ) {
+    const content = (result as { content: Array<{ type: string; text?: string }> }).content;
+    const textParts: string[] = [];
+    for (const part of content) {
+      if (part.type === "text" && part.text) {
+        textParts.push(part.text);
+      }
+    }
+    if (textParts.length > 0) {
+      return textParts.join("\n");
+    }
+  }
+
+  return JSON.stringify(result);
+}
+
+// ============================================================================
+// Agent runner
+// ============================================================================
+
+/**
+ * Create a new AgentRunner for a channel.
+ * Sets up the session and subscribes to events once.
+ *
+ * Runner caching is handled by the caller (channelStates in main.ts).
+ * This is a stateless factory function.
+ */
+export async function createRunner(
+  sandboxConfig: SandboxConfig,
+  sessionKey: string,
+  conversationId: string,
+  conversationDir: string,
+  workspaceDir: string,
+  sessionScope: ResolvedSessionScope,
+  vaultManager?: VaultManager,
+  provisioner?: DockerContainerManager,
+): Promise<AgentRunner> {
+  const agentConfig = loadAgentConfigForConversation(conversationDir);
+
+  // Initialize logger with settings from config
+  log.initLogger({
+    logFormat: agentConfig.logFormat,
+    logLevel: agentConfig.logLevel,
+  });
+
+  const workspaceBase = join(conversationDir, "..");
+  const { executionResolver, executor, getWorkspacePath, resolveExecutorForRun } =
+    createRunnerExecutionContext(
+      sandboxConfig,
+      vaultManager,
+      provisioner,
+      workspaceDir,
+      workspaceBase,
+    );
+  let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
+
+  // Create tools (per-runner, with per-runner upload function setter)
+  const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
+
+  // Resolve model from config
+  // Use 'as any' cast because agentConfig.provider/model are plain strings,
+  // while getModel() has constrained generic types for known providers.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const model = (getModel as any)(agentConfig.provider, agentConfig.model);
+
+  // Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
+  const memory = await getMemory(conversationDir);
+  const skills = loadMamaSkills(conversationDir, workspacePath);
+  const emptyPlatform: PlatformInfo = {
+    name: "chat",
+    formattingGuide: "",
+    channels: [],
+    users: [],
+  };
+  const systemPrompt = buildSystemPrompt(
+    workspacePath,
+    conversationId,
+    "shared",
+    undefined,
+    memory,
+    sandboxConfig,
+    emptyPlatform,
+    skills,
+  );
+
+  // Create session manager and settings manager. Top-level/private sessions
+  // use the conversation's current pointer; scoped sessions use fixed files.
+  // Platform-specific branch/fork behavior is resolved before runner creation.
+  const isThread = sessionKey.includes(":");
+  const rootTs = extractSessionSuffix(sessionKey);
+  const { sessionDir, contextFile, threadRootMessage } = sessionScope;
+  const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
+  const threadSessionName = buildThreadSessionName(threadRootMessage);
+  if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
+    sessionManager.appendSessionInfo(threadSessionName);
+  }
+
+  const sessionUuid = extractSessionUuid(contextFile);
+  const settingsManager = SettingsManager.inMemory();
+  const { agent, session } = await createConfiguredAgentSession({
+    conversationId,
+    workspaceDir,
+    workspacePath,
+    systemPrompt,
+    model,
+    thinkingLevel: agentConfig.thinkingLevel,
+    tools,
+    sessionManager,
+    settingsManager,
+  });
+
+  // Mutable per-run state - event handler references this
+  const runState = createRunState();
+  attachSessionEventHandlers({ session, runState, conversationId, model, agentConfig });
 
   return {
     async run(
@@ -1035,223 +1374,58 @@ export async function createRunner(
       responseCtx: ChatResponseContext,
       platform: PlatformInfo,
     ): Promise<{ stopReason: string; errorMessage?: string }> {
-      // Extract conversationId from sessionKey (format: "conversationId:rootTs" or just "conversationId")
-      const sessionConversation = message.sessionKey.split(":")[0];
-
-      // Ensure conversation workspace exists on the host side before it is mounted/routed.
-      await mkdir(join(conversationDir, "scratch"), { recursive: true });
-
-      if (executionResolver) {
-        await resolveExecutorForRun({
-          platform: platform.name,
-          userId: message.userId,
-          conversationId,
-        });
-        workspacePath = getWorkspacePath();
-      }
-
-      // Sync messages from log.jsonl that arrived while we were offline or busy
-      // Exclude the current message (it will be added via prompt())
-      // Default sync range is 10 days (handled by syncLogToSessionManager)
-      // Thread filter ensures only messages from this session's thread are synced
-      await syncSessionContext(
-        sessionManager,
-        conversationDir,
+      const prepared = await prepareRunContext({
         message,
-        rootTs,
-        conversationId,
-        agent,
-      );
-
-      // Update system prompt with fresh memory, channel/user info, and skills
-      const memory = await getMemory(conversationDir);
-      const skills = loadMamaSkills(conversationDir, workspacePath);
-      const systemPrompt = buildSystemPrompt(
-        workspacePath,
-        conversationId,
-        message.conversationKind,
-        message.userId,
-        memory,
-        executor.getSandboxConfig(),
+        responseCtx,
         platform,
-        skills,
-      );
-      session.agent.state.systemPrompt = systemPrompt;
-
-      setEventContext({
-        platform: platform.name,
         conversationId,
-        conversationKind: message.conversationKind,
-        userId: message.userId,
-        sessionKey: message.sessionKey,
-        // For Slack scheduled events, preserve thread targeting only when the
-        // request was created inside an existing thread. Top-level reminders
-        // should come back as top-level messages.
-        threadTs: message.threadTs,
+        conversationDir,
+        rootTs,
+        sessionUuid,
+        runState,
+        executor,
+        executionResolver,
+        resolveExecutorForRun,
+        getWorkspacePath,
+        sessionManager,
+        session,
+        agent,
+        setEventContext,
+        setUploadFunction,
+        workspacePath,
       });
+      workspacePath = prepared.workspacePath;
 
-      // Set up file upload function
-      setUploadFunction(async (filePath: string, title?: string) => {
-        const hostPath = translateToHostPath(
-          filePath,
-          conversationDir,
-          workspacePath,
-          conversationId,
-        );
-        await responseCtx.uploadFile(hostPath, title);
-      });
-
-      // Reset per-run state
-      resetRunState(runState, responseCtx, sessionConversation, message.userName, sessionUuid);
-
-      // Create queue for this run
-      const runQueue = createRunQueue(responseCtx);
-      runState.queue = runQueue.queue;
-
-      // Log context info
-      log.logInfo(
-        `Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`,
-      );
-      log.logInfo(`Channels: ${platform.channels.length}, Users: ${platform.users.length}`);
-
-      // Build user message with timestamp and username prefix
-      // Format: "[YYYY-MM-DD HH:MM:SS+HH:MM] [username]: message" so LLM knows when and who
-      let userMessage = formatTimestampedUserMessage(message);
-      const { imageAttachments, nonImagePaths } = collectMessageAttachments(message, workspacePath);
-
-      if (nonImagePaths.length > 0) {
-        userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
-      }
-
-      // Debug: write context to last_prompt.jsonl
-      const debugContext = {
-        systemPrompt,
-        messages: session.messages,
-        newUserMessage: userMessage,
-        imageAttachmentCount: imageAttachments.length,
-      };
-      await writeFile(
-        join(conversationDir, "last_prompt.jsonl"),
-        JSON.stringify(debugContext, null, 2),
-      );
       addLifecycleBreadcrumb("agent.prompt.sent", {
         provider: model.provider,
         model: agentConfig.model,
-        channel_id: sessionConversation,
+        channel_id: prepared.sessionConversation,
         session_id: sessionUuid,
         attachment_count: message.attachments?.length ?? 0,
-        image_attachment_count: imageAttachments.length,
+        image_attachment_count: prepared.imageAttachments.length,
       });
 
       await session.prompt(
-        userMessage,
-        imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+        prepared.userMessage,
+        prepared.imageAttachments.length > 0 ? { images: prepared.imageAttachments } : undefined,
       );
 
       // Wait for queued messages
-      await runQueue.wait();
+      await prepared.runQueue.wait();
 
-      // Handle error case - update main message and post error to thread
-      if (runState.stopReason === "error" && runState.errorMessage) {
-        try {
-          await responseCtx.replaceResponse("_Sorry, something went wrong_");
-          await responseCtx.respondDiagnostic(`Error: ${runState.errorMessage}`, {
-            style: "error",
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          log.logWarning("Failed to post error message", errMsg);
-        }
-      } else {
-        // Final message update
-        const messages = session.messages;
-        const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-        const finalText =
-          lastAssistant?.content
-            .filter((c): c is { type: "text"; text: string } => c.type === "text")
-            .map((c) => c.text)
-            .join("\n") || "";
+      await finalizeRunResponse(responseCtx, session, runState);
 
-        // Check for [SILENT] marker - delete message and thread instead of posting
-        if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
-          try {
-            await responseCtx.deleteResponse();
-            log.logInfo("Silent response - deleted message and thread");
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            log.logWarning("Failed to delete message for silent response", errMsg);
-          }
-        } else if (finalText.trim()) {
-          try {
-            await responseCtx.replaceResponse(finalText);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            log.logWarning("Failed to replace message with final text", errMsg);
-          }
-        }
-      }
-
-      // Log usage summary with context info
-      if (runState.totalUsage.cost.total > 0) {
-        // Get last non-aborted assistant message for context calculation
-        const messages = session.messages;
-        const lastAssistantMessage = messages
-          .slice()
-          .reverse()
-          .find((m) => m.role === "assistant" && (m as any).stopReason !== "aborted") as any;
-
-        const contextTokens = lastAssistantMessage
-          ? lastAssistantMessage.usage.input +
-            lastAssistantMessage.usage.output +
-            lastAssistantMessage.usage.cacheRead +
-            lastAssistantMessage.usage.cacheWrite
-          : 0;
-        const contextWindow = model.contextWindow || 200000;
-
-        // Run-level Sentry metrics
-        const { totalUsage } = runState;
-        const runMetricAttributes = metricAttributes({
-          provider: model.provider,
-          model: agentConfig.model,
-          channel_id: sessionConversation,
-          session_id: sessionUuid,
-          stop_reason: runState.stopReason,
-          llm_calls: runState.llmCallCount,
-        });
-        Sentry.metrics.distribution("agent.run.tokens_in", totalUsage.input, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.tokens_out", totalUsage.output, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cache_read", totalUsage.cacheRead, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cache_write", totalUsage.cacheWrite, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cost", totalUsage.cost.total, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.gauge("agent.context.utilization", contextTokens / contextWindow, {
-          unit: "ratio",
-          attributes: runMetricAttributes,
-        });
-
-        const summary = log.logUsageSummary(
-          runState.logCtx!,
-          runState.totalUsage,
-          contextTokens,
-          contextWindow,
-        );
-        if (platform.diagnostics?.showUsageSummary === true) {
-          runState.queue!.enqueue(
-            () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
-            "usage summary",
-          );
-          await runQueue.wait();
-        }
-      }
+      await maybeReportUsageSummary(
+        session,
+        runState,
+        responseCtx,
+        platform,
+        model,
+        agentConfig,
+        prepared.sessionConversation,
+        sessionUuid,
+        () => prepared.runQueue.wait(),
+      );
 
       // Clear run state
       runState.responseCtx = null;

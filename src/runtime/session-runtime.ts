@@ -400,7 +400,6 @@ class MamaSessionRuntime implements SessionRuntime {
         this.options.workingDir,
         sessionScope,
         this.options.vaultManager,
-        this.options.bindingStore,
         this.options.provisioner,
       ),
       stopRequested: false,

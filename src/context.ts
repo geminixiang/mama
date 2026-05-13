@@ -7,15 +7,11 @@
  *
  * This module provides:
  * - syncLogToSessionManager: Syncs messages from log.jsonl to SessionManager
- * - createMamaSettingsManager: Creates an in-memory SettingsManager for AgentSession
+ * - refreshSessionMessagesFromLog: Hydrates SessionManager messages from log.jsonl
  */
 
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
-import {
-  type SessionManager,
-  type SessionMessageEntry,
-  SettingsManager,
-} from "@earendil-works/pi-coding-agent";
+import { type SessionManager, type SessionMessageEntry } from "@earendil-works/pi-coding-agent";
 import { existsSync } from "fs";
 import { readFile } from "fs/promises";
 import { join } from "path";
@@ -205,15 +201,26 @@ export async function syncLogToSessionManager(
   return newMessages.length;
 }
 
-// ============================================================================
-// Settings manager for mama
-// ============================================================================
-
-// Mama manages model/provider config through its own config.ts / settings.json.
-// We use an in-memory SettingsManager so AgentSession has valid defaults
-// without interfering with coding-agent's global settings files.
-export function createMamaSettingsManager(_workspaceDir: string): SettingsManager {
-  return SettingsManager.inMemory();
+export async function refreshSessionMessagesFromLog(
+  sessionManager: SessionManager,
+  conversationDir: string,
+  options: {
+    currentMessageId?: string;
+    threadFilter?: ThreadFilter;
+    timeRange?: TimeRange;
+  } = {},
+): Promise<{ syncedCount: number; messages: Message[] }> {
+  const syncedCount = await syncLogToSessionManager(
+    sessionManager,
+    conversationDir,
+    options.currentMessageId,
+    options.timeRange,
+    options.threadFilter,
+  );
+  return {
+    syncedCount,
+    messages: sessionManager.buildSessionContext().messages,
+  };
 }
 
 export async function findLogMessageById(
