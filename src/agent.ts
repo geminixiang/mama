@@ -1011,11 +1011,10 @@ async function prepareRunContext(params: {
 function attachSessionEventHandlers(params: {
   session: AgentSession;
   runState: RunnerSessionState;
-  conversationId: string;
   model: ReturnType<typeof getModel>;
   agentConfig: ReturnType<typeof loadAgentConfigForConversation>;
 }): void {
-  const { session, runState, conversationId, model, agentConfig } = params;
+  const { session, runState, model, agentConfig } = params;
   session.subscribe(async (event) => {
     if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
 
@@ -1366,7 +1365,7 @@ export async function createRunner(
 
   // Mutable per-run state - event handler references this
   const runState = createRunState();
-  attachSessionEventHandlers({ session, runState, conversationId, model, agentConfig });
+  attachSessionEventHandlers({ session, runState, model, agentConfig });
 
   return {
     async run(
