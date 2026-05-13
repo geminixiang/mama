@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentEvent, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getModel, type ImageContent } from "@earendil-works/pi-ai";
 import {
   AgentSession,
@@ -9,6 +9,7 @@ import {
   getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
+  SessionManager,
   SettingsManager,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
@@ -504,7 +505,7 @@ async function createConfiguredAgentSession(params: {
   workspacePath: string;
   systemPrompt: string;
   model: ReturnType<typeof getModel>;
-  thinkingLevel: string;
+  thinkingLevel: ThinkingLevel;
   tools: Awaited<ReturnType<typeof createMamaTools>>["tools"];
   sessionManager: SessionManager;
   settingsManager: SettingsManager;
