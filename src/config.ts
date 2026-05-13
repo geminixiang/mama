@@ -22,6 +22,7 @@ export interface AgentConfig {
   sandboxMemory?: string;
   sandboxBoostCpus?: string;
   sandboxBoostMemory?: string;
+  sandboxImageWorkspaceMount?: "private" | "full";
 }
 
 const ONBOARD_SETTINGS: SettingsFileConfig = {
@@ -41,6 +42,9 @@ const ONBOARD_SETTINGS: SettingsFileConfig = {
       cpus: "2",
       memory: "4g",
     },
+    image: {
+      workspaceMount: "private",
+    },
   },
 };
 
@@ -48,7 +52,12 @@ interface SettingsFileConfig {
   llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
   log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
   sentry?: { dsn?: string };
-  sandbox?: { cpus?: string; memory?: string; boost?: { cpus?: string; memory?: string } };
+  sandbox?: {
+    cpus?: string;
+    memory?: string;
+    boost?: { cpus?: string; memory?: string };
+    image?: { workspaceMount?: AgentConfig["sandboxImageWorkspaceMount"] };
+  };
 }
 
 function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
@@ -92,6 +101,9 @@ function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfi
       : {}),
     ...(config.sandbox?.boost?.memory !== undefined
       ? { sandboxBoostMemory: config.sandbox.boost.memory }
+      : {}),
+    ...(config.sandbox?.image?.workspaceMount !== undefined
+      ? { sandboxImageWorkspaceMount: config.sandbox.image.workspaceMount }
       : {}),
   };
 }
@@ -148,6 +160,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const sandboxMemory = fromFile.sandboxMemory;
   const sandboxBoostCpus = fromFile.sandboxBoostCpus;
   const sandboxBoostMemory = fromFile.sandboxBoostMemory;
+  const sandboxImageWorkspaceMount = fromFile.sandboxImageWorkspaceMount;
 
   return {
     provider,
@@ -160,6 +173,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
     sandboxMemory,
     sandboxBoostCpus,
     sandboxBoostMemory,
+    sandboxImageWorkspaceMount,
   };
 }
 
@@ -191,6 +205,28 @@ export function saveConversationModelConfig(
   const scopedConfig: SettingsFileConfig = {
     ...existing,
     llm: { ...existing.llm, ...config },
+  };
+  atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
+}
+
+export function saveConversationSandboxConfig(
+  conversationDir: string,
+  config: { imageWorkspaceMount: AgentConfig["sandboxImageWorkspaceMount"] },
+): void {
+  if (!existsSync(conversationDir)) {
+    mkdirSync(conversationDir, { recursive: true });
+  }
+  const settingsPath = join(conversationDir, "settings.json");
+  const existing = loadSettingsFile(settingsPath) ?? {};
+  const scopedConfig: SettingsFileConfig = {
+    ...existing,
+    sandbox: {
+      ...existing.sandbox,
+      image: {
+        ...existing.sandbox?.image,
+        workspaceMount: config.imageWorkspaceMount,
+      },
+    },
   };
   atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
 }

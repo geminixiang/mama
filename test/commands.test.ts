@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -7,6 +7,7 @@ import type { UserBindingStore } from "../src/bindings.js";
 import { CommandRegistry } from "../src/commands/registry.js";
 import { LoginCommandHandler } from "../src/commands/login.js";
 import { NewCommandHandler } from "../src/commands/new.js";
+import { SandboxCommandHandler } from "../src/commands/sandbox.js";
 import { SessionViewCommandHandler } from "../src/commands/session-view.js";
 import type { CommandContext, CommandHandler, CommandServices } from "../src/commands/types.js";
 import { createManagedSessionFile, getChannelSessionDir } from "../src/session-store.js";
@@ -386,6 +387,91 @@ describe("LoginCommandHandler", () => {
       },
     ]);
     expect(entries.size).toBe(0);
+  });
+});
+
+// ── SandboxCommandHandler ───────────────────────────────────────────────────
+
+describe("SandboxCommandHandler", () => {
+  const handler = new SandboxCommandHandler();
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(
+      tmpdir(),
+      `cmd-sandbox-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("reports current workspace mount mode", async () => {
+    const ctx = buildContext({
+      commandText: "/pi-sandbox",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: { cpus: "0.5", memory: "1g" }, boosted: false }),
+          getDefaultLimits: () => ({ cpus: "0.5", memory: "1g" }),
+          getBoostLimits: () => ({ cpus: "2", memory: "4g" }),
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: private");
+  });
+
+  test("switches a conversation to full workspace mode", async () => {
+    const ctx = buildContext({
+      commandText: "/pi-sandbox full",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: undefined, boosted: false }),
+          getDefaultLimits: () => undefined,
+          getBoostLimits: () => undefined,
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    const sandboxConfig = JSON.parse(
+      readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"),
+    ) as { sandbox: { image: { workspaceMount: string } } };
+    expect(sandboxConfig.sandbox.image.workspaceMount).toBe("full");
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: full");
+  });
+
+  test("switches a conversation back to private workspace mode", async () => {
+    mkdirSync(join(workingDir, "C123"), { recursive: true });
+    const ctx = buildContext({
+      commandText: "/pi-sandbox private",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: undefined, boosted: false }),
+          getDefaultLimits: () => undefined,
+          getBoostLimits: () => undefined,
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    const sandboxConfig = JSON.parse(
+      readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"),
+    ) as { sandbox: { image: { workspaceMount: string } } };
+    expect(sandboxConfig.sandbox.image.workspaceMount).toBe("private");
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: private");
   });
 });
 

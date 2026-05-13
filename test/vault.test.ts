@@ -509,6 +509,48 @@ describe("ActorExecutionResolver image mode", () => {
     expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
   });
 
+  test("mounts the full workspace when conversation sandbox mode is full", async () => {
+    writeVaultJson({
+      vaults: {
+        d123: {
+          displayName: "Alice",
+          sandbox: { type: "image", container: "alice-box" },
+        },
+      },
+    });
+    mkdirSync(join(tmpDir, "D123"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "D123", "settings.json"),
+      JSON.stringify({ sandbox: { image: { workspaceMount: "full" } } }) + "\n",
+    );
+
+    const mgr = new FileVaultManager(tmpDir);
+    const provision = vi.fn().mockResolvedValue("alice-box");
+    const exec = vi
+      .spyOn(HostExecutor.prototype, "exec")
+      .mockResolvedValue({ stdout: "", stderr: "", code: 0 });
+    const resolver = new ActorExecutionResolver(
+      { type: "image", image: "ubuntu:24.04" },
+      mgr,
+      { provision } as any,
+      tmpDir,
+    );
+
+    const executor = await resolver.resolve({
+      platform: "slack",
+      userId: "U123",
+      conversationId: "D123",
+    });
+    await executor.exec("pwd");
+
+    expect(provision).toHaveBeenCalledWith("d123", {
+      containerName: "alice-box",
+      conversationId: "D123",
+      mounts: [{ source: tmpDir, target: "/workspace" }],
+    });
+    expect(exec).toHaveBeenCalledWith("docker exec -w /workspace alice-box sh -c 'pwd'", undefined);
+  });
+
   test("deduplicates mount targets and ignores missing files", async () => {
     writeVaultJson({
       vaults: {

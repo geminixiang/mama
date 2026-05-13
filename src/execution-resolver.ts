@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync } from "fs";
 import { join } from "path";
+import { loadAgentConfig, loadAgentConfigForConversation } from "./config.js";
 import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { ResolvedVault, VaultManager } from "./vault.js";
@@ -9,6 +10,29 @@ export interface ActorContext {
   platform: string;
   userId: string;
   conversationId: string;
+}
+
+export type ImageWorkspaceMountMode = "private" | "full";
+
+export function readConversationWorkspaceMountMode(
+  workspaceDir: string | undefined,
+  conversationId: string,
+): ImageWorkspaceMountMode {
+  const globalDefault = (() => {
+    try {
+      return loadAgentConfig().sandboxImageWorkspaceMount ?? "private";
+    } catch {
+      return "private";
+    }
+  })();
+  if (!workspaceDir) {
+    return globalDefault;
+  }
+
+  const conversationDir = join(workspaceDir, conversationId);
+  return (
+    loadAgentConfigForConversation(conversationDir).sandboxImageWorkspaceMount ?? globalDefault
+  );
 }
 
 export class ActorExecutionResolver {
@@ -95,6 +119,10 @@ export class ActorExecutionResolver {
   private buildImageSandboxMounts(conversationId: string): ContainerMount[] {
     if (!this.workspaceDir) {
       return [];
+    }
+
+    if (readConversationWorkspaceMountMode(this.workspaceDir, conversationId) === "full") {
+      return [{ source: this.workspaceDir, target: "/workspace" }];
     }
 
     const conversationDir = join(this.workspaceDir, conversationId);
