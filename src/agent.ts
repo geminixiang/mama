@@ -405,6 +405,235 @@ function initialWorkspacePath(sandboxConfig: SandboxConfig, hostWorkspacePath: s
   return sandboxConfig.type === "host" ? hostWorkspacePath : "/workspace";
 }
 
+interface RunnerExecutionContext {
+  executionResolver?: ActorExecutionResolver;
+  executor: Executor;
+  getWorkspacePath: () => string;
+  resolveExecutorForRun(context: {
+    platform: string;
+    userId: string;
+    conversationId: string;
+  }): Promise<void>;
+}
+
+interface RunnerSessionState {
+  responseCtx: ChatResponseContext | null;
+  logCtx: {
+    conversationId: string;
+    userName?: string;
+    conversationName?: string;
+    sessionId?: string;
+  } | null;
+  queue: {
+    enqueue(fn: () => Promise<void>, errorContext: string): void;
+  } | null;
+  pendingTools: Map<string, { toolName: string; args: unknown; startTime: number }>;
+  totalUsage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  };
+  llmCallCount: number;
+  stopReason: string;
+  errorMessage: string | undefined;
+}
+
+function createRunnerExecutionContext(
+  sandboxConfig: SandboxConfig,
+  vaultManager: VaultManager | undefined,
+  provisioner: DockerContainerManager | undefined,
+  workspaceDir: string,
+  hostWorkspacePath: string,
+): RunnerExecutionContext {
+  const executionResolver =
+    vaultManager &&
+    sandboxConfig.type !== "host" &&
+    (vaultManager.isEnabled() ||
+      sandboxConfig.type === "container" ||
+      sandboxConfig.type === "image" ||
+      sandboxConfig.type === "cloudflare" ||
+      sandboxConfig.type === "firecracker")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
+      : undefined;
+
+  // activeExecutor is replaced at the start of each run() call when executionResolver
+  // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
+  };
+
+  return {
+    executionResolver,
+    executor,
+    getWorkspacePath: () => executor.getWorkspacePath(hostWorkspacePath),
+    async resolveExecutorForRun(context): Promise<void> {
+      if (!executionResolver) return;
+      executionResolver.refresh();
+      activeExecutor = await executionResolver.resolve(context);
+    },
+  };
+}
+
+function createEmptyUsageTotals() {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+function createRunState(): RunnerSessionState {
+  return {
+    responseCtx: null,
+    logCtx: null,
+    queue: null,
+    pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+    totalUsage: createEmptyUsageTotals(),
+    llmCallCount: 0,
+    stopReason: "stop",
+    errorMessage: undefined,
+  };
+}
+
+function resetRunState(
+  runState: RunnerSessionState,
+  responseCtx: ChatResponseContext,
+  sessionConversation: string,
+  userName: string | undefined,
+  sessionUuid: string,
+): void {
+  runState.responseCtx = responseCtx;
+  runState.logCtx = {
+    conversationId: sessionConversation,
+    userName,
+    conversationName: undefined,
+    sessionId: sessionUuid,
+  };
+  runState.pendingTools.clear();
+  runState.totalUsage = createEmptyUsageTotals();
+  runState.llmCallCount = 0;
+  runState.stopReason = "stop";
+  runState.errorMessage = undefined;
+}
+
+function createRunQueue(responseCtx: ChatResponseContext): {
+  queue: { enqueue(fn: () => Promise<void>, errorContext: string): void };
+  wait: () => Promise<void>;
+} {
+  let queueChain = Promise.resolve();
+  return {
+    queue: {
+      enqueue(fn: () => Promise<void>, errorContext: string): void {
+        queueChain = queueChain.then(async () => {
+          try {
+            await fn();
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.logWarning(`API error (${errorContext})`, errMsg);
+            try {
+              await responseCtx.respondDiagnostic(`Error: ${errMsg}`, { style: "error" });
+            } catch {
+              // Ignore
+            }
+          }
+        });
+      },
+    },
+    wait: () => queueChain,
+  };
+}
+
+function formatTimestampedUserMessage(message: ChatMessage): string {
+  const now = new Date();
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  const offset = -now.getTimezoneOffset();
+  const offsetSign = offset >= 0 ? "+" : "-";
+  const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
+  const offsetMins = pad(Math.abs(offset) % 60);
+  const timestamp =
+    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
+    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}` +
+    `${offsetSign}${offsetHours}:${offsetMins}`;
+  const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
+  return `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
+}
+
+function collectMessageAttachments(
+  message: ChatMessage,
+  workspacePath: string,
+): { imageAttachments: ImageContent[]; nonImagePaths: string[] } {
+  const imageAttachments: ImageContent[] = [];
+  const nonImagePaths: string[] = [];
+
+  for (const attachment of message.attachments || []) {
+    const fullPath = `${workspacePath}/${attachment.localPath}`;
+    const mimeType = getImageMimeType(attachment.localPath);
+
+    if (mimeType && existsSync(fullPath)) {
+      try {
+        imageAttachments.push({
+          type: "image",
+          mimeType,
+          data: readFileSync(fullPath).toString("base64"),
+        });
+      } catch {
+        nonImagePaths.push(fullPath);
+      }
+    } else {
+      nonImagePaths.push(fullPath);
+    }
+  }
+
+  return { imageAttachments, nonImagePaths };
+}
+
+async function syncSessionContext(
+  sessionManager: SessionManager,
+  conversationDir: string,
+  message: ChatMessage,
+  rootTs: string,
+  conversationId: string,
+  agent: Agent,
+): Promise<void> {
+  const threadFilter = message.sessionKey.includes(":")
+    ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
+    : { scope: "top-level" as const, rootTs };
+  const syncedCount = await syncLogToSessionManager(
+    sessionManager,
+    conversationDir,
+    message.id,
+    undefined,
+    threadFilter,
+  );
+  if (syncedCount > 0) {
+    log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
+  }
+
+  const reloadedSession = sessionManager.buildSessionContext();
+  if (reloadedSession.messages.length > 0) {
+    agent.state.messages = reloadedSession.messages;
+    log.logInfo(
+      `[${conversationId}] Reloaded ${reloadedSession.messages.length} messages from context`,
+    );
+  }
+}
+
 // Cap raw tool output before handing it to adapters. Bash output can be MB; without
 // this each adapter's splitter would fan it out into many sequential platform posts.
 const TOOL_RESULT_DIAGNOSTIC_CAP = 8000;
@@ -465,35 +694,15 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executionResolver =
-    vaultManager &&
-    sandboxConfig.type !== "host" &&
-    (vaultManager.isEnabled() ||
-      sandboxConfig.type === "container" ||
-      sandboxConfig.type === "image" ||
-      sandboxConfig.type === "cloudflare" ||
-      sandboxConfig.type === "firecracker")
-      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
-      : undefined;
-  // activeExecutor is replaced at the start of each run() call when executionResolver
-  // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
-  let activeExecutor: Executor =
-    executionResolver !== undefined
-      ? createExecutor({ type: "host" })
-      : createExecutor(sandboxConfig);
-  const executor: Executor = {
-    exec(command, options) {
-      return activeExecutor.exec(command, options);
-    },
-    getWorkspacePath(hostPath) {
-      return activeExecutor.getWorkspacePath(hostPath);
-    },
-    getSandboxConfig() {
-      return activeExecutor.getSandboxConfig();
-    },
-  };
   const workspaceBase = join(conversationDir, "..");
-  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  const { executionResolver, executor, getWorkspacePath, resolveExecutorForRun } =
+    createRunnerExecutionContext(
+      sandboxConfig,
+      vaultManager,
+      provisioner,
+      workspaceDir,
+      workspaceBase,
+    );
   let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
 
   // Create tools (per-runner, with per-runner upload function setter)
@@ -610,29 +819,7 @@ export async function createRunner(
   });
 
   // Mutable per-run state - event handler references this
-  const runState = {
-    responseCtx: null as ChatResponseContext | null,
-    logCtx: null as {
-      conversationId: string;
-      userName?: string;
-      conversationName?: string;
-      sessionId?: string;
-    } | null,
-    queue: null as {
-      enqueue(fn: () => Promise<void>, errorContext: string): void;
-    } | null,
-    pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
-    totalUsage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    llmCallCount: 0,
-    stopReason: "stop",
-    errorMessage: undefined as string | undefined,
-  };
+  const runState = createRunState();
 
   // Subscribe to events ONCE
   session.subscribe(async (event) => {
@@ -855,8 +1042,7 @@ export async function createRunner(
       await mkdir(join(conversationDir, "scratch"), { recursive: true });
 
       if (executionResolver) {
-        executionResolver.refresh();
-        activeExecutor = await executionResolver.resolve({
+        await resolveExecutorForRun({
           platform: platform.name,
           userId: message.userId,
           conversationId,
@@ -868,29 +1054,14 @@ export async function createRunner(
       // Exclude the current message (it will be added via prompt())
       // Default sync range is 10 days (handled by syncLogToSessionManager)
       // Thread filter ensures only messages from this session's thread are synced
-      const threadFilter = message.sessionKey.includes(":")
-        ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
-        : { scope: "top-level" as const, rootTs };
-      const syncedCount = await syncLogToSessionManager(
+      await syncSessionContext(
         sessionManager,
         conversationDir,
-        message.id,
-        undefined,
-        threadFilter,
+        message,
+        rootTs,
+        conversationId,
+        agent,
       );
-      if (syncedCount > 0) {
-        log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
-      }
-
-      // Reload messages from context.jsonl
-      // This picks up any messages synced above
-      const reloadedSession = sessionManager.buildSessionContext();
-      if (reloadedSession.messages.length > 0) {
-        agent.state.messages = reloadedSession.messages;
-        log.logInfo(
-          `[${conversationId}] Reloaded ${reloadedSession.messages.length} messages from context`,
-        );
-      }
 
       // Update system prompt with fresh memory, channel/user info, and skills
       const memory = await getMemory(conversationDir);
@@ -931,44 +1102,11 @@ export async function createRunner(
       });
 
       // Reset per-run state
-      runState.responseCtx = responseCtx;
-      runState.logCtx = {
-        conversationId: sessionConversation,
-        userName: message.userName,
-        conversationName: undefined,
-        sessionId: sessionUuid,
-      };
-      runState.pendingTools.clear();
-      runState.totalUsage = {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      };
-      runState.llmCallCount = 0;
-      runState.stopReason = "stop";
-      runState.errorMessage = undefined;
+      resetRunState(runState, responseCtx, sessionConversation, message.userName, sessionUuid);
 
       // Create queue for this run
-      let queueChain = Promise.resolve();
-      runState.queue = {
-        enqueue(fn: () => Promise<void>, errorContext: string): void {
-          queueChain = queueChain.then(async () => {
-            try {
-              await fn();
-            } catch (err) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              log.logWarning(`API error (${errorContext})`, errMsg);
-              try {
-                await responseCtx.respondDiagnostic(`Error: ${errMsg}`, { style: "error" });
-              } catch {
-                // Ignore
-              }
-            }
-          });
-        },
-      };
+      const runQueue = createRunQueue(responseCtx);
+      runState.queue = runQueue.queue;
 
       // Log context info
       log.logInfo(
@@ -978,38 +1116,8 @@ export async function createRunner(
 
       // Build user message with timestamp and username prefix
       // Format: "[YYYY-MM-DD HH:MM:SS+HH:MM] [username]: message" so LLM knows when and who
-      const now = new Date();
-      const pad = (n: number) => n.toString().padStart(2, "0");
-      const offset = -now.getTimezoneOffset();
-      const offsetSign = offset >= 0 ? "+" : "-";
-      const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-      const offsetMins = pad(Math.abs(offset) % 60);
-      const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-      const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
-      let userMessage = `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
-
-      const imageAttachments: ImageContent[] = [];
-      const nonImagePaths: string[] = [];
-
-      for (const a of message.attachments || []) {
-        // a.localPath is the path relative to the workspace.
-        const fullPath = `${workspacePath}/${a.localPath}`;
-        const mimeType = getImageMimeType(a.localPath);
-
-        if (mimeType && existsSync(fullPath)) {
-          try {
-            imageAttachments.push({
-              type: "image",
-              mimeType,
-              data: readFileSync(fullPath).toString("base64"),
-            });
-          } catch {
-            nonImagePaths.push(fullPath);
-          }
-        } else {
-          nonImagePaths.push(fullPath);
-        }
-      }
+      let userMessage = formatTimestampedUserMessage(message);
+      const { imageAttachments, nonImagePaths } = collectMessageAttachments(message, workspacePath);
 
       if (nonImagePaths.length > 0) {
         userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
@@ -1041,7 +1149,7 @@ export async function createRunner(
       );
 
       // Wait for queued messages
-      await queueChain;
+      await runQueue.wait();
 
       // Handle error case - update main message and post error to thread
       if (runState.stopReason === "error" && runState.errorMessage) {
@@ -1141,7 +1249,7 @@ export async function createRunner(
             () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
             "usage summary",
           );
-          await queueChain;
+          await runQueue.wait();
         }
       }
 
