@@ -242,47 +242,6 @@ export function logResponse(ctx: LogContext, text: string): void {
   console.log(chalk.dim(indented));
 }
 
-// Attachments
-export function logDownloadStart(ctx: LogContext, filename: string, localPath: string): void {
-  if (logger)
-    logger.debug(
-      { event: "download_start", ...ctxFields(ctx), filename, localPath },
-      `Downloading ${filename}`,
-    );
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↓ Downloading attachment`));
-  console.log(chalk.dim(`           ${filename} → ${localPath}`));
-}
-
-export function logDownloadSuccess(ctx: LogContext, sizeKB: number): void {
-  if (logger)
-    logger.info(
-      { event: "download_success", ...ctxFields(ctx), sizeKB },
-      `Downloaded (${sizeKB} KB)`,
-    );
-  console.log(
-    chalk.yellow(
-      `${timestamp()} ${formatContext(ctx)} ✓ Downloaded (${sizeKB.toLocaleString()} KB)`,
-    ),
-  );
-}
-
-export function logDownloadError(ctx: LogContext, filename: string, error: string): void {
-  if (logger)
-    logger.warn(
-      { event: "download_error", ...ctxFields(ctx), filename, error },
-      `Download failed: ${filename}`,
-    );
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ Download failed`));
-  console.log(chalk.dim(`           ${filename}: ${error}`));
-}
-
-// Control
-export function logStopRequest(ctx: LogContext): void {
-  if (logger) logger.info({ event: "stop_request", ...ctxFields(ctx) }, "Stop requested");
-  console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} stop`));
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ⊗ Stop requested - aborting`));
-}
-
 // System
 export function logInfo(message: string): void {
   if (logger) logger.info({ event: "info" }, message);

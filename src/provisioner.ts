@@ -571,6 +571,3 @@ export class DockerContainerManager {
     );
   }
 }
-
-/** @deprecated Use DockerContainerManager */
-export const DockerProvisioner = DockerContainerManager;
