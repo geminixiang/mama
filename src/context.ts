@@ -6,8 +6,8 @@
  * - log.jsonl: Human-readable conversation history for grep (no tool results)
  *
  * This module provides:
- * - syncLogToSessionManager: Syncs messages from log.jsonl to SessionManager
- * - refreshSessionMessagesFromLog: Hydrates SessionManager messages from log.jsonl
+ * - syncLogToSessionManager: Legacy backfill helper for importing log.jsonl into sessions
+ * - refreshSessionMessagesFromLog: Legacy wrapper around log-to-session backfill
  */
 
 import type { Message, UserMessage } from "@earendil-works/pi-ai";
@@ -201,6 +201,12 @@ export async function syncLogToSessionManager(
   return newMessages.length;
 }
 
+/**
+ * Legacy migration helper.
+ *
+ * Normal runtime context should come from sessions/*.jsonl directly.
+ * This wrapper exists only for explicit backfill/import paths and tests.
+ */
 export async function refreshSessionMessagesFromLog(
   sessionManager: SessionManager,
   conversationDir: string,

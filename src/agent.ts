@@ -24,7 +24,6 @@ import type {
   PlatformInfo,
 } from "./adapter.js";
 import { loadAgentConfigForConversation } from "./config.js";
-import { refreshSessionMessagesFromLog } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { DockerContainerManager } from "./provisioner.js";
@@ -32,7 +31,6 @@ import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js"
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
 import {
-  extractSessionSuffix,
   extractSessionUuid,
   openManagedSession,
   type ResolvedSessionScope,
@@ -858,26 +856,12 @@ async function maybeReportUsageSummary(
   }
 }
 
-async function syncSessionContextFromConversationLog(
+function reloadSessionMessages(
   sessionManager: SessionManager,
-  conversationDir: string,
-  message: ChatMessage,
-  rootTs: string,
   conversationId: string,
   agent: Agent,
-): Promise<void> {
-  const threadFilter = message.sessionKey.includes(":")
-    ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
-    : { scope: "top-level" as const, rootTs };
-  const { syncedCount, messages } = await refreshSessionMessagesFromLog(
-    sessionManager,
-    conversationDir,
-    { currentMessageId: message.id, threadFilter },
-  );
-  if (syncedCount > 0) {
-    log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
-  }
-
+): void {
+  const messages = sessionManager.buildSessionContext().messages;
   if (messages.length > 0) {
     agent.state.messages = messages;
     log.logInfo(`[${conversationId}] Reloaded ${messages.length} messages from context`);
@@ -890,7 +874,6 @@ async function prepareRunContext(params: {
   platform: PlatformInfo;
   conversationId: string;
   conversationDir: string;
-  rootTs: string;
   sessionUuid: string;
   runState: RunnerSessionState;
   executor: Executor;
@@ -917,7 +900,6 @@ async function prepareRunContext(params: {
     platform,
     conversationId,
     conversationDir,
-    rootTs,
     sessionUuid,
     runState,
     executor,
@@ -944,14 +926,7 @@ async function prepareRunContext(params: {
     workspacePath = getWorkspacePath();
   }
 
-  await syncSessionContextFromConversationLog(
-    sessionManager,
-    conversationDir,
-    message,
-    rootTs,
-    conversationId,
-    agent,
-  );
+  reloadSessionMessages(sessionManager, conversationId, agent);
 
   const memory = await getMemory(conversationDir);
   const skills = loadMamaSkills(conversationDir, workspacePath);
@@ -1341,7 +1316,6 @@ export async function createRunner(
   // use the conversation's current pointer; scoped sessions use fixed files.
   // Platform-specific branch/fork behavior is resolved before runner creation.
   const isThread = sessionKey.includes(":");
-  const rootTs = extractSessionSuffix(sessionKey);
   const { sessionDir, contextFile, threadRootMessage } = sessionScope;
   const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
   const threadSessionName = buildThreadSessionName(threadRootMessage);
@@ -1379,7 +1353,6 @@ export async function createRunner(
         platform,
         conversationId,
         conversationDir,
-        rootTs,
         sessionUuid,
         runState,
         executor,

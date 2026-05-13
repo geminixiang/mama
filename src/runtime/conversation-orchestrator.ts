@@ -1,0 +1,220 @@
+import type { Bot, BotAdapters, BotEvent, PlatformName } from "../adapter.js";
+import {
+  hasMaterializedSlackBranchSession,
+  waitForSlackBranchBootstrap,
+} from "../adapters/slack/branch-manager.js";
+import type { AgentRunner } from "../agent.js";
+import type { CommandRegistry } from "../commands/index.js";
+import type { CommandServices } from "../commands/index.js";
+import { isPrivateConversation } from "../commands/utils.js";
+import * as log from "../log.js";
+import { addLifecycleBreadcrumb, applyRunScope } from "../sentry.js";
+import { formatStopped } from "../ui-copy.js";
+import * as Sentry from "@sentry/node";
+import { join } from "path";
+
+export interface ConversationRuntimeState {
+  running: boolean;
+  runner: AgentRunner;
+  stopRequested: boolean;
+  stopMessageTs?: string;
+  lastAccessedAt: number;
+  startedAt?: number;
+  lastActivityAt?: number;
+}
+
+export interface RunConversationOptions {
+  event: BotEvent;
+  bot: Bot;
+  adapters: BotAdapters;
+  isEvent?: boolean;
+}
+
+interface ConversationOrchestratorOptions {
+  workingDir: string;
+  commandRegistry: CommandRegistry;
+  commandServices: CommandServices;
+  isShuttingDown: () => boolean;
+  getState: (sessionKey: string) => ConversationRuntimeState | undefined;
+  getOrCreateState: (options: {
+    conversationId: string;
+    platformName: string;
+    sessionKey: string;
+  }) => Promise<ConversationRuntimeState>;
+  beforeRunTracked: (runPromise: Promise<void>) => void;
+  afterRunTracked: (runPromise: Promise<void>) => void;
+  onRunFinished: () => void;
+}
+
+export class ConversationOrchestrator {
+  constructor(private readonly options: ConversationOrchestratorOptions) {}
+
+  async runSession({ event, bot, adapters, isEvent }: RunConversationOptions): Promise<void> {
+    const conversationId = event.conversationId;
+    if (this.options.isShuttingDown()) {
+      log.logInfo(
+        `[${conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
+      );
+      return;
+    }
+
+    const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
+    const privateConversation = isPrivateConversation(event);
+    const handledCommand = await this.options.commandRegistry.handle({
+      bot,
+      responseCtx: adapters.responseCtx,
+      platform: adapters.platform.name as PlatformName,
+      platformUserId: event.user,
+      conversationId,
+      vaultConversationId: event.vaultConversationId,
+      sessionKey,
+      commandText: event.text,
+      privateConversation,
+      services: this.options.commandServices,
+    });
+    if (handledCommand) return;
+
+    const conversationDir = join(this.options.workingDir, conversationId);
+    const waitedForParent =
+      adapters.platform.name === "slack"
+        ? await waitForSlackBranchBootstrap({
+            parentSessionKey: conversationId,
+            sessionKey,
+            hasThreadSession: () => hasMaterializedSlackBranchSession(conversationDir, sessionKey),
+            isParentRunning: () => this.options.getState(conversationId)?.running === true,
+          })
+        : false;
+    if (waitedForParent) {
+      log.logInfo(
+        `[${conversationId}] Delayed thread bootstrap until parent session sealed: ${sessionKey}`,
+      );
+    }
+
+    const state = await this.options.getOrCreateState({
+      conversationId,
+      platformName: adapters.platform.name,
+      sessionKey,
+    });
+
+    state.running = true;
+    state.stopRequested = false;
+    state.startedAt = Date.now();
+    state.lastActivityAt = Date.now();
+
+    log.logInfo(`[${conversationId}] Starting run: ${event.text.substring(0, 50)}`);
+
+    const runPromise = (async () => {
+      try {
+        const result = await this.runWithInstrumentation(
+          adapters,
+          { conversationId, sessionKey, isEvent, startedAt: state.startedAt! },
+          async () => {
+            await adapters.responseCtx.setTyping(true);
+            await adapters.responseCtx.setWorking(true);
+            const runnerResult = await state.runner.run(
+              adapters.message,
+              adapters.responseCtx,
+              adapters.platform,
+            );
+            await adapters.responseCtx.setWorking(false);
+            return runnerResult;
+          },
+        );
+
+        if (result?.stopReason === "aborted" && state.stopRequested) {
+          if (state.stopMessageTs) {
+            await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
+            state.stopMessageTs = undefined;
+          } else {
+            await bot.postMessage(conversationId, formatStopped(bot));
+          }
+        }
+      } finally {
+        state.running = false;
+        state.lastAccessedAt = Date.now();
+        this.options.onRunFinished();
+      }
+    })();
+
+    this.options.beforeRunTracked(runPromise);
+    try {
+      await runPromise;
+    } finally {
+      this.options.afterRunTracked(runPromise);
+    }
+  }
+
+  private async runWithInstrumentation(
+    adapters: BotAdapters,
+    meta: { conversationId: string; sessionKey: string; isEvent?: boolean; startedAt: number },
+    body: () => Promise<{ stopReason: string; errorMessage?: string }>,
+  ): Promise<{ stopReason: string; errorMessage?: string } | undefined> {
+    const { conversationId, sessionKey, isEvent, startedAt } = meta;
+    const { message, platform } = adapters;
+
+    Sentry.metrics.count("agent.run.started", 1, {
+      attributes: { channel: conversationId },
+    });
+
+    return Sentry.startSpan(
+      { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
+      async () =>
+        Sentry.withScope(async (scope) => {
+          applyRunScope(scope, {
+            conversationId,
+            sessionKey,
+            messageId: message.id,
+            platform: platform.name,
+            userId: message.userId,
+            userName: message.userName,
+            threadTs: message.threadTs,
+            isEvent,
+          });
+          addLifecycleBreadcrumb("agent.run.started", {
+            channel_id: conversationId,
+            platform: platform.name,
+            has_attachments: (message.attachments?.length ?? 0) > 0,
+          });
+
+          try {
+            const result = await body();
+            const durationMs = Date.now() - startedAt;
+            const completionAttrs = {
+              channel: conversationId,
+              platform: platform.name,
+              stop_reason: result.stopReason,
+            };
+            Sentry.metrics.distribution("agent.run.duration", durationMs, {
+              unit: "millisecond",
+              attributes: completionAttrs,
+            });
+            Sentry.metrics.count("agent.run.completed", 1, { attributes: completionAttrs });
+            addLifecycleBreadcrumb("agent.run.completed", {
+              channel_id: conversationId,
+              platform: platform.name,
+              stop_reason: result.stopReason,
+              duration_ms: durationMs,
+            });
+            return result;
+          } catch (err) {
+            scope.setContext("agent_run_error", {
+              conversationId,
+              sessionKey,
+              platform: platform.name,
+              messageId: message.id,
+              threadTs: message.threadTs,
+            });
+            Sentry.captureException(err);
+            Sentry.metrics.count("agent.run.errors", 1, {
+              attributes: { channel: conversationId, platform: platform.name },
+            });
+            log.logWarning(
+              `[${conversationId}] Run error`,
+              err instanceof Error ? err.message : String(err),
+            );
+            return undefined;
+          }
+        }),
+    );
+  }
+}
