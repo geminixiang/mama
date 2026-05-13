@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import type { PlatformName } from "./adapter.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
+import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
 
 export interface UserBinding {
   platform: PlatformName;
@@ -47,21 +47,25 @@ export class FileUserBindingStore implements UserBindingStore {
   }
 
   reload(): void {
-    if (!existsSync(this.configPath)) {
-      this.config = null;
-      return;
-    }
     try {
-      const raw = readFileSync(this.configPath, "utf-8");
-      const parsed = JSON.parse(raw);
-      if (!parsed || !Array.isArray(parsed.bindings)) {
-        console.error("bindings: malformed bindings.json — expected { bindings: [...] }");
+      const parsed = readJsonFileIfExists(
+        this.configPath,
+        (value): value is BindingsConfig => isRecord(value) && Array.isArray(value.bindings),
+        () => "bindings: malformed bindings.json — expected { bindings: [...] }",
+      );
+      if (!parsed) {
         this.config = null;
         return;
       }
-      this.config = parsed as BindingsConfig;
+
+      this.config = parsed;
     } catch (err) {
-      console.error(`bindings: failed to read ${this.configPath}:`, err);
+      const detail = err instanceof Error ? err.message : String(err);
+      if (detail.startsWith("bindings: malformed bindings.json")) {
+        console.error(detail);
+      } else {
+        console.error(`bindings: failed to read ${this.configPath}:`, err);
+      }
       this.config = null;
     }
   }
@@ -111,7 +115,7 @@ export class FileUserBindingStore implements UserBindingStore {
 
   private persist(): void {
     try {
-      mkdirSync(dirname(this.configPath), { recursive: true });
+      ensureDirExists(dirname(this.configPath));
       atomicWritePrivateFile(this.configPath, JSON.stringify(this.config, null, 2) + "\n");
     } catch (err) {
       console.error(`bindings: failed to write ${this.configPath}:`, err);

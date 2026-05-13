@@ -1,14 +1,7 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-} from "fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "fs";
 import { dirname, isAbsolute, join, normalize, sep } from "path";
 import type { PlatformName } from "./adapter.js";
+import { isRecord, readJsonFileIfExists, readTextFileIfExists } from "./file-guards.js";
 import type { SandboxConfig } from "./sandbox.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
@@ -178,30 +171,26 @@ export class FileVaultManager implements VaultManager {
   }
 
   reload(): void {
-    if (!existsSync(this.configPath)) {
-      this.config = null;
-      return;
-    }
-
     try {
-      const raw = readFileSync(this.configPath, "utf-8");
-      const parsed = JSON.parse(raw);
-
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        !parsed.vaults ||
-        typeof parsed.vaults !== "object"
-      ) {
-        console.error(`vault: malformed vault.json — expected { vaults: { ... } }`);
+      const parsed = readJsonFileIfExists(
+        this.configPath,
+        (value): value is VaultConfig => isRecord(value) && isRecord(value.vaults),
+        () => `vault: malformed vault.json — expected { vaults: { ... } }`,
+      );
+      if (!parsed) {
         this.config = null;
         return;
       }
 
-      this.config = parsed as VaultConfig;
+      this.config = parsed;
       this.warnUnsupportedSandboxTypes();
     } catch (err) {
-      console.error(`vault: failed to read ${this.configPath}:`, err);
+      const detail = err instanceof Error ? err.message : String(err);
+      if (detail.startsWith("vault: malformed vault.json")) {
+        console.error(detail);
+      } else {
+        console.error(`vault: failed to read ${this.configPath}:`, err);
+      }
       this.config = null;
     }
   }
@@ -419,9 +408,8 @@ export class FileVaultManager implements VaultManager {
     const envPath = join(dir, "env");
     ensurePrivateDir(this.vaultsDir);
     ensurePrivateDir(dir);
-    const existing = existsSync(envPath)
-      ? parseEnvFile(readFileSync(envPath, "utf-8"))
-      : ({} as Record<string, string>);
+    const existingContent = readTextFileIfExists(envPath);
+    const existing = existingContent ? parseEnvFile(existingContent) : {};
     const merged = { ...existing, ...env };
     const content =
       Object.entries(merged)
@@ -469,18 +457,14 @@ export class FileVaultManager implements VaultManager {
   }
 
   private readConfigFromDisk(): VaultConfig | null {
-    if (!existsSync(this.configPath)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(this.configPath, "utf-8"));
-      if (
-        !parsed ||
-        typeof parsed !== "object" ||
-        !parsed.vaults ||
-        typeof parsed.vaults !== "object"
-      ) {
-        return null;
-      }
-      return parsed as VaultConfig;
+      return (
+        readJsonFileIfExists(
+          this.configPath,
+          (value): value is VaultConfig => isRecord(value) && isRecord(value.vaults),
+          () => "vault: malformed vault.json — expected { vaults: { ... } }",
+        ) ?? null
+      );
     } catch {
       return null;
     }
@@ -498,10 +482,11 @@ export class FileVaultManager implements VaultManager {
     for (const mount of configuredMounts) mountsByTarget.set(mount.target, mount);
 
     let env: Record<string, string> = {};
-    const envPath = join(dir, "env");
-    if ((entry?.envFile ?? true) && existsSync(envPath)) {
+    const envContent =
+      (entry?.envFile ?? true) ? readTextFileIfExists(join(dir, "env")) : undefined;
+    if (envContent !== undefined) {
       try {
-        env = parseEnvFile(readFileSync(envPath, "utf-8"));
+        env = parseEnvFile(envContent);
       } catch (err) {
         console.error(`vault: failed to parse env file for "${key}":`, err);
       }
@@ -577,10 +562,8 @@ function copyVaultDir(
     const targetPath = join(targetDir, entry.name);
 
     if (entry.name === "env" && entry.isFile()) {
-      const sourceEnv = parseEnvFile(readFileSync(sourcePath, "utf-8"));
-      const targetEnv = existsSync(targetPath)
-        ? parseEnvFile(readFileSync(targetPath, "utf-8"))
-        : {};
+      const sourceEnv = parseEnvFile(readTextFileIfExists(sourcePath) ?? "");
+      const targetEnv = parseEnvFile(readTextFileIfExists(targetPath) ?? "");
       const merged = { ...targetEnv, ...sourceEnv };
       const content =
         Object.entries(merged)

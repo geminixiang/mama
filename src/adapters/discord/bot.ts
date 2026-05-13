@@ -67,6 +67,7 @@ export interface DiscordEvent extends BotEvent {
 export class DiscordBot implements Bot {
   private client: Client;
   private handler: BotHandler;
+  private token: string;
   private workingDir: string;
   private botUserId: string | null = null;
   private queues = new Map<string, ChannelQueue>();
@@ -76,6 +77,7 @@ export class DiscordBot implements Bot {
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
+    this.token = config.token;
     this.workingDir = config.workingDir;
     this.client = new Client({
       intents: [
@@ -153,7 +155,7 @@ export class DiscordBot implements Bot {
         resolve();
       });
       this.client.once(Events.Error, reject);
-      this.client.login(process.env.MAMA_DISCORD_BOT_TOKEN!).catch(reject);
+      this.client.login(this.token).catch(reject);
     });
   }
 

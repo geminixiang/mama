@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 import { loadAgentConfig, loadAgentConfigForConversation } from "./config.js";
+import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
 import { DockerContainerManager, type ContainerMount } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import type { ResolvedVault, VaultManager } from "./vault.js";
@@ -18,21 +19,44 @@ export function readConversationWorkspaceMountMode(
   workspaceDir: string | undefined,
   conversationId: string,
 ): ImageWorkspaceMountMode {
-  const globalDefault = (() => {
-    try {
-      return loadAgentConfig().sandboxImageWorkspaceMount ?? "private";
-    } catch {
-      return "private";
-    }
-  })();
+  const globalDefault = readGlobalWorkspaceMountMode();
   if (!workspaceDir) {
     return globalDefault;
   }
 
   const conversationDir = join(workspaceDir, conversationId);
-  return (
-    loadAgentConfigForConversation(conversationDir).sandboxImageWorkspaceMount ?? globalDefault
-  );
+  try {
+    return (
+      loadAgentConfigForConversation(conversationDir).sandboxImageWorkspaceMount ?? globalDefault
+    );
+  } catch {
+    const conversationSettingsPath = join(conversationDir, "settings.json");
+    const raw = readConversationSettingsFallback(conversationSettingsPath);
+    return raw?.sandbox?.image?.workspaceMount ?? globalDefault;
+  }
+}
+
+function readGlobalWorkspaceMountMode(): ImageWorkspaceMountMode {
+  try {
+    return loadAgentConfig().sandboxImageWorkspaceMount ?? "private";
+  } catch {
+    return "private";
+  }
+}
+
+function readConversationSettingsFallback(
+  settingsPath: string,
+): { sandbox?: { image?: { workspaceMount?: ImageWorkspaceMountMode } } } | undefined {
+  try {
+    return readJsonFileIfExists(
+      settingsPath,
+      (value): value is { sandbox?: { image?: { workspaceMount?: ImageWorkspaceMountMode } } } =>
+        isRecord(value),
+      () => "Ignoring malformed conversation settings file while resolving workspace mount",
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 export class ActorExecutionResolver {
@@ -127,7 +151,7 @@ export class ActorExecutionResolver {
 
     const conversationDir = join(this.workspaceDir, conversationId);
     if (!this.ensuredConversationDirs.has(conversationId)) {
-      mkdirSync(conversationDir, { recursive: true });
+      ensureDirExists(conversationDir);
       this.ensuredConversationDirs.add(conversationId);
     }
 

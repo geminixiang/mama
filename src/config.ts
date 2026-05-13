@@ -1,7 +1,8 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class MissingGlobalSettingsError extends Error {
@@ -61,24 +62,14 @@ interface SettingsFileConfig {
 }
 
 function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
-  if (!existsSync(settingsPath)) {
-    return undefined;
-  }
-
-  const raw = readFileSync(settingsPath, "utf-8");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`Malformed settings file at ${settingsPath}: ${detail}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
-    );
-  }
-  return parsed as SettingsFileConfig;
+  return readJsonFileIfExists(
+    settingsPath,
+    (value): value is SettingsFileConfig => isRecord(value),
+    (detail) =>
+      detail === "unexpected JSON shape"
+        ? `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`
+        : `Malformed settings file at ${settingsPath}: ${detail}`,
+  );
 }
 
 function getStateDir(): string {
@@ -198,7 +189,7 @@ export function saveConversationModelConfig(
   config: Pick<AgentConfig, "provider" | "model"> & Partial<Pick<AgentConfig, "thinkingLevel">>,
 ): void {
   if (!existsSync(conversationDir)) {
-    mkdirSync(conversationDir, { recursive: true });
+    ensureDirExists(conversationDir);
   }
   const settingsPath = join(conversationDir, "settings.json");
   const existing = loadSettingsFile(settingsPath) ?? {};
@@ -214,7 +205,7 @@ export function saveConversationSandboxConfig(
   config: { imageWorkspaceMount: AgentConfig["sandboxImageWorkspaceMount"] },
 ): void {
   if (!existsSync(conversationDir)) {
-    mkdirSync(conversationDir, { recursive: true });
+    ensureDirExists(conversationDir);
   }
   const settingsPath = join(conversationDir, "settings.json");
   const existing = loadSettingsFile(settingsPath) ?? {};
@@ -289,7 +280,7 @@ export function createGlobalSettingsFile(stateDir: string): string {
     throw new Error(`Global settings already exists at ${settingsPath}`);
   }
   if (!existsSync(stateDir)) {
-    mkdirSync(stateDir, { recursive: true });
+    ensureDirExists(stateDir);
   }
   atomicWritePrivateFile(settingsPath, JSON.stringify(ONBOARD_SETTINGS, null, 2));
   return settingsPath;
@@ -379,9 +370,7 @@ export function saveAgentConfig(config: Partial<AgentConfig>): void {
   const merged = patchSettingsConfig(existing, config);
 
   const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  ensureDirExists(dir);
 
   atomicWritePrivateFile(settingsPath, JSON.stringify(merged, null, 2));
 }

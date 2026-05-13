@@ -1,6 +1,5 @@
-import { existsSync } from "fs";
-import { readFile } from "fs/promises";
 import { join } from "path";
+import { isRecord, parseJsonValue, readTextFileIfExists } from "./file-guards.js";
 import * as log from "./log.js";
 
 /**
@@ -23,24 +22,26 @@ export async function findLogMessageById(
   messageId: string,
 ): Promise<ConversationLogMessage | null> {
   const logFile = join(conversationDir, "log.jsonl");
-  if (!existsSync(logFile)) return null;
-
-  const logContent = await readFile(logFile, "utf-8");
+  const logContent = readTextFileIfExists(logFile);
+  if (logContent === undefined) return null;
   const logLines = logContent.trim().split("\n").filter(Boolean);
 
   for (let i = logLines.length - 1; i >= 0; i--) {
-    let entry: ConversationLogMessage;
     try {
-      entry = JSON.parse(logLines[i]) as ConversationLogMessage;
+      const entry = parseJsonValue(
+        logLines[i],
+        (value): value is ConversationLogMessage => isRecord(value),
+        (detail) => (detail === "unexpected JSON shape" ? "expected a JSON object" : detail),
+      );
+      if (entry.ts === messageId) {
+        return entry;
+      }
     } catch (err) {
       log.logWarning(
         `Skipping malformed log entry at ${logFile}:${i + 1}`,
         err instanceof Error ? err.message : String(err),
       );
       continue;
-    }
-    if (entry.ts === messageId) {
-      return entry;
     }
   }
 

@@ -3,7 +3,7 @@
 import "./instrument.js";
 
 import { join, resolve } from "path";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { mkdirSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { fileURLToPath } from "url";
 import { dirname, join as pathJoin } from "path";
@@ -20,6 +20,7 @@ import { InMemoryLinkTokenStore } from "./login/session.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
 import { DockerContainerManager } from "./provisioner.js";
 import { createGlobalSettingsFile, loadAgentConfig, MissingGlobalSettingsError } from "./config.js";
+import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { createSessionRuntime } from "./runtime/index.js";
@@ -40,12 +41,12 @@ function getVersion(): string {
   ];
 
   for (const pkgPath of possiblePaths) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.version) return pkg.version;
-    } catch {
-      // Continue to next path
-    }
+    const pkg = readJsonFileIfExists(
+      pkgPath,
+      (value): value is { version?: unknown } => isRecord(value),
+      () => "Ignoring package.json while resolving version",
+    );
+    if (typeof pkg?.version === "string" && pkg.version) return pkg.version;
   }
   return "unknown";
 }
@@ -298,8 +299,8 @@ const provisioner =
     : undefined;
 
 if (sandbox.type === "image") {
-  mkdirSync(join(workingDir, "skills"), { recursive: true });
-  mkdirSync(join(workingDir, "events"), { recursive: true });
+  ensureDirExists(join(workingDir, "skills"));
+  ensureDirExists(join(workingDir, "events"));
   try {
     writeFileSync(join(workingDir, "MEMORY.md"), "", { flag: "wx" });
   } catch (err) {
@@ -357,10 +358,15 @@ const bots: Bot[] = [];
 const botsByPlatform: Record<string, Bot> = {};
 
 if (hasSlack) {
-  const sharedStore = new ChannelStore({ workingDir, botToken: MAMA_SLACK_BOT_TOKEN! });
+  const slackBotToken = MAMA_SLACK_BOT_TOKEN;
+  const slackAppToken = MAMA_SLACK_APP_TOKEN;
+  if (!slackBotToken || !slackAppToken) {
+    throw new Error("Slack startup requires both MAMA_SLACK_APP_TOKEN and MAMA_SLACK_BOT_TOKEN");
+  }
+  const sharedStore = new ChannelStore({ workingDir, botToken: slackBotToken });
   const slackBot = new SlackBotClass(handler, {
-    appToken: MAMA_SLACK_APP_TOKEN!,
-    botToken: MAMA_SLACK_BOT_TOKEN!,
+    appToken: slackAppToken,
+    botToken: slackBotToken,
     workingDir,
     store: sharedStore,
   });
@@ -369,8 +375,12 @@ if (hasSlack) {
   log.logInfo("Platform: Slack");
 }
 if (hasTelegram) {
+  const telegramToken = MAMA_TELEGRAM_BOT_TOKEN;
+  if (!telegramToken) {
+    throw new Error("Telegram startup requires MAMA_TELEGRAM_BOT_TOKEN");
+  }
   const telegramBot = new TelegramBot(handler, {
-    token: MAMA_TELEGRAM_BOT_TOKEN!,
+    token: telegramToken,
     workingDir,
   });
   bots.push(telegramBot);
@@ -378,8 +388,12 @@ if (hasTelegram) {
   log.logInfo("Platform: Telegram");
 }
 if (hasDiscord) {
+  const discordToken = MAMA_DISCORD_BOT_TOKEN;
+  if (!discordToken) {
+    throw new Error("Discord startup requires MAMA_DISCORD_BOT_TOKEN");
+  }
   const discordBot = new DiscordBot(handler, {
-    token: MAMA_DISCORD_BOT_TOKEN!,
+    token: discordToken,
     workingDir,
   });
   bots.push(discordBot);

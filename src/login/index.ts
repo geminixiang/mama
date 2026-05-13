@@ -1,4 +1,5 @@
 import * as log from "../log.js";
+import { isRecord, parseJsonValue } from "../file-guards.js";
 
 export type LoginCredentialKind = "api_key" | "oauth";
 
@@ -117,27 +118,28 @@ export function getOAuthServices(): OAuthService[] {
   const builtins = getBuiltinOAuthServices();
   if (!raw) return builtins;
 
-  let parsed: unknown;
+  let parsed: unknown[];
   try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    log.logWarning(
-      "Ignoring MAMA_OAUTH_SERVICES_JSON: invalid JSON",
-      err instanceof Error ? err.message : String(err),
+    parsed = parseJsonValue(raw, Array.isArray, (detail) =>
+      detail === "unexpected JSON shape"
+        ? "expected a JSON array of OAuth service definitions"
+        : detail,
     );
-    return builtins;
-  }
-  if (!Array.isArray(parsed)) {
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     log.logWarning(
-      "Ignoring MAMA_OAUTH_SERVICES_JSON: expected a JSON array of OAuth service definitions",
+      detail === "expected a JSON array of OAuth service definitions"
+        ? "Ignoring MAMA_OAUTH_SERVICES_JSON: expected a JSON array of OAuth service definitions"
+        : "Ignoring MAMA_OAUTH_SERVICES_JSON: invalid JSON",
+      detail,
     );
     return builtins;
   }
   try {
     const custom = parsed
       .map((entry): OAuthService | null => {
-        if (!entry || typeof entry !== "object") return null;
-        const obj = entry as Record<string, unknown>;
+        if (!isRecord(entry)) return null;
+        const obj = entry;
         const id = typeof obj.id === "string" ? obj.id.trim() : "";
         const label = typeof obj.label === "string" ? obj.label.trim() : "";
         const authorizationUrl =
@@ -161,8 +163,8 @@ export function getOAuthServices(): OAuthService[] {
         }
 
         let fileOutput: OAuthService["fileOutput"];
-        if (obj.fileOutput && typeof obj.fileOutput === "object") {
-          const fileOutputObj = obj.fileOutput as Record<string, unknown>;
+        if (isRecord(obj.fileOutput)) {
+          const fileOutputObj = obj.fileOutput;
           const type = typeof fileOutputObj.type === "string" ? fileOutputObj.type.trim() : "";
           const relativePath =
             typeof fileOutputObj.relativePath === "string" ? fileOutputObj.relativePath.trim() : "";
@@ -198,14 +200,13 @@ export function getOAuthServices(): OAuthService[] {
             : undefined,
           refreshTokenEnvKey:
             typeof obj.refreshTokenEnvKey === "string" ? obj.refreshTokenEnvKey.trim() : undefined,
-          authorizationParams:
-            obj.authorizationParams && typeof obj.authorizationParams === "object"
-              ? Object.fromEntries(
-                  Object.entries(obj.authorizationParams as Record<string, unknown>).filter(
-                    (entry): entry is [string, string] => typeof entry[1] === "string",
-                  ),
-                )
-              : undefined,
+          authorizationParams: isRecord(obj.authorizationParams)
+            ? Object.fromEntries(
+                Object.entries(obj.authorizationParams).filter(
+                  (entry): entry is [string, string] => typeof entry[1] === "string",
+                ),
+              )
+            : undefined,
           fileOutput,
         };
       })
