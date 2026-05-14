@@ -810,10 +810,10 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
         updateSubmitButtonState();
       });
       textarea.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' && !event.shiftKey) {
-          event.preventDefault();
-          if (!running) form?.requestSubmit();
-        }
+        if (event.key !== 'Enter' || event.shiftKey) return;
+        if (event.isComposing || event.keyCode === 229) return;
+        event.preventDefault();
+        if (!running) form?.requestSubmit();
       });
       resize();
     }
