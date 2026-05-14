@@ -29,7 +29,7 @@ export interface AgentConfig {
 const ONBOARD_SETTINGS: SettingsFileConfig = {
   llm: {
     provider: "anthropic",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-4-6",
     thinkingLevel: "off",
   },
   log: {

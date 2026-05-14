@@ -39,7 +39,7 @@ describe("loadAgentConfig", () => {
     expect(settingsPath).toBe(join(stateDir, "settings.json"));
     const config = loadAgentConfig();
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(config.model).toBe("claude-sonnet-4-6");
     expect(config.thinkingLevel).toBe("off");
     expect(config.logFormat).toBe("console");
     expect(config.logLevel).toBe("info");
@@ -81,7 +81,7 @@ describe("loadAgentConfig", () => {
     writeFileSync(
       join(stateDir, "settings.json"),
       JSON.stringify({
-        llm: { provider: "anthropic", model: "claude-sonnet-4-5", thinkingLevel: "off" },
+        llm: { provider: "anthropic", model: "claude-sonnet-4-6", thinkingLevel: "off" },
         log: { format: "console", level: "info" },
       }),
       "utf-8",
@@ -115,7 +115,7 @@ describe("loadAgentConfig", () => {
       createGlobalSettingsFile(stateDir);
       const config = loadAgentConfig();
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-sonnet-4-5");
+      expect(config.model).toBe("claude-sonnet-4-6");
     } finally {
       rmSync(otherDir, { recursive: true, force: true });
     }
@@ -132,7 +132,7 @@ describe("loadAgentConfig", () => {
   });
 
   test("conversation model config overrides global provider and model only", () => {
-    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-6" });
     const conversationDir = join(stateDir, "workspace", "C123");
     saveConversationModelConfig(conversationDir, {
       provider: "openai",

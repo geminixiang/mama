@@ -21,6 +21,6 @@ describe("sandbox command parsing", () => {
   });
 
   test("ignores other commands", () => {
-    expect(parseSandboxCommand("/pi-model anthropic/claude-sonnet-4-5")).toBeNull();
+    expect(parseSandboxCommand("/pi-model anthropic/claude-sonnet-4-6")).toBeNull();
   });
 });

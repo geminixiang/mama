@@ -115,7 +115,7 @@ For local testing you can set just `MAMA_LINK_PORT`; mama will use `http://local
 - `/login` (DM only) returns a 15-minute link to store API keys or run built-in OAuth flows ([GitHub](docs/oauth/github.md), [Google Workspace](docs/oauth/google-workspace.md)).
 - `session` / `/session` (DM only) returns a read-only link showing the current session timeline.
 - `new` / `/new` (DM only) resets the current session and starts fresh.
-- `model` / `/model` / `/pi-model provider/model[:thinking]` switches the LLM for the current conversation, e.g. `/pi-model anthropic/claude-sonnet-4-5:off`.
+- `model` / `/model` / `/pi-model provider/model[:thinking]` switches the LLM for the current conversation, e.g. `/pi-model anthropic/claude-sonnet-4-6:off`.
 - `stop` / `/stop` stops the current run. On Slack, use text commands so thread-local stop routing remains accurate.
 - On Slack you can also register native commands like `/pi-login`, `/pi-session`, `/pi-model`, and `/pi-new`.
 
@@ -129,7 +129,7 @@ mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/se
 {
   "llm": {
     "provider": "anthropic",
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-4-6",
     "thinkingLevel": "off"
   },
   "log": {
@@ -153,7 +153,7 @@ mama reads global settings from `<state-dir>/settings.json` (default `~/.mama/se
 | Field                  | Default             | Description                                              |
 | ---------------------- | ------------------- | -------------------------------------------------------- |
 | `llm.provider`         | `anthropic`         | AI provider                                              |
-| `llm.model`            | `claude-sonnet-4-5` | Model name                                               |
+| `llm.model`            | `claude-sonnet-4-6` | Model name                                               |
 | `llm.thinkingLevel`    | `off`               | `off` / `low` / `medium` / `high`                        |
 | `log.format`           | `console`           | `console` (colored stdout) or `json` (GCP Cloud Logging) |
 | `log.level`            | `info`              | `trace` / `debug` / `info` / `warn` / `error`            |
@@ -171,7 +171,7 @@ Conversation-local settings written by `/pi-model` use the same shape and usuall
 {
   "llm": {
     "provider": "anthropic",
-    "model": "claude-sonnet-4-5",
+    "model": "claude-sonnet-4-6",
     "thinkingLevel": "off"
   }
 }
