@@ -87,8 +87,8 @@ Vault routing: `image`, `firecracker`, and `cloudflare` resolve a vault per plat
 ### Managed per-user containers (`image:*`)
 
 ```bash
-docker pull ghcr.io/geminixiang/mama-sandbox:tools
-mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:tools /path/to/workspace
+docker pull ghcr.io/geminixiang/mama-sandbox:latest
+mama --sandbox=image:ghcr.io/geminixiang/mama-sandbox:latest /path/to/workspace
 ```
 
 Or build locally:
