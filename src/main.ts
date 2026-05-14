@@ -23,6 +23,7 @@ import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.j
 import { SandboxError, parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { FileVaultManager } from "./vault.js";
 import { createSessionRuntime } from "./runtime/index.js";
+import { BrowserExtensionManager } from "./browser-extension.js";
 import { ChannelStore } from "./store.js";
 import * as Sentry from "@sentry/node";
 
@@ -298,6 +299,7 @@ if (sandbox.type === "image") {
 
 const linkTokenStore = new InMemoryLinkTokenStore();
 const sessionViewTokenStore = new InMemorySessionViewTokenStore();
+const browserExtensionManager = new BrowserExtensionManager();
 setInterval(() => linkTokenStore.purge(), 5 * 60 * 1000).unref();
 setInterval(() => sessionViewTokenStore.purge(), 5 * 60 * 1000).unref();
 
@@ -322,6 +324,7 @@ const handler = createSessionRuntime({
   linkTokenStore,
   sessionViewTokenStore,
   portalBaseUrl: portalBaseUrl(),
+  browserExtensionManager,
 });
 
 // ============================================================================
@@ -399,6 +402,7 @@ if (MAMA_LINK_PORT) {
     },
     sessionViewTokenStore,
     { handler, botsByPlatform },
+    browserExtensionManager,
   );
 }
 
