@@ -197,6 +197,49 @@ describe("createEventTool", () => {
     ).rejects.toThrow("`at` is required for one-shot events");
   });
 
+  test("one-shot events reject invalid timestamps", async () => {
+    const workspaceDir = makeWorkspace();
+    const { tool, setEventContext } = createEventTool(workspaceDir);
+    setEventContext({
+      platform: "slack",
+      conversationId: "D123",
+      conversationKind: "direct",
+      userId: "U123",
+      sessionKey: "D123",
+    });
+
+    await expect(
+      tool.execute("call-1", {
+        label: "reminder",
+        type: "one-shot",
+        text: "Open x.com",
+        at: "not-a-timestamp",
+      }),
+    ).rejects.toThrow("`at` must be a valid ISO 8601 timestamp with UTC offset");
+  });
+
+  test("one-shot events reject past timestamps", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-14T11:00:50.000Z"));
+    const workspaceDir = makeWorkspace();
+    const { tool, setEventContext } = createEventTool(workspaceDir);
+    setEventContext({
+      platform: "slack",
+      conversationId: "D123",
+      conversationKind: "direct",
+      userId: "U123",
+      sessionKey: "D123",
+    });
+
+    await expect(
+      tool.execute("call-1", {
+        label: "reminder",
+        type: "one-shot",
+        text: "Open x.com",
+        at: "2026-05-14T11:01:10+08:00",
+      }),
+    ).rejects.toThrow(/`at` must be in the future/);
+  });
+
   test("periodic events require schedule and timezone", async () => {
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
