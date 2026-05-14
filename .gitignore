@@ -10,3 +10,4 @@ bin/
 .mama/
 vaults/*/
 
+ecosystem.config.cjs
