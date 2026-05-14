@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Bot, ChatResponseContext } from "../src/adapter.js";
-import type { UserBindingStore } from "../src/bindings.js";
 import { CommandRegistry } from "../src/commands/registry.js";
 import { LoginCommandHandler } from "../src/commands/login.js";
 import { NewCommandHandler } from "../src/commands/new.js";
@@ -74,21 +73,6 @@ function fakeVaultManager(): VaultManager & { entries: Map<string, VaultEntry> }
     listSharedVaults: () => [],
     deleteSharedVault: () => false,
     copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
-  };
-}
-
-function fakeBindingStore(): UserBindingStore {
-  return {
-    isEnabled: () => true,
-    resolve: () => undefined,
-    list: () => [],
-    create: () => {
-      throw new Error("not used");
-    },
-    activate: () => {
-      throw new Error("not used");
-    },
-    revoke: () => {},
   };
 }
 
@@ -164,7 +148,6 @@ function buildContext(args: BuildContextArgs): CommandContext & {
     } as any,
     sandbox,
     vaultManager: fakeVaultManager(),
-    bindingStore: fakeBindingStore(),
     linkTokenStore: fakeLinkTokenStore(),
     sessionViewTokenStore: fakeSessionViewTokenStore(),
     portalBaseUrl: "https://portal.example",

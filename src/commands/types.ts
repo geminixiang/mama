@@ -1,5 +1,4 @@
 import type { Bot, BotAdapters, PlatformName } from "../adapter.js";
-import type { UserBindingStore } from "../bindings.js";
 import type { DockerContainerManager } from "../provisioner.js";
 import type { SessionRuntime } from "../runtime/session-runtime.js";
 import type { SandboxConfig } from "../sandbox.js";
@@ -31,7 +30,6 @@ export interface CommandServices {
   runtime?: SessionRuntime;
   sandbox: SandboxConfig;
   vaultManager: VaultManager;
-  bindingStore?: UserBindingStore;
   provisioner?: DockerContainerManager;
   linkTokenStore: LinkTokenStoreLike;
   sessionViewTokenStore: SessionViewTokenStoreLike;

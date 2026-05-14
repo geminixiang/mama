@@ -14,7 +14,6 @@ import { SlackBot as SlackBotClass } from "./adapters/slack/index.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
-import { FileUserBindingStore } from "./bindings.js";
 import { startLinkServer } from "./login/portal.js";
 import { InMemoryLinkTokenStore } from "./login/session.js";
 import { InMemorySessionViewTokenStore } from "./session-view/store.js";
@@ -263,17 +262,6 @@ if (vaultManager.isEnabled()) {
   );
 }
 
-const bindingStore = new FileUserBindingStore(stateDir);
-if (bindingStore.isEnabled()) {
-  console.log(
-    sandbox.type === "container"
-      ? "  Binding store enabled. Container mode uses the container vault."
-      : sandbox.type === "image" || sandbox.type === "firecracker" || sandbox.type === "cloudflare"
-        ? "  Binding store enabled, but conversation-scoped sandbox routing does not use it."
-        : "  Binding store enabled. Host mode will not inject vault env.",
-  );
-}
-
 const startupConfig = (() => {
   try {
     return loadAgentConfig();
@@ -330,7 +318,6 @@ const handler = createSessionRuntime({
   workingDir,
   sandbox,
   vaultManager,
-  bindingStore,
   provisioner,
   linkTokenStore,
   sessionViewTokenStore,
