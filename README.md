@@ -82,7 +82,7 @@ Create an application in the [Discord Developer Portal](https://discord.com/deve
 | `firecracker:<vm-id>:<path>` | Firecracker microVM (alpha; not recommended)                           |
 | `cloudflare:<sandbox-id>`    | Cloudflare Worker bridge (experimental; no auto workspace sync)        |
 
-Vault routing: `image`, `firecracker`, and `cloudflare` look up `bindings.json` first, then fall back to the userId vault. See [docs/sandbox.md](docs/sandbox.md) for the full matrix.
+Vault routing: `image`, `firecracker`, and `cloudflare` resolve a vault per platform userId. See [docs/sandbox.md](docs/sandbox.md) for the full matrix.
 
 ### Managed per-user containers (`image:*`)
 
@@ -185,7 +185,6 @@ For GCP Cloud Logging, set `log.format: "json"`, give the VM service account `ro
 <state-dir>/
 ├── settings.json
 └── vaults/
-    ├── bindings.json          # platform user -> vault mapping
     ├── vault.json
     └── <vault-id>/
         ├── env

@@ -330,9 +330,3 @@ OAuth callback URL 是：
 ```text
 <MAMA_LINK_URL>/oauth/callback
 ```
-
----
-
-## Binding store
-
-`bindings.json` 仍可存在於 state dir，供其他流程或歷史資料使用；但目前 conversation-scoped sandbox routing（`image` / `firecracker` / `cloudflare`）不使用它。
