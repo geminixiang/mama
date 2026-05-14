@@ -137,9 +137,9 @@ export function getOAuthServices(): OAuthService[] {
   }
   try {
     const custom = parsed
-      .map((entry): OAuthService | null => {
-        if (!isRecord(entry)) return null;
-        const obj = entry;
+      .map((serviceValue): OAuthService | null => {
+        if (!isRecord(serviceValue)) return null;
+        const obj = serviceValue;
         const id = typeof obj.id === "string" ? obj.id.trim() : "";
         const label = typeof obj.label === "string" ? obj.label.trim() : "";
         const authorizationUrl =
@@ -203,7 +203,8 @@ export function getOAuthServices(): OAuthService[] {
           authorizationParams: isRecord(obj.authorizationParams)
             ? Object.fromEntries(
                 Object.entries(obj.authorizationParams).filter(
-                  (entry): entry is [string, string] => typeof entry[1] === "string",
+                  (authorizationEntry): authorizationEntry is [string, string] =>
+                    typeof authorizationEntry[1] === "string",
                 ),
               )
             : undefined,

@@ -703,12 +703,15 @@ export class SlackBot implements Bot {
     const responseCtx: ChatResponseContext = {
       respond,
       replaceResponse: respond,
-      respondDiagnostic: async (responseText: string, options?: { style?: "muted" | "error" }) => {
-        if (options?.style === "muted") {
+      respondDiagnostic: async (
+        responseText: string,
+        responseOptions?: { style?: "muted" | "error" },
+      ) => {
+        if (responseOptions?.style === "muted") {
           await respondMuted(responseText);
           return;
         }
-        await respond(options?.style === "error" ? `_${responseText}_` : responseText);
+        await respond(responseOptions?.style === "error" ? `_${responseText}_` : responseText);
       },
       respondToolResult: async (result: ChatToolResult) => {
         const duration = (result.durationMs / 1000).toFixed(1);

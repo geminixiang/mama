@@ -353,7 +353,9 @@ export class DiscordBot implements Bot {
       const buffer = await response.arrayBuffer();
       writeFileSync(join(dir, filename), Buffer.from(buffer));
     } catch (err) {
-      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`, {
+        cause: err,
+      });
     }
   }
 

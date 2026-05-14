@@ -134,7 +134,7 @@ export class FileVaultManager implements VaultManager {
     return readdirSync(sharedDir, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && normalizeSharedVaultName(entry.name) === entry.name)
       .map((entry) => entry.name)
-      .sort((left, right) => left.localeCompare(right));
+      .toSorted((left, right) => left.localeCompare(right));
   }
 
   deleteSharedVault(name: string): boolean {
@@ -196,7 +196,7 @@ export class FileVaultManager implements VaultManager {
     const merged = { ...existing, ...env };
     const content =
       Object.entries(merged)
-        .sort(([left], [right]) => left.localeCompare(right))
+        .toSorted(([left], [right]) => left.localeCompare(right))
         .map(([envKey, value]) => `${envKey}=${value}`)
         .join("\n") + "\n";
     atomicWritePrivateFile(envPath, content);
@@ -283,7 +283,7 @@ function copyVaultDir(
       const merged = { ...targetEnv, ...sourceEnv };
       const content =
         Object.entries(merged)
-          .sort(([left], [right]) => left.localeCompare(right))
+          .toSorted(([left], [right]) => left.localeCompare(right))
           .map(([envKey, value]) => `${envKey}=${value}`)
           .join("\n") + "\n";
       atomicWritePrivateFile(targetPath, content);

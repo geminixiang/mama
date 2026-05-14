@@ -29,7 +29,7 @@ export function readJsonFileIfExists<T>(
     parsed = JSON.parse(raw);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(malformedMessage(detail));
+    throw new Error(malformedMessage(detail), { cause: err });
   }
 
   if (!validate(parsed)) {
@@ -49,7 +49,7 @@ export function parseJsonValue<T>(
     parsed = JSON.parse(raw);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(malformedMessage(detail));
+    throw new Error(malformedMessage(detail), { cause: err });
   }
 
   if (!validate(parsed)) {

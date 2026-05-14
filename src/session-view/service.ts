@@ -76,7 +76,7 @@ export function loadSessionViewModel(sessionFile: string): SessionViewModel {
     .filter((candidate) => candidate !== resolvedFile)
     .map((candidate) => buildSessionRelation(candidate, "fork", resolvedFile))
     .filter((relation): relation is SessionViewRelation => relation !== null)
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
+    .toSorted((a, b) => (a.updatedAt < b.updatedAt ? -1 : a.updatedAt > b.updatedAt ? 1 : 0));
 
   const forksByEntryId = new Map<string, SessionViewRelation[]>();
   for (const fork of forks) {
@@ -135,6 +135,7 @@ export function resolveRequestedSessionFile(
       `Session file is corrupted: ${candidate}: ${
         err instanceof Error ? err.message : String(err)
       }`,
+      { cause: err },
     );
   }
   if (!sm.getHeader()) {

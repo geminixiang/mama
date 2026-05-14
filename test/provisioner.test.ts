@@ -1,6 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
 import { DockerContainerManager } from "../src/provisioner.js";
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 describe("DockerContainerManager", () => {
   test("re-checks a cached container and starts it when it was stopped", async () => {
     const execMock = vi
@@ -314,22 +325,19 @@ describe("DockerContainerManager", () => {
   });
 
   test("concurrent provision calls for the same vaultId share one docker run", async () => {
-    let startResolve: (value: { stdout: string }) => void = () => {};
-    const startPromise = new Promise<{ stdout: string }>((resolvePromise) => {
-      startResolve = resolvePromise;
-    });
+    const startDeferred = createDeferred<{ stdout: string }>();
     const execMock = vi
       .fn<(file: string, args: string[]) => Promise<{ stdout: string; stderr?: string }>>()
       .mockRejectedValueOnce(new Error("No such object"))
       .mockResolvedValueOnce({ stdout: "[]\n" })
-      .mockReturnValueOnce(startPromise);
+      .mockReturnValueOnce(startDeferred.promise);
 
     const manager = new DockerContainerManager("ubuntu:24.04", execMock as any);
 
     const first = manager.provision("slack-u123");
     const second = manager.provision("slack-u123");
 
-    startResolve({ stdout: "new-container-id\n" });
+    startDeferred.resolve({ stdout: "new-container-id\n" });
     await Promise.all([first, second]);
 
     expect(execMock).toHaveBeenCalledTimes(3);

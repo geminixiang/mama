@@ -659,16 +659,19 @@ function createRunQueue(responseCtx: ChatResponseContext): {
   };
 }
 
+function padTwoDigits(n: number): string {
+  return n.toString().padStart(2, "0");
+}
+
 function formatTimestampedUserMessage(message: ChatMessage): string {
   const now = new Date();
-  const pad = (n: number) => n.toString().padStart(2, "0");
   const offset = -now.getTimezoneOffset();
   const offsetSign = offset >= 0 ? "+" : "-";
-  const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-  const offsetMins = pad(Math.abs(offset) % 60);
+  const offsetHours = padTwoDigits(Math.floor(Math.abs(offset) / 60));
+  const offsetMins = padTwoDigits(Math.abs(offset) % 60);
   const timestamp =
-    `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ` +
-    `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}` +
+    `${now.getFullYear()}-${padTwoDigits(now.getMonth() + 1)}-${padTwoDigits(now.getDate())} ` +
+    `${padTwoDigits(now.getHours())}:${padTwoDigits(now.getMinutes())}:${padTwoDigits(now.getSeconds())}` +
     `${offsetSign}${offsetHours}:${offsetMins}`;
   const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
   return `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
@@ -817,7 +820,7 @@ async function reportUsageSummary(ctx: UsageReportContext): Promise<void> {
 
   const lastAssistantMessage = session.messages
     .slice()
-    .reverse()
+    .toReversed()
     .find(
       (message): message is Extract<typeof message, { role: "assistant" }> =>
         message.role === "assistant" && message.stopReason !== "aborted",

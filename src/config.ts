@@ -363,7 +363,7 @@ export function saveAgentConfig(config: Partial<AgentConfig>): void {
       const message = detail.startsWith("Malformed settings file")
         ? detail.replace("Malformed settings file", "Refusing to overwrite malformed settings file")
         : detail;
-      throw new Error(message);
+      throw new Error(message, { cause: err });
     }
   }
 

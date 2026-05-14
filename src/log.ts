@@ -274,6 +274,13 @@ export function logAgentError(ctx: LogContext | "system", error: string): void {
   console.log(chalk.dim(indented));
 }
 
+function formatTokenCount(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
 // Usage summary
 export function logUsageSummary(
   ctx: LogContext,
@@ -287,13 +294,6 @@ export function logUsageSummary(
   contextTokens?: number,
   contextWindow?: number,
 ): string {
-  const formatTokens = (count: number): string => {
-    if (count < 1000) return count.toString();
-    if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-    if (count < 1000000) return `${Math.round(count / 1000)}k`;
-    return `${(count / 1000000).toFixed(1)}M`;
-  };
-
   const lines: string[] = [];
   lines.push("_Usage Summary_");
   lines.push(`Tokens: ${usage.input.toLocaleString()} in, ${usage.output.toLocaleString()} out`);
@@ -305,7 +305,7 @@ export function logUsageSummary(
   if (contextTokens && contextWindow) {
     const contextPercent = ((contextTokens / contextWindow) * 100).toFixed(1);
     lines.push(
-      `Context: ${formatTokens(contextTokens)} / ${formatTokens(contextWindow)} (${contextPercent}%)`,
+      `Context: ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} (${contextPercent}%)`,
     );
   }
   lines.push(
