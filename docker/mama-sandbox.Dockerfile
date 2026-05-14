@@ -16,13 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   gnupg \
   jq \
   less \
+  fd-find \
   ffmpeg \
   openssh-client \
   python-is-python3 \
+  ripgrep \
   tini \
   unzip \
   xz-utils \
   zip \
+  && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /etc/apt/keyrings \
