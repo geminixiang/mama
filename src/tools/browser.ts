@@ -13,10 +13,30 @@ const browserSchema = Type.Object({
     Type.Literal("reload_tab"),
     Type.Literal("get_active_tab"),
     Type.Literal("screenshot"),
+    Type.Literal("wait_for"),
+    Type.Literal("reload_until"),
+    Type.Literal("inspect_page"),
+    Type.Literal("find_elements"),
+    Type.Literal("find_iframes"),
   ]),
   url: Type.Optional(Type.String({ description: "URL for open_tab" })),
-  tabId: Type.Optional(Type.Number({ description: "Chrome tab id for activate_tab/reload_tab" })),
+  tabId: Type.Optional(
+    Type.Number({ description: "Chrome tab id for activate_tab/reload_tab/wait_for/find_*" }),
+  ),
   windowId: Type.Optional(Type.Number({ description: "Chrome window id for screenshot" })),
+  selector: Type.Optional(
+    Type.String({ description: "CSS selector for wait_for / reload_until / find_elements" }),
+  ),
+  text: Type.Optional(Type.String({ description: "Visible text to wait for" })),
+  srcIncludes: Type.Optional(
+    Type.String({ description: "Substring to match against iframe src for find_iframes" }),
+  ),
+  maxResults: Type.Optional(Type.Number({ description: "Maximum results to return for find_*" })),
+  timeoutMs: Type.Optional(Type.Number({ description: "Timeout in milliseconds" })),
+  intervalMs: Type.Optional(Type.Number({ description: "Polling interval in milliseconds" })),
+  maxAttempts: Type.Optional(
+    Type.Number({ description: "Maximum reload attempts for reload_until" }),
+  ),
 });
 
 type BrowserToolParams = {
@@ -25,6 +45,13 @@ type BrowserToolParams = {
   url?: string;
   tabId?: number;
   windowId?: number;
+  selector?: string;
+  text?: string;
+  srcIncludes?: string;
+  timeoutMs?: number;
+  intervalMs?: number;
+  maxAttempts?: number;
+  maxResults?: number;
 };
 
 interface BrowserToolContext {
@@ -43,7 +70,7 @@ export function createBrowserTool(manager: BrowserExtensionManager): {
     name: "browser",
     label: "browser",
     description:
-      "Operate the Chrome browser extension paired with this conversation. Use this when the user asks to inspect, open, refresh, list tabs, or screenshot their browser. Requires the user to have paired via /pi-login browser.",
+      "Operate the Chrome browser extension paired with this conversation. Use this when the user asks to inspect, open, refresh, wait on, query elements/iframes, or screenshot their browser. Requires the user to have paired via /pi-login browser.",
     parameters: browserSchema,
     execute: async (_toolCallId: string, params: BrowserToolParams, signal?: AbortSignal) => {
       if (signal?.aborted) throw new Error("Operation aborted");
@@ -53,6 +80,13 @@ export function createBrowserTool(manager: BrowserExtensionManager): {
       if (params.url) payload.url = params.url;
       if (params.tabId !== undefined) payload.tabId = params.tabId;
       if (params.windowId !== undefined) payload.windowId = params.windowId;
+      if (params.selector !== undefined) payload.selector = params.selector;
+      if (params.text !== undefined) payload.text = params.text;
+      if (params.srcIncludes !== undefined) payload.srcIncludes = params.srcIncludes;
+      if (params.timeoutMs !== undefined) payload.timeoutMs = params.timeoutMs;
+      if (params.intervalMs !== undefined) payload.intervalMs = params.intervalMs;
+      if (params.maxAttempts !== undefined) payload.maxAttempts = params.maxAttempts;
+      if (params.maxResults !== undefined) payload.maxResults = params.maxResults;
 
       const { result } = await manager.enqueueAndWait(
         context.conversationId,

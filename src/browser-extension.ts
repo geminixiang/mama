@@ -6,7 +6,12 @@ export type BrowserCommandType =
   | "activate_tab"
   | "reload_tab"
   | "get_active_tab"
-  | "screenshot";
+  | "screenshot"
+  | "wait_for"
+  | "reload_until"
+  | "inspect_page"
+  | "find_elements"
+  | "find_iframes";
 
 export interface BrowserCommand {
   id: string;

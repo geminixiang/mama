@@ -64,6 +64,17 @@ function parsePositiveInt(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function normalizeDomainLikeMatch(value: string): string {
+  return value
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/$/, "");
+}
+
+function normalizeSelectorForAutoLinkedUrls(selector: string): string {
+  return selector.replace(/(\[src\*=(['"]))https?:\/\//gi, "$1");
+}
+
 export class BrowserCommandHandler implements CommandHandler {
   async tryHandle(context: CommandContext): Promise<boolean> {
     const parsed = parseBrowserCommand(context.commandText);
@@ -118,12 +129,18 @@ export class BrowserCommandHandler implements CommandHandler {
       reload: "reload_tab",
       screenshot: "screenshot",
       activate: "activate_tab",
+      inspect: "inspect_page",
+      wait: "wait_for",
+      reloaduntil: "reload_until",
+      "reload-until": "reload_until",
+      find: "find_elements",
+      iframes: "find_iframes",
     };
     const type = commandMap[parsed.action];
     if (!type) {
       await replyWithContext(
         context.responseCtx,
-        "Browser commands: `/pi-login browser`, `browser list`, `browser tabs`, `browser open <url>`, `browser active`, `browser activate <tabId>`, `browser reload [tabId]`, `browser screenshot [windowId]`.",
+        "Browser commands: `/pi-login browser`, `browser list`, `browser tabs`, `browser open <url>`, `browser active`, `browser activate <tabId>`, `browser reload [tabId]`, `browser screenshot [windowId]`, `browser inspect`, `browser wait <selector-or-text>`, `browser reload-until <selector-or-text> [maxAttempts]`, `browser find <selector>`, `browser iframes [src-substring]`.",
       );
       return true;
     }
@@ -148,6 +165,51 @@ export class BrowserCommandHandler implements CommandHandler {
     if (type === "screenshot") {
       const windowId = parsePositiveInt(parsed.args[0]);
       if (windowId) payload.windowId = windowId;
+    }
+    if (type === "wait_for") {
+      const query = normalizeCommandText(parsed.args.join(" ")).trim();
+      if (!query) {
+        await replyWithContext(
+          context.responseCtx,
+          "Usage: `browser wait <selector>` or `browser wait text:Player loaded`.",
+        );
+        return true;
+      }
+      if (query.startsWith("text:")) payload.text = query.slice(5);
+      else payload.selector = query;
+      payload.timeoutMs = 15000;
+    }
+    if (type === "reload_until") {
+      const [firstArg, secondArg] = parsed.args;
+      const query = normalizeCommandText(firstArg || "").trim();
+      if (!query) {
+        await replyWithContext(
+          context.responseCtx,
+          "Usage: `browser reload-until <selector>` or `browser reload-until text:Player loaded [maxAttempts]`.",
+        );
+        return true;
+      }
+      if (query.startsWith("text:")) payload.text = query.slice(5);
+      else payload.selector = query;
+      const maxAttempts = parsePositiveInt(secondArg);
+      if (maxAttempts) payload.maxAttempts = maxAttempts;
+    }
+    if (type === "find_elements") {
+      const selector = normalizeSelectorForAutoLinkedUrls(
+        normalizeCommandText(parsed.args.join(" ")).trim(),
+      );
+      if (!selector) {
+        await replyWithContext(
+          context.responseCtx,
+          'Usage: `browser find iframe[src*="player.gliacloud.com"]`.',
+        );
+        return true;
+      }
+      payload.selector = selector;
+    }
+    if (type === "find_iframes") {
+      const srcIncludes = normalizeDomainLikeMatch(normalizeCommandText(parsed.args.join(" ")));
+      if (srcIncludes) payload.srcIncludes = srcIncludes;
     }
 
     await replyWithContext(context.responseCtx, `Sending browser command: ${type} ...`);
