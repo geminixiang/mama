@@ -1518,6 +1518,11 @@ const styles = `
     color: #e5e7eb;
   }
 
+  .markdown-assistant pre code {
+    background: transparent;
+    color: inherit;
+  }
+
   .markdown-assistant table th,
   .markdown-assistant table td {
     border-color: rgba(0, 0, 0, 0.08);
