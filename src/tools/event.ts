@@ -174,6 +174,17 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
     if (!params.at) {
       throw new Error("`at` is required for one-shot events");
     }
+
+    const atTime = new Date(params.at).getTime();
+    if (Number.isNaN(atTime)) {
+      throw new Error("`at` must be a valid ISO 8601 timestamp with UTC offset");
+    }
+    if (atTime <= Date.now()) {
+      throw new Error(
+        `\`at\` must be in the future; got ${params.at} (now=${new Date().toISOString()}). Check the timezone offset.`,
+      );
+    }
+
     // No sessionKey or threadTs: reminders should fire as top-level messages, not buried in old threads
     return { ...base, type: "one-shot", at: params.at };
   }

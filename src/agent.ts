@@ -553,7 +553,7 @@ async function createConfiguredAgentSession(params: {
   if (loadedSession.messages.length > 0) {
     agent.state.messages = loadedSession.messages;
     log.logInfo(
-      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
+      `[${conversationId}] Reloaded ${loadedSession.messages.length} messages from session context`,
     );
   }
 
