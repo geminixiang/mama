@@ -37,7 +37,7 @@ export class NewCommandHandler implements CommandHandler {
       return true;
     }
 
-    await context.services.runtime.handleNew(
+    await context.services.runtime.handleNewCommand(
       context.sessionKey,
       context.conversationId,
       context.bot,

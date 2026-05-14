@@ -67,6 +67,7 @@ export interface DiscordEvent extends BotEvent {
 export class DiscordBot implements Bot {
   private client: Client;
   private handler: BotHandler;
+  private token: string;
   private workingDir: string;
   private botUserId: string | null = null;
   private queues = new Map<string, ChannelQueue>();
@@ -76,6 +77,7 @@ export class DiscordBot implements Bot {
 
   constructor(handler: BotHandler, config: { token: string; workingDir: string }) {
     this.handler = handler;
+    this.token = config.token;
     this.workingDir = config.workingDir;
     this.client = new Client({
       intents: [
@@ -97,7 +99,7 @@ export class DiscordBot implements Bot {
       this.client.once(Events.ClientReady, async (readyClient) => {
         this.botUserId = readyClient.user.id;
         this.startupTime = Date.now();
-        log.logConnected();
+        log.logConnected("Discord");
         log.logInfo(`Discord bot started as ${readyClient.user.tag}`);
         this.loadCachedGuildData();
         this.setupEventHandlers();
@@ -125,7 +127,7 @@ export class DiscordBot implements Bot {
               options: [
                 {
                   name: "model",
-                  description: "provider/model[:thinking], e.g. anthropic/claude-sonnet-4-5:off",
+                  description: "provider/model[:thinking], e.g. anthropic/claude-sonnet-4-6:off",
                   type: ApplicationCommandOptionType.String,
                   required: false,
                 },
@@ -153,7 +155,7 @@ export class DiscordBot implements Bot {
         resolve();
       });
       this.client.once(Events.Error, reject);
-      this.client.login(process.env.MAMA_DISCORD_BOT_TOKEN!).catch(reject);
+      this.client.login(this.token).catch(reject);
     });
   }
 
@@ -351,7 +353,9 @@ export class DiscordBot implements Bot {
       const buffer = await response.arrayBuffer();
       writeFileSync(join(dir, filename), Buffer.from(buffer));
     } catch (err) {
-      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`Download failed: ${err instanceof Error ? err.message : String(err)}`, {
+        cause: err,
+      });
     }
   }
 
@@ -552,7 +556,7 @@ export class DiscordBot implements Bot {
       );
       try {
         if (interaction.commandName === "new") {
-          await this.handler.handleNew(sessionKey, conversationId, this);
+          await this.handler.handleNewCommand(sessionKey, conversationId, this);
           return;
         }
 

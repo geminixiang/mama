@@ -122,6 +122,7 @@ async function ensureContainerRunning(container: string): Promise<void> {
     throw new Error(
       `Container "${container}" is not available. ` +
         `Expected a pre-existing container or image provisioning to keep it running.\n${details}`.trim(),
+      { cause: error },
     );
   }
 }

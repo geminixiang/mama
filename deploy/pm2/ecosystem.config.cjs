@@ -48,32 +48,26 @@ module.exports = {
       script: "mama",
 
       // EDIT ME: working dir + sandbox to match your setup.
-      args: "--sandbox=container:rd-sandbox /root/.mom/data",
+      args: "--sandbox=image:ghcr.io/geminixiang/mama-sandbox:latest ./workspace",
 
       // EDIT ME: uncomment what you need. Prefer loading secrets from
       // a sourced env file or pm2's --env-file rather than committing
       // them here.
       env: {
-        // --- Platforms (at least one required) ---
-        // MAMA_SLACK_APP_TOKEN: "xapp-...",
-        // MAMA_SLACK_BOT_TOKEN: "xoxb-...",
-        // MAMA_TELEGRAM_BOT_TOKEN: "123456:ABC-...",
-        // MAMA_DISCORD_BOT_TOKEN: "MTI...",
-        // --- LLM providers (set whichever you use) ---
-        // ANTHROPIC_API_KEY: "sk-ant-...",
-        // OPENAI_API_KEY: "sk-...",
-        // --- Login portal / set-secret links ---
-        // MAMA_LINK_URL: "https://mama.example.com",
-        // MAMA_LINK_PORT: "8181",
-        // --- GitHub OAuth login ---
-        // GITHUB_OAUTH_CLIENT_ID: "...",
-        // GITHUB_OAUTH_CLIENT_SECRET: "...",
-        // --- Google Workspace OAuth login ---
-        // GOOGLE_WORKSPACE_CLI_CLIENT_ID: "...",
-        // GOOGLE_WORKSPACE_CLI_CLIENT_SECRET: "...",
-        // --- Cloudflare sandbox (required when --sandbox=cloudflare:*) ---
-        // MAMA_CLOUDFLARE_SANDBOX_URL: "https://...",
-        // MAMA_CLOUDFLARE_SANDBOX_TOKEN: "...",
+        MAMA_SLACK_APP_TOKEN: "",
+        MAMA_SLACK_BOT_TOKEN: "",
+        MAMA_TELEGRAM_BOT_TOKEN: "",
+        MAMA_DISCORD_BOT_TOKEN: "",
+        ANTHROPIC_API_KEY: "",
+        OPENAI_API_KEY: "",
+        MAMA_LINK_URL: "",
+        MAMA_LINK_PORT: "",
+        GITHUB_OAUTH_CLIENT_ID: "",
+        GITHUB_OAUTH_CLIENT_SECRET: "",
+        GOOGLE_WORKSPACE_CLI_CLIENT_ID: "",
+        GOOGLE_WORKSPACE_CLI_CLIENT_SECRET: "",
+        MAMA_CLOUDFLARE_SANDBOX_URL: "",
+        MAMA_CLOUDFLARE_SANDBOX_TOKEN: "",
       },
 
       // Graceful shutdown: SIGTERM, then wait up to 60s before SIGKILL.

@@ -49,7 +49,7 @@ flowchart LR
 
   subgraph StateDir["State Dir (~/.mama or --state-dir)"]
     GlobalSettings["settings.json\nglobal defaults"]
-    Vaults["vaults/\nvault.json + conversation-scoped secrets"]
+    Vaults["vaults/\nconversation-scoped secret directories"]
     LinkTokens["login/session tokens\nin-memory stores"]
   end
 

@@ -95,7 +95,7 @@ export class ModelCommandHandler implements CommandHandler {
           `Current: \`${formatModelSpec(current.provider, current.model, current.thinkingLevel)}\``,
           "",
           "Usage: `/pi-model provider/model[:thinking]`",
-          "Example: `/pi-model anthropic/claude-sonnet-4-5:off`",
+          "Example: `/pi-model anthropic/claude-sonnet-4-6:off`",
         ]),
         { style: "muted" },
       );

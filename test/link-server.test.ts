@@ -59,7 +59,6 @@ describe("link server", () => {
     dirs.push(stateDir);
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u123", { displayName: "Alice" });
     vaultManager.upsertEnv("vault-u123", {
       OPENAI_API_KEY: "sk-secret-value",
       GH_TOKEN: "ghp-secret-value",
@@ -97,7 +96,6 @@ describe("link server", () => {
     process.env.GITHUB_OAUTH_CLIENT_SECRET = "github-client-secret";
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u234", { displayName: "Carol" });
 
     const tokenStore = new InMemoryLinkTokenStore();
     const token = tokenStore.create("telegram", "U234", "234", "vault-u234", "");
@@ -135,7 +133,6 @@ describe("link server", () => {
     process.env.GITHUB_OAUTH_CLIENT_SECRET = "github-client-secret";
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u345", { displayName: "Dana" });
 
     const tokenStore = new InMemoryLinkTokenStore();
     const token = tokenStore.create("telegram", "U345", "345", "vault-u345", "");
@@ -197,7 +194,6 @@ describe("link server", () => {
     dirs.push(stateDir);
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u777", { displayName: "Eve" });
 
     const tokenStore = new InMemoryLinkTokenStore();
     const token = tokenStore.create("telegram", "U777", "777", "vault-u777", "");
@@ -230,7 +226,6 @@ describe("link server", () => {
     dirs.push(stateDir);
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u888", { displayName: "Frank" });
 
     const tokenStore = new InMemoryLinkTokenStore();
     const token = tokenStore.create("telegram", "U888", "888", "vault-u888", "");
@@ -278,7 +273,6 @@ describe("link server", () => {
     dirs.push(stateDir);
 
     const vaultManager = new FileVaultManager(stateDir);
-    vaultManager.addEntry("vault-u999", { displayName: "Bob" });
 
     const tokenStore = new InMemoryLinkTokenStore();
     const token = tokenStore.create("telegram", "U999", "999", "vault-u999", "");

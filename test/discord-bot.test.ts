@@ -13,7 +13,7 @@ function makeHandler(): BotHandler {
     handleEvent: vi.fn(),
     handleStop: vi.fn(),
     forceStop: vi.fn(),
-    handleNew: vi.fn(),
+    handleNewCommand: vi.fn(),
   };
 }
 
@@ -431,7 +431,7 @@ describe("DiscordBot message routing", () => {
       editReply: vi.fn(),
     });
 
-    expect(handler.handleNew).toHaveBeenCalledWith("DM1", "DM1", bot);
+    expect(handler.handleNewCommand).toHaveBeenCalledWith("DM1", "DM1", bot);
   });
 
   test("/stop slash command targets the thread session in Discord threads", async () => {

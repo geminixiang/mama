@@ -1,20 +1,8 @@
-import type {
-  Bot,
-  BotAdapters,
-  BotEvent,
-  BotHandler,
-  PlatformName,
-  RunningSession,
-} from "../adapter.js";
-import {
-  hasMaterializedSlackBranchSession,
-  resolveSlackSessionScope,
-  waitForSlackBranchBootstrap,
-} from "../adapters/slack/branch-manager.js";
+import type { Bot, BotAdapters, BotEvent, BotHandler, RunningSession } from "../adapter.js";
+import { resolveSlackSessionScope } from "../adapters/slack/branch-manager.js";
 import { type AgentRunner, createRunner } from "../agent.js";
 import { CommandRegistry, createDefaultCommandRegistry } from "../commands/index.js";
 import type { CommandServices } from "../commands/index.js";
-import { isPrivateConversation } from "../commands/utils.js";
 import * as log from "../log.js";
 import {
   createManagedSessionFile,
@@ -24,26 +12,21 @@ import {
   resolveGenericSessionScope,
   type ResolvedSessionScope,
 } from "../session-store.js";
-import { addLifecycleBreadcrumb, applyRunScope } from "../sentry.js";
-import { formatNothingRunning, formatStopped, formatStopping } from "../ui-copy.js";
+import { formatNothingRunning, formatStopping } from "../ui-copy.js";
+import {
+  ConversationOrchestrator,
+  type ConversationRuntimeState,
+} from "./conversation-orchestrator.js";
 import * as Sentry from "@sentry/node";
 import { join } from "path";
 
-interface ConversationState {
-  running: boolean;
-  runner: AgentRunner;
-  stopRequested: boolean;
-  stopMessageTs?: string;
-  lastAccessedAt: number;
-  startedAt?: number;
-  lastActivityAt?: number;
-}
+type ConversationState = ConversationRuntimeState;
 
 export interface RunSessionOptions {
   event: BotEvent;
   bot: Bot;
   adapters: BotAdapters;
-  isEvent?: boolean;
+  isSyntheticEvent?: boolean;
 }
 
 export interface CreateSessionSandboxOptions {
@@ -83,11 +66,31 @@ class MamaSessionRuntime implements SessionRuntime {
   private readonly sessionQueues = new Map<string, Promise<void>>();
   private readonly inFlightRuns = new Set<Promise<void>>();
   private readonly commandRegistry: CommandRegistry;
+  private readonly orchestrator: ConversationOrchestrator;
   private isShuttingDown = false;
 
   constructor(private readonly options: SessionRuntimeOptions) {
     this.options.runtime = this;
     this.commandRegistry = options.commandRegistry ?? createDefaultCommandRegistry();
+    this.orchestrator = new ConversationOrchestrator({
+      workingDir: options.workingDir,
+      commandRegistry: this.commandRegistry,
+      commandServices: this.options,
+      isShuttingDown: () => this.isShuttingDown,
+      getState: (sessionKey) => this.conversationStates.get(sessionKey),
+      getOrCreateState: (createOptions) => this.getOrCreateState(createOptions),
+      beforeRunTracked: (runPromise) => {
+        this.inFlightRuns.add(runPromise);
+        Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size);
+      },
+      afterRunTracked: (runPromise) => {
+        this.inFlightRuns.delete(runPromise);
+      },
+      onRunFinished: () => {
+        Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size - 1);
+        this.evictIdleSessions();
+      },
+    });
   }
 
   isRunning(sessionKey: string): boolean {
@@ -133,7 +136,7 @@ class MamaSessionRuntime implements SessionRuntime {
     }
   }
 
-  async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+  async handleNewCommand(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
     const state = this.conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
@@ -158,13 +161,13 @@ class MamaSessionRuntime implements SessionRuntime {
     event: BotEvent,
     bot: Bot,
     adapters: BotAdapters,
-    isEvent?: boolean,
+    isSyntheticEvent?: boolean,
   ): Promise<void> {
     const sessionKey = event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`;
     const previous = this.sessionQueues.get(sessionKey) ?? Promise.resolve();
     const next = previous
       .catch(() => {})
-      .then(() => this.runSession({ event, bot, adapters, isEvent }));
+      .then(() => this.runSession({ event, bot, adapters, isSyntheticEvent }));
     this.sessionQueues.set(sessionKey, next);
     try {
       await next;
@@ -175,175 +178,8 @@ class MamaSessionRuntime implements SessionRuntime {
     }
   }
 
-  async runSession({ event, bot, adapters, isEvent }: RunSessionOptions): Promise<void> {
-    const conversationId = event.conversationId;
-    if (this.isShuttingDown) {
-      log.logInfo(
-        `[${conversationId}] Rejected event during shutdown: ${event.text.substring(0, 50)}`,
-      );
-      return;
-    }
-
-    const sessionKey = event.sessionKey ?? `${conversationId}:${event.thread_ts ?? event.ts}`;
-    const privateConversation = isPrivateConversation(event);
-    const handledCommand = await this.commandRegistry.handle({
-      bot,
-      responseCtx: adapters.responseCtx,
-      platform: adapters.platform.name as PlatformName,
-      platformUserId: event.user,
-      conversationId,
-      vaultConversationId: event.vaultConversationId,
-      sessionKey,
-      commandText: event.text,
-      privateConversation,
-      services: this.options,
-    });
-    if (handledCommand) return;
-
-    const conversationDir = join(this.options.workingDir, conversationId);
-    const waitedForParent =
-      adapters.platform.name === "slack"
-        ? await waitForSlackBranchBootstrap({
-            parentSessionKey: conversationId,
-            sessionKey,
-            hasThreadSession: () => hasMaterializedSlackBranchSession(conversationDir, sessionKey),
-            isParentRunning: () => this.conversationStates.get(conversationId)?.running === true,
-          })
-        : false;
-    if (waitedForParent) {
-      log.logInfo(
-        `[${conversationId}] Delayed thread bootstrap until parent session sealed: ${sessionKey}`,
-      );
-    }
-
-    const state = await this.getOrCreateState({
-      conversationId,
-      platformName: adapters.platform.name,
-      sessionKey,
-    });
-
-    state.running = true;
-    state.stopRequested = false;
-    state.startedAt = Date.now();
-    state.lastActivityAt = Date.now();
-
-    log.logInfo(`[${conversationId}] Starting run: ${event.text.substring(0, 50)}`);
-
-    const runPromise = (async () => {
-      try {
-        const result = await this.runWithInstrumentation(
-          adapters,
-          { conversationId, sessionKey, isEvent, startedAt: state.startedAt! },
-          async () => {
-            await adapters.responseCtx.setTyping(true);
-            await adapters.responseCtx.setWorking(true);
-            const r = await state.runner.run(
-              adapters.message,
-              adapters.responseCtx,
-              adapters.platform,
-            );
-            await adapters.responseCtx.setWorking(false);
-            return r;
-          },
-        );
-
-        if (result?.stopReason === "aborted" && state.stopRequested) {
-          if (state.stopMessageTs) {
-            await bot.updateMessage(conversationId, state.stopMessageTs, formatStopped(bot));
-            state.stopMessageTs = undefined;
-          } else {
-            await bot.postMessage(conversationId, formatStopped(bot));
-          }
-        }
-      } finally {
-        state.running = false;
-        state.lastAccessedAt = Date.now();
-        Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size - 1);
-        this.evictIdleSessions();
-      }
-    })();
-
-    this.inFlightRuns.add(runPromise);
-    try {
-      await runPromise;
-    } finally {
-      this.inFlightRuns.delete(runPromise);
-    }
-  }
-
-  private async runWithInstrumentation(
-    adapters: BotAdapters,
-    meta: { conversationId: string; sessionKey: string; isEvent?: boolean; startedAt: number },
-    body: () => Promise<{ stopReason: string; errorMessage?: string }>,
-  ): Promise<{ stopReason: string; errorMessage?: string } | undefined> {
-    const { conversationId, sessionKey, isEvent, startedAt } = meta;
-    const { message, platform } = adapters;
-
-    Sentry.metrics.count("agent.run.started", 1, {
-      attributes: { channel: conversationId },
-    });
-    Sentry.metrics.gauge("agent.sessions.active", this.inFlightRuns.size + 1);
-
-    return Sentry.startSpan(
-      { name: "agent.run", op: "agent", attributes: { conversationId, sessionKey } },
-      async () =>
-        Sentry.withScope(async (scope) => {
-          applyRunScope(scope, {
-            conversationId,
-            sessionKey,
-            messageId: message.id,
-            platform: platform.name,
-            userId: message.userId,
-            userName: message.userName,
-            threadTs: message.threadTs,
-            isEvent,
-          });
-          addLifecycleBreadcrumb("agent.run.started", {
-            channel_id: conversationId,
-            platform: platform.name,
-            has_attachments: (message.attachments?.length ?? 0) > 0,
-          });
-
-          try {
-            const result = await body();
-            const durationMs = Date.now() - startedAt;
-            const completionAttrs = {
-              channel: conversationId,
-              platform: platform.name,
-              stop_reason: result.stopReason,
-            };
-            Sentry.metrics.distribution("agent.run.duration", durationMs, {
-              unit: "millisecond",
-              attributes: completionAttrs,
-            });
-            Sentry.metrics.count("agent.run.completed", 1, { attributes: completionAttrs });
-            addLifecycleBreadcrumb("agent.run.completed", {
-              channel_id: conversationId,
-              platform: platform.name,
-              stop_reason: result.stopReason,
-              duration_ms: durationMs,
-            });
-            return result;
-          } catch (err) {
-            scope.setContext("agent_run_error", {
-              conversationId,
-              sessionKey,
-              platform: platform.name,
-              messageId: message.id,
-              threadTs: message.threadTs,
-            });
-            Sentry.captureException(err);
-            Sentry.metrics.count("agent.run.errors", 1, {
-              attributes: { channel: conversationId, platform: platform.name },
-            });
-            log.logWarning(
-              `[${conversationId}] Run error`,
-              err instanceof Error ? err.message : String(err),
-            );
-            return undefined;
-          }
-        }),
-    );
+  async runSession({ event, bot, adapters, isSyntheticEvent }: RunSessionOptions): Promise<void> {
+    await this.orchestrator.runSession({ event, bot, adapters, isSyntheticEvent });
   }
 
   async createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner> {
@@ -400,7 +236,6 @@ class MamaSessionRuntime implements SessionRuntime {
         this.options.workingDir,
         sessionScope,
         this.options.vaultManager,
-        this.options.bindingStore,
         this.options.provisioner,
         this.options.browserExtensionManager,
       ),

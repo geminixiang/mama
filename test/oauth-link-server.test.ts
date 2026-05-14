@@ -60,7 +60,6 @@ async function createFlow(
 }> {
   const vaultManager = new FileVaultManager(stateDir);
   const vaultId = `vault-${userId.toLowerCase()}`;
-  vaultManager.addEntry(vaultId, { displayName: userId });
 
   const tokenStore = new InMemoryLinkTokenStore();
   const token = tokenStore.create("telegram", userId, userId.replace(/^U/, ""), vaultId, "");
@@ -264,7 +263,7 @@ describe("OAuth link server flows", () => {
 
     expect(response.status).toBe(400);
     expect(html).toContain("did not return an access_token");
-    expect(vaultManager.resolve("vault-u230")?.env).toEqual({});
+    expect(vaultManager.resolve("vault-u230")?.env ?? {}).toEqual({});
   });
 
   test("OAuth callback returns a server error when vault persistence fails", async () => {
@@ -374,7 +373,7 @@ describe("OAuth link server flows", () => {
 
     expect(response.status).toBe(400);
     expect(html).toContain("did not return a refresh_token");
-    expect(vaultManager.resolve("vault-u400")?.mounts).toEqual([]);
+    expect(vaultManager.resolve("vault-u400")?.mounts ?? []).toEqual([]);
     expect(existsSync(join(stateDir, "vaults", "vault-u400", "gws.json"))).toBe(false);
   });
 });

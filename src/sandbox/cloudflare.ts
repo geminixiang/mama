@@ -128,9 +128,9 @@ export class CloudflareSandboxExecutor implements Executor {
     } catch (error) {
       if (controller.signal.aborted) {
         if (options?.signal?.aborted) {
-          throw new Error("Command aborted");
+          throw new Error("Command aborted", { cause: error });
         }
-        throw new Error(`Command timed out after ${options?.timeout} seconds`);
+        throw new Error(`Command timed out after ${options?.timeout} seconds`, { cause: error });
       }
       throw error;
     } finally {

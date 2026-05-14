@@ -242,47 +242,6 @@ export function logResponse(ctx: LogContext, text: string): void {
   console.log(chalk.dim(indented));
 }
 
-// Attachments
-export function logDownloadStart(ctx: LogContext, filename: string, localPath: string): void {
-  if (logger)
-    logger.debug(
-      { event: "download_start", ...ctxFields(ctx), filename, localPath },
-      `Downloading ${filename}`,
-    );
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ↓ Downloading attachment`));
-  console.log(chalk.dim(`           ${filename} → ${localPath}`));
-}
-
-export function logDownloadSuccess(ctx: LogContext, sizeKB: number): void {
-  if (logger)
-    logger.info(
-      { event: "download_success", ...ctxFields(ctx), sizeKB },
-      `Downloaded (${sizeKB} KB)`,
-    );
-  console.log(
-    chalk.yellow(
-      `${timestamp()} ${formatContext(ctx)} ✓ Downloaded (${sizeKB.toLocaleString()} KB)`,
-    ),
-  );
-}
-
-export function logDownloadError(ctx: LogContext, filename: string, error: string): void {
-  if (logger)
-    logger.warn(
-      { event: "download_error", ...ctxFields(ctx), filename, error },
-      `Download failed: ${filename}`,
-    );
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ✗ Download failed`));
-  console.log(chalk.dim(`           ${filename}: ${error}`));
-}
-
-// Control
-export function logStopRequest(ctx: LogContext): void {
-  if (logger) logger.info({ event: "stop_request", ...ctxFields(ctx) }, "Stop requested");
-  console.log(chalk.green(`${timestamp()} ${formatContext(ctx)} stop`));
-  console.log(chalk.yellow(`${timestamp()} ${formatContext(ctx)} ⊗ Stop requested - aborting`));
-}
-
 // System
 export function logInfo(message: string): void {
   if (logger) logger.info({ event: "info" }, message);
@@ -315,6 +274,13 @@ export function logAgentError(ctx: LogContext | "system", error: string): void {
   console.log(chalk.dim(indented));
 }
 
+function formatTokenCount(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1000000) return `${Math.round(count / 1000)}k`;
+  return `${(count / 1000000).toFixed(1)}M`;
+}
+
 // Usage summary
 export function logUsageSummary(
   ctx: LogContext,
@@ -328,13 +294,6 @@ export function logUsageSummary(
   contextTokens?: number,
   contextWindow?: number,
 ): string {
-  const formatTokens = (count: number): string => {
-    if (count < 1000) return count.toString();
-    if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-    if (count < 1000000) return `${Math.round(count / 1000)}k`;
-    return `${(count / 1000000).toFixed(1)}M`;
-  };
-
   const lines: string[] = [];
   lines.push("_Usage Summary_");
   lines.push(`Tokens: ${usage.input.toLocaleString()} in, ${usage.output.toLocaleString()} out`);
@@ -346,7 +305,7 @@ export function logUsageSummary(
   if (contextTokens && contextWindow) {
     const contextPercent = ((contextTokens / contextWindow) * 100).toFixed(1);
     lines.push(
-      `Context: ${formatTokens(contextTokens)} / ${formatTokens(contextWindow)} (${contextPercent}%)`,
+      `Context: ${formatTokenCount(contextTokens)} / ${formatTokenCount(contextWindow)} (${contextPercent}%)`,
     );
   }
   lines.push(
@@ -396,9 +355,9 @@ export function logStartup(workingDir: string, sandbox: string): void {
   console.log(`  Sandbox: ${sandbox}`);
 }
 
-export function logConnected(): void {
-  if (logger) logger.info({ event: "connected" }, "Mama connected and listening");
-  console.log("⚡️ Mama connected and listening!");
+export function logConnected(platform: string): void {
+  if (logger) logger.info({ event: "connected", platform }, "Mama connected and listening");
+  console.log(`⚡️ Mama connected to ${platform} and listening!`);
   console.log("");
 }
 

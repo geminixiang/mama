@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
+import { Agent, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getModel, type ImageContent } from "@earendil-works/pi-ai";
 import {
   AgentSession,
@@ -9,6 +9,8 @@ import {
   getAgentDir,
   loadSkillsFromDir,
   ModelRegistry,
+  SessionManager,
+  SettingsManager,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { existsSync, mkdirSync, readFileSync } from "fs";
@@ -23,17 +25,14 @@ import type {
   PlatformInfo,
 } from "./adapter.js";
 import { loadAgentConfigForConversation } from "./config.js";
-import { createMamaSettingsManager, syncLogToSessionManager } from "./context.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { BrowserExtensionManager } from "./browser-extension.js";
-import type { UserBindingStore } from "./bindings.js";
 import type { DockerContainerManager } from "./provisioner.js";
 import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
 import {
-  extractSessionSuffix,
   extractSessionUuid,
   openManagedSession,
   type ResolvedSessionScope,
@@ -155,6 +154,40 @@ function buildRuntimePaths(workspacePath: string, conversationId: string) {
   };
 }
 
+function buildEnvDescription(sandboxType: SandboxConfig["type"], workspaceRoot: string): string {
+  switch (sandboxType) {
+    case "image":
+      return `You are running inside a managed per-user container.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Install tools with the image's package manager
+- Your changes persist for this user's container until it is recreated`;
+    case "container":
+      return `You are running inside a shared container.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Install tools with the container's package manager
+- Your changes persist across sessions`;
+    case "firecracker":
+      return `You are running inside a Firecracker microVM.
+- Runtime workspace root: ${workspaceRoot}
+- Use cd or absolute paths; project files are under ${workspaceRoot}
+- Install tools with: apt-get install <package> (Debian-based)
+- Your changes persist across sessions`;
+    case "cloudflare":
+      return `You are running through a Cloudflare Sandbox bridge.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Your commands run in a remote container managed by Cloudflare
+- Important: the remote filesystem is not automatically synced back to the host workspace`;
+    default:
+      return `You are running directly on the host machine.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${process.cwd()}
+- Be careful with system modifications`;
+  }
+}
+
 function buildSystemPrompt(
   workspacePath: string,
   conversationId: string,
@@ -169,10 +202,9 @@ function buildSystemPrompt(
     workspacePath,
     conversationId,
   );
-  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
-  const isImageSandbox = sandboxConfig.type === "image";
-  const isFirecracker = sandboxConfig.type === "firecracker";
-  const isCloudflareSandbox = sandboxConfig.type === "cloudflare";
+  const sandboxType = sandboxConfig.type;
+  const isContainerLike = sandboxType === "container" || sandboxType === "image";
+  const isFirecracker = sandboxType === "firecracker";
 
   // Format channel mappings
   const channelMappings =
@@ -186,34 +218,7 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isImageSandbox
-    ? `You are running inside a managed per-user container.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Install tools with the image's package manager
-- Your changes persist for this user's container until it is recreated`
-    : isContainer
-      ? `You are running inside a shared container.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Install tools with the container's package manager
-- Your changes persist across sessions`
-      : isFirecracker
-        ? `You are running inside a Firecracker microVM.
-- Runtime workspace root: ${workspaceRoot}
-- Use cd or absolute paths; project files are under ${workspaceRoot}
-- Install tools with: apt-get install <package> (Debian-based)
-- Your changes persist across sessions`
-        : isCloudflareSandbox
-          ? `You are running through a Cloudflare Sandbox bridge.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Your commands run in a remote container managed by Cloudflare
-- Important: the remote filesystem is not automatically synced back to the host workspace`
-          : `You are running directly on the host machine.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${process.cwd()}
-- Be careful with system modifications`;
+  const envDescription = buildEnvDescription(sandboxType, workspaceRoot);
 
   return `You are mama, a ${platform.name} bot assistant. Be concise. No emojis.
 
@@ -368,8 +373,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
 Use \`log.jsonl\` for quick grep-style history. Use \`${conversationPath}/sessions/\` when you need structured turns, tool outputs, or branch lineage.
-${isContainer ? "Install jq: apt-get install jq" : ""}
-${isFirecracker ? "Install jq: apt-get install jq" : ""}
+${isContainerLike || isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
 # Recent messages
@@ -405,6 +409,816 @@ function truncate(text: string, maxLen: number): string {
 
 function initialWorkspacePath(sandboxConfig: SandboxConfig, hostWorkspacePath: string): string {
   return sandboxConfig.type === "host" ? hostWorkspacePath : "/workspace";
+}
+
+interface RunnerExecutionContext {
+  executionResolver?: ActorExecutionResolver;
+  executor: Executor;
+  getWorkspacePath: () => string;
+  resolveExecutorForRun(context: {
+    platform: string;
+    userId: string;
+    conversationId: string;
+  }): Promise<void>;
+}
+
+interface RunnerSessionState {
+  responseCtx: ChatResponseContext | null;
+  logCtx: {
+    conversationId: string;
+    userName?: string;
+    conversationName?: string;
+    sessionId?: string;
+  } | null;
+  queue: {
+    enqueue(fn: () => Promise<void>, errorContext: string): void;
+  } | null;
+  pendingTools: Map<string, { toolName: string; args: unknown; startTime: number }>;
+  totalUsage: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  };
+  llmCallCount: number;
+  stopReason: string;
+  errorMessage: string | undefined;
+}
+
+interface PreparedRunContext {
+  sessionConversation: string;
+  runQueue: ReturnType<typeof createRunQueue>;
+  userMessage: string;
+  imageAttachments: ImageContent[];
+}
+
+interface ConfiguredAgentSession {
+  agent: Agent;
+  session: AgentSession;
+}
+
+function createRunnerExecutionContext(
+  sandboxConfig: SandboxConfig,
+  vaultManager: VaultManager | undefined,
+  provisioner: DockerContainerManager | undefined,
+  workspaceDir: string,
+  hostWorkspacePath: string,
+): RunnerExecutionContext {
+  const executionResolver =
+    vaultManager &&
+    sandboxConfig.type !== "host" &&
+    (vaultManager.isEnabled() ||
+      sandboxConfig.type === "container" ||
+      sandboxConfig.type === "image" ||
+      sandboxConfig.type === "cloudflare" ||
+      sandboxConfig.type === "firecracker")
+      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
+      : undefined;
+
+  // activeExecutor is replaced at the start of each run() call when executionResolver
+  // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
+  let activeExecutor: Executor =
+    executionResolver !== undefined
+      ? createExecutor({ type: "host" })
+      : createExecutor(sandboxConfig);
+  const executor: Executor = {
+    exec(command, options) {
+      return activeExecutor.exec(command, options);
+    },
+    getWorkspacePath(hostPath) {
+      return activeExecutor.getWorkspacePath(hostPath);
+    },
+    getSandboxConfig() {
+      return activeExecutor.getSandboxConfig();
+    },
+  };
+
+  return {
+    executionResolver,
+    executor,
+    getWorkspacePath: () => executor.getWorkspacePath(hostWorkspacePath),
+    async resolveExecutorForRun(context): Promise<void> {
+      if (!executionResolver) return;
+      activeExecutor = await executionResolver.resolve(context);
+    },
+  };
+}
+
+async function createConfiguredAgentSession(params: {
+  conversationId: string;
+  workspaceDir: string;
+  workspacePath: string;
+  systemPrompt: string;
+  model: ReturnType<typeof getModel>;
+  thinkingLevel: ThinkingLevel;
+  tools: Awaited<ReturnType<typeof createMamaTools>>["tools"];
+  sessionManager: SessionManager;
+  settingsManager: SettingsManager;
+}): Promise<ConfiguredAgentSession> {
+  const {
+    conversationId,
+    workspaceDir,
+    workspacePath,
+    systemPrompt,
+    model,
+    thinkingLevel,
+    tools,
+    sessionManager,
+    settingsManager,
+  } = params;
+
+  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
+  const modelRegistry = ModelRegistry.create(authStorage);
+  const agent = new Agent({
+    initialState: {
+      systemPrompt,
+      model,
+      thinkingLevel,
+      tools,
+    },
+    convertToLlm,
+    getApiKey: async () => {
+      const key = await modelRegistry.getApiKeyForProvider(model.provider);
+      if (!key) {
+        throw new Error(
+          `No API key for provider "${model.provider}". Set the appropriate environment variable or configure via auth.json`,
+        );
+      }
+      return key;
+    },
+  });
+
+  const loadedSession = sessionManager.buildSessionContext();
+  if (loadedSession.messages.length > 0) {
+    agent.state.messages = loadedSession.messages;
+    log.logInfo(
+      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
+    );
+  }
+
+  const resourceLoader = new DefaultResourceLoader({
+    cwd: workspaceDir,
+    agentDir: getAgentDir(),
+    systemPrompt,
+  });
+  try {
+    await resourceLoader.reload();
+    const extResult = resourceLoader.getExtensions();
+    if (extResult.errors.length > 0) {
+      for (const err of extResult.errors) {
+        log.logWarning(`[${conversationId}] Extension load error: ${err.path}`, err.error);
+      }
+    }
+    log.logInfo(
+      `[${conversationId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((extension) => extension.path).join(", ")}`,
+    );
+  } catch (error) {
+    log.logWarning(`[${conversationId}] Failed to load resources`, String(error));
+  }
+
+  const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
+  const session = new AgentSession({
+    agent,
+    sessionManager,
+    settingsManager,
+    cwd: workspacePath,
+    modelRegistry,
+    resourceLoader,
+    baseToolsOverride,
+  });
+  return { agent, session };
+}
+
+function createEmptyUsageTotals() {
+  return {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+function createRunState(): RunnerSessionState {
+  return {
+    responseCtx: null,
+    logCtx: null,
+    queue: null,
+    pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
+    totalUsage: createEmptyUsageTotals(),
+    llmCallCount: 0,
+    stopReason: "stop",
+    errorMessage: undefined,
+  };
+}
+
+function resetRunState(
+  runState: RunnerSessionState,
+  responseCtx: ChatResponseContext,
+  sessionConversation: string,
+  userName: string | undefined,
+  sessionUuid: string,
+): void {
+  runState.responseCtx = responseCtx;
+  runState.logCtx = {
+    conversationId: sessionConversation,
+    userName,
+    conversationName: undefined,
+    sessionId: sessionUuid,
+  };
+  runState.pendingTools.clear();
+  runState.totalUsage = createEmptyUsageTotals();
+  runState.llmCallCount = 0;
+  runState.stopReason = "stop";
+  runState.errorMessage = undefined;
+}
+
+function createRunQueue(responseCtx: ChatResponseContext): {
+  queue: { enqueue(fn: () => Promise<void>, errorContext: string): void };
+  wait: () => Promise<void>;
+} {
+  let queueChain = Promise.resolve();
+  return {
+    queue: {
+      enqueue(fn: () => Promise<void>, errorContext: string): void {
+        queueChain = queueChain.then(async () => {
+          try {
+            await fn();
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            log.logWarning(`API error (${errorContext})`, errMsg);
+            try {
+              await responseCtx.respondDiagnostic(`Error: ${errMsg}`, { style: "error" });
+            } catch {
+              // Ignore
+            }
+          }
+        });
+      },
+    },
+    wait: () => queueChain,
+  };
+}
+
+function padTwoDigits(n: number): string {
+  return n.toString().padStart(2, "0");
+}
+
+function formatTimestampedUserMessage(message: ChatMessage): string {
+  const now = new Date();
+  const offset = -now.getTimezoneOffset();
+  const offsetSign = offset >= 0 ? "+" : "-";
+  const offsetHours = padTwoDigits(Math.floor(Math.abs(offset) / 60));
+  const offsetMins = padTwoDigits(Math.abs(offset) % 60);
+  const timestamp =
+    `${now.getFullYear()}-${padTwoDigits(now.getMonth() + 1)}-${padTwoDigits(now.getDate())} ` +
+    `${padTwoDigits(now.getHours())}:${padTwoDigits(now.getMinutes())}:${padTwoDigits(now.getSeconds())}` +
+    `${offsetSign}${offsetHours}:${offsetMins}`;
+  const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
+  return `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
+}
+
+function collectMessageAttachments(
+  message: ChatMessage,
+  workspacePath: string,
+): { imageAttachments: ImageContent[]; nonImagePaths: string[] } {
+  const imageAttachments: ImageContent[] = [];
+  const nonImagePaths: string[] = [];
+
+  for (const attachment of message.attachments || []) {
+    const fullPath = `${workspacePath}/${attachment.localPath}`;
+    const mimeType = getImageMimeType(attachment.localPath);
+
+    if (mimeType && existsSync(fullPath)) {
+      try {
+        imageAttachments.push({
+          type: "image",
+          mimeType,
+          data: readFileSync(fullPath).toString("base64"),
+        });
+      } catch {
+        nonImagePaths.push(fullPath);
+      }
+    } else {
+      nonImagePaths.push(fullPath);
+    }
+  }
+
+  return { imageAttachments, nonImagePaths };
+}
+
+function buildPromptPayload(
+  message: ChatMessage,
+  workspacePath: string,
+): {
+  userMessage: string;
+  imageAttachments: ImageContent[];
+} {
+  let userMessage = formatTimestampedUserMessage(message);
+  const { imageAttachments, nonImagePaths } = collectMessageAttachments(message, workspacePath);
+
+  if (nonImagePaths.length > 0) {
+    userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
+  }
+
+  return { userMessage, imageAttachments };
+}
+
+async function writePromptDebugContext(
+  conversationDir: string,
+  systemPrompt: string,
+  session: AgentSession,
+  userMessage: string,
+  imageAttachmentCount: number,
+): Promise<void> {
+  const debugContext = {
+    systemPrompt,
+    messages: session.messages,
+    newUserMessage: userMessage,
+    imageAttachmentCount,
+  };
+  await writeFile(
+    join(conversationDir, "last_prompt.jsonl"),
+    JSON.stringify(debugContext, null, 2),
+  );
+}
+
+function getFinalAssistantText(session: AgentSession): string {
+  const lastAssistant = session.messages.filter((message) => message.role === "assistant").pop();
+  return (
+    lastAssistant?.content
+      .filter((content): content is { type: "text"; text: string } => content.type === "text")
+      .map((content) => content.text)
+      .join("\n") || ""
+  );
+}
+
+async function finalizeRunResponse(
+  responseCtx: ChatResponseContext,
+  session: AgentSession,
+  runState: RunnerSessionState,
+): Promise<void> {
+  if (runState.stopReason === "error" && runState.errorMessage) {
+    try {
+      await responseCtx.replaceResponse("_Sorry, something went wrong_");
+      await responseCtx.respondDiagnostic(`Error: ${runState.errorMessage}`, {
+        style: "error",
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.logWarning("Failed to post error message", errMsg);
+    }
+    return;
+  }
+
+  const finalText = getFinalAssistantText(session);
+  if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
+    try {
+      await responseCtx.deleteResponse();
+      log.logInfo("Silent response - deleted message and thread");
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log.logWarning("Failed to delete message for silent response", errMsg);
+    }
+    return;
+  }
+
+  if (!finalText.trim()) return;
+
+  try {
+    await responseCtx.replaceResponse(finalText);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    log.logWarning("Failed to replace message with final text", errMsg);
+  }
+}
+
+interface UsageReportContext {
+  session: AgentSession;
+  runState: RunnerSessionState;
+  responseCtx: ChatResponseContext;
+  platform: PlatformInfo;
+  model: ReturnType<typeof getModel>;
+  agentConfig: ReturnType<typeof loadAgentConfigForConversation>;
+  sessionConversation: string;
+  sessionUuid: string;
+  waitForQueue: () => Promise<void>;
+}
+
+async function reportUsageSummary(ctx: UsageReportContext): Promise<void> {
+  const {
+    session,
+    runState,
+    responseCtx,
+    platform,
+    model,
+    agentConfig,
+    sessionConversation,
+    sessionUuid,
+    waitForQueue,
+  } = ctx;
+  if (runState.totalUsage.cost.total <= 0) return;
+
+  const lastAssistantMessage = session.messages
+    .slice()
+    .toReversed()
+    .find(
+      (message): message is Extract<typeof message, { role: "assistant" }> =>
+        message.role === "assistant" && message.stopReason !== "aborted",
+    );
+
+  const contextTokens = lastAssistantMessage
+    ? lastAssistantMessage.usage.input +
+      lastAssistantMessage.usage.output +
+      lastAssistantMessage.usage.cacheRead +
+      lastAssistantMessage.usage.cacheWrite
+    : 0;
+  const contextWindow = model.contextWindow || 200000;
+
+  const { totalUsage } = runState;
+  const runMetricAttributes = metricAttributes({
+    provider: model.provider,
+    model: agentConfig.model,
+    channel_id: sessionConversation,
+    session_id: sessionUuid,
+    stop_reason: runState.stopReason,
+    llm_calls: runState.llmCallCount,
+  });
+  Sentry.metrics.distribution("agent.run.tokens_in", totalUsage.input, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.tokens_out", totalUsage.output, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cache_read", totalUsage.cacheRead, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cache_write", totalUsage.cacheWrite, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.distribution("agent.run.cost", totalUsage.cost.total, {
+    attributes: runMetricAttributes,
+  });
+  Sentry.metrics.gauge("agent.context.utilization", contextTokens / contextWindow, {
+    unit: "ratio",
+    attributes: runMetricAttributes,
+  });
+
+  const summary = log.logUsageSummary(
+    runState.logCtx!,
+    runState.totalUsage,
+    contextTokens,
+    contextWindow,
+  );
+  if (platform.diagnostics?.showUsageSummary === true) {
+    runState.queue!.enqueue(
+      () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
+      "usage summary",
+    );
+    await waitForQueue();
+  }
+}
+
+function reloadSessionMessages(
+  sessionManager: SessionManager,
+  conversationId: string,
+  agent: Agent,
+): void {
+  const messages = sessionManager.buildSessionContext().messages;
+  if (messages.length > 0) {
+    agent.state.messages = messages;
+    log.logInfo(`[${conversationId}] Reloaded ${messages.length} messages from context`);
+  }
+}
+
+async function prepareRunContext(params: {
+  message: ChatMessage;
+  responseCtx: ChatResponseContext;
+  platform: PlatformInfo;
+  conversationId: string;
+  conversationDir: string;
+  sessionUuid: string;
+  runState: RunnerSessionState;
+  executor: Executor;
+  executionResolver?: ActorExecutionResolver;
+  resolveExecutorForRun: RunnerExecutionContext["resolveExecutorForRun"];
+  getWorkspacePath: () => string;
+  sessionManager: SessionManager;
+  session: AgentSession;
+  agent: Agent;
+  setEventContext: (context: {
+    platform: string;
+    conversationId: string;
+    conversationKind: ConversationKind;
+    userId: string;
+    sessionKey: string;
+    threadTs?: string;
+  }) => void;
+  setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
+  workspacePath: string;
+}): Promise<PreparedRunContext & { workspacePath: string }> {
+  const {
+    message,
+    responseCtx,
+    platform,
+    conversationId,
+    conversationDir,
+    sessionUuid,
+    runState,
+    executor,
+    executionResolver,
+    resolveExecutorForRun,
+    getWorkspacePath,
+    sessionManager,
+    session,
+    agent,
+    setEventContext,
+    setUploadFunction,
+  } = params;
+  let workspacePath = params.workspacePath;
+  const sessionConversation = message.sessionKey.split(":")[0];
+
+  await mkdir(join(conversationDir, "scratch"), { recursive: true });
+
+  if (executionResolver) {
+    await resolveExecutorForRun({
+      platform: platform.name,
+      userId: message.userId,
+      conversationId,
+    });
+    workspacePath = getWorkspacePath();
+  }
+
+  reloadSessionMessages(sessionManager, conversationId, agent);
+
+  const memory = await getMemory(conversationDir);
+  const skills = loadMamaSkills(conversationDir, workspacePath);
+  const systemPrompt = buildSystemPrompt(
+    workspacePath,
+    conversationId,
+    message.conversationKind,
+    message.userId,
+    memory,
+    executor.getSandboxConfig(),
+    platform,
+    skills,
+  );
+  session.agent.state.systemPrompt = systemPrompt;
+
+  setEventContext({
+    platform: platform.name,
+    conversationId,
+    conversationKind: message.conversationKind,
+    userId: message.userId,
+    sessionKey: message.sessionKey,
+    threadTs: message.threadTs,
+  });
+
+  setUploadFunction(async (filePath: string, title?: string) => {
+    const hostPath = translateToHostPath(filePath, conversationDir, workspacePath, conversationId);
+    await responseCtx.uploadFile(hostPath, title);
+  });
+
+  resetRunState(runState, responseCtx, sessionConversation, message.userName, sessionUuid);
+  const runQueue = createRunQueue(responseCtx);
+  runState.queue = runQueue.queue;
+
+  log.logInfo(
+    `Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`,
+  );
+  log.logInfo(`Channels: ${platform.channels.length}, Users: ${platform.users.length}`);
+
+  const { userMessage, imageAttachments } = buildPromptPayload(message, workspacePath);
+  await writePromptDebugContext(
+    conversationDir,
+    systemPrompt,
+    session,
+    userMessage,
+    imageAttachments.length,
+  );
+
+  return {
+    sessionConversation,
+    runQueue,
+    userMessage,
+    imageAttachments,
+    workspacePath,
+  };
+}
+
+function attachSessionEventHandlers(params: {
+  session: AgentSession;
+  runState: RunnerSessionState;
+  model: ReturnType<typeof getModel>;
+  agentConfig: ReturnType<typeof loadAgentConfigForConversation>;
+}): void {
+  const { session, runState, model, agentConfig } = params;
+  session.subscribe(async (event) => {
+    if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
+
+    const { responseCtx, logCtx, queue, pendingTools } = runState;
+    const baseAttrs = { channel_id: logCtx.conversationId, session_id: logCtx.sessionId };
+
+    if (event.type === "tool_execution_start") {
+      const args = (event.args ?? {}) as { label?: string };
+      const label = args.label || event.toolName;
+
+      pendingTools.set(event.toolCallId, {
+        toolName: event.toolName,
+        args: event.args,
+        startTime: Date.now(),
+      });
+      addLifecycleBreadcrumb("agent.tool.started", {
+        tool: event.toolName,
+        ...baseAttrs,
+      });
+
+      log.logToolStart(logCtx, event.toolName, label, event.args as Record<string, unknown>);
+      return;
+    }
+
+    if (event.type === "tool_execution_end") {
+      const resultStr = extractToolResultText(event.result);
+      const pending = pendingTools.get(event.toolCallId);
+      pendingTools.delete(event.toolCallId);
+      const durationMs = pending ? Date.now() - pending.startTime : 0;
+
+      Sentry.metrics.count("agent.tool.calls", 1, {
+        attributes: metricAttributes({
+          tool: event.toolName,
+          error: String(event.isError),
+          ...baseAttrs,
+        }),
+      });
+      Sentry.metrics.distribution("agent.tool.duration", durationMs, {
+        unit: "millisecond",
+        attributes: metricAttributes({
+          tool: event.toolName,
+          ...baseAttrs,
+        }),
+      });
+      addLifecycleBreadcrumb("agent.tool.completed", {
+        tool: event.toolName,
+        error: event.isError,
+        duration_ms: durationMs,
+        ...baseAttrs,
+      });
+
+      if (event.isError) {
+        log.logToolError(logCtx, event.toolName, durationMs, resultStr);
+      } else {
+        log.logToolSuccess(logCtx, event.toolName, durationMs, resultStr);
+      }
+
+      if (shouldSurfaceToolDiagnostic(event.toolName)) {
+        const toolResult: ChatToolResult = {
+          toolName: event.toolName,
+          label: pending?.args ? (pending.args as { label?: string }).label : undefined,
+          args: pending?.args as Record<string, unknown> | undefined,
+          result: truncate(resultStr, TOOL_RESULT_DIAGNOSTIC_CAP),
+          isError: event.isError,
+          durationMs,
+        };
+        queue.enqueue(() => responseCtx.respondToolResult(toolResult), "tool result diagnostic");
+      }
+
+      if (event.isError) {
+        queue.enqueue(
+          () => responseCtx.respond(`_Error: ${truncate(resultStr, 200)}_`),
+          "tool error",
+        );
+      }
+      return;
+    }
+
+    if (event.type === "message_start") {
+      if (event.message.role === "assistant") {
+        runState.llmCallCount += 1;
+        addLifecycleBreadcrumb("agent.llm.call.started", {
+          call_index: runState.llmCallCount,
+          provider: model.provider,
+          model: agentConfig.model,
+          ...baseAttrs,
+        });
+        log.logResponseStart(logCtx);
+      }
+      return;
+    }
+
+    if (event.type === "message_end") {
+      if (event.message.role === "assistant") {
+        const assistantMsg = event.message;
+
+        if (assistantMsg.stopReason) {
+          runState.stopReason = assistantMsg.stopReason;
+        }
+        if (assistantMsg.errorMessage) {
+          runState.errorMessage = assistantMsg.errorMessage;
+        }
+
+        if (assistantMsg.usage) {
+          runState.totalUsage.input += assistantMsg.usage.input;
+          runState.totalUsage.output += assistantMsg.usage.output;
+          runState.totalUsage.cacheRead += assistantMsg.usage.cacheRead;
+          runState.totalUsage.cacheWrite += assistantMsg.usage.cacheWrite;
+          runState.totalUsage.cost.input += assistantMsg.usage.cost.input;
+          runState.totalUsage.cost.output += assistantMsg.usage.cost.output;
+          runState.totalUsage.cost.cacheRead += assistantMsg.usage.cost.cacheRead;
+          runState.totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
+          runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
+
+          const llmAttributes = metricAttributes({
+            provider: model.provider,
+            model: agentConfig.model,
+            ...baseAttrs,
+            stop_reason: assistantMsg.stopReason,
+            error: Boolean(assistantMsg.errorMessage),
+          });
+          Sentry.metrics.count("agent.llm.calls", 1, { attributes: llmAttributes });
+          Sentry.metrics.distribution("agent.llm.tokens_in", assistantMsg.usage.input, {
+            attributes: llmAttributes,
+          });
+          Sentry.metrics.distribution("agent.llm.tokens_out", assistantMsg.usage.output, {
+            attributes: llmAttributes,
+          });
+          if (assistantMsg.usage.cacheRead > 0) {
+            Sentry.metrics.distribution("agent.llm.cache_read", assistantMsg.usage.cacheRead, {
+              attributes: llmAttributes,
+            });
+          }
+          if (assistantMsg.usage.cacheWrite > 0) {
+            Sentry.metrics.distribution("agent.llm.cache_write", assistantMsg.usage.cacheWrite, {
+              attributes: llmAttributes,
+            });
+          }
+          Sentry.metrics.distribution("agent.llm.cost_per_turn", assistantMsg.usage.cost.total, {
+            attributes: llmAttributes,
+          });
+          addLifecycleBreadcrumb("agent.llm.call.completed", {
+            call_index: runState.llmCallCount,
+            provider: model.provider,
+            model: agentConfig.model,
+            stop_reason: assistantMsg.stopReason,
+            error: Boolean(assistantMsg.errorMessage),
+            input_tokens: assistantMsg.usage.input,
+            output_tokens: assistantMsg.usage.output,
+            cost_total_usd: assistantMsg.usage.cost.total,
+          });
+        }
+
+        const thinkingParts: string[] = [];
+        const textParts: string[] = [];
+        for (const part of assistantMsg.content) {
+          if (part.type === "thinking") {
+            thinkingParts.push(part.thinking);
+          } else if (part.type === "text") {
+            textParts.push(part.text);
+          }
+        }
+
+        const text = textParts.join("\n");
+
+        for (const thinking of thinkingParts) {
+          log.logThinking(logCtx, thinking);
+          queue.enqueue(() => responseCtx.respond(`_${thinking}_`), "thinking main");
+          queue.enqueue(
+            () => responseCtx.respondDiagnostic(`_${thinking}_`),
+            "thinking diagnostic",
+          );
+        }
+
+        if (text.trim()) {
+          log.logResponse(logCtx, text);
+          queue.enqueue(() => responseCtx.respond(text), "response main");
+        }
+      }
+      return;
+    }
+
+    if (event.type === "compaction_start") {
+      log.logInfo(`Auto-compaction started (reason: ${event.reason})`);
+      queue.enqueue(() => responseCtx.respond("_Compacting context..._"), "compaction start");
+      return;
+    }
+
+    if (event.type === "compaction_end") {
+      if (event.result) {
+        log.logInfo(`Auto-compaction complete: ${event.result.tokensBefore} tokens compacted`);
+      } else if (event.aborted) {
+        log.logInfo("Auto-compaction aborted");
+      }
+      return;
+    }
+
+    if (event.type === "auto_retry_start") {
+      log.logWarning(`Retrying (${event.attempt}/${event.maxAttempts})`, event.errorMessage);
+      queue.enqueue(
+        () => responseCtx.respond(`_Retrying (${event.attempt}/${event.maxAttempts})..._`),
+        "retry",
+      );
+    }
+  });
 }
 
 // Cap raw tool output before handing it to adapters. Bash output can be MB; without
@@ -456,7 +1270,6 @@ export async function createRunner(
   workspaceDir: string,
   sessionScope: ResolvedSessionScope,
   vaultManager?: VaultManager,
-  bindingStore?: UserBindingStore,
   provisioner?: DockerContainerManager,
   browserExtensionManager?: BrowserExtensionManager,
 ): Promise<AgentRunner> {
@@ -468,35 +1281,15 @@ export async function createRunner(
     logLevel: agentConfig.logLevel,
   });
 
-  const executionResolver =
-    vaultManager &&
-    sandboxConfig.type !== "host" &&
-    (vaultManager.isEnabled() ||
-      sandboxConfig.type === "container" ||
-      sandboxConfig.type === "image" ||
-      sandboxConfig.type === "cloudflare" ||
-      sandboxConfig.type === "firecracker")
-      ? new ActorExecutionResolver(sandboxConfig, vaultManager, provisioner, workspaceDir)
-      : undefined;
-  // activeExecutor is replaced at the start of each run() call when executionResolver
-  // is present, so the stable `executor` wrapper always delegates to the latest resolved value.
-  let activeExecutor: Executor =
-    executionResolver !== undefined
-      ? createExecutor({ type: "host" })
-      : createExecutor(sandboxConfig);
-  const executor: Executor = {
-    exec(command, options) {
-      return activeExecutor.exec(command, options);
-    },
-    getWorkspacePath(hostPath) {
-      return activeExecutor.getWorkspacePath(hostPath);
-    },
-    getSandboxConfig() {
-      return activeExecutor.getSandboxConfig();
-    },
-  };
   const workspaceBase = join(conversationDir, "..");
-  const getWorkspacePath = () => executor.getWorkspacePath(workspaceBase);
+  const { executionResolver, executor, getWorkspacePath, resolveExecutorForRun } =
+    createRunnerExecutionContext(
+      sandboxConfig,
+      vaultManager,
+      provisioner,
+      workspaceDir,
+      workspaceBase,
+    );
   let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
 
   // Create tools (per-runner, with per-runner upload function setter)
@@ -536,7 +1329,6 @@ export async function createRunner(
   // use the conversation's current pointer; scoped sessions use fixed files.
   // Platform-specific branch/fork behavior is resolved before runner creation.
   const isThread = sessionKey.includes(":");
-  const rootTs = extractSessionSuffix(sessionKey);
   const { sessionDir, contextFile, threadRootMessage } = sessionScope;
   const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
   const threadSessionName = buildThreadSessionName(threadRootMessage);
@@ -545,309 +1337,22 @@ export async function createRunner(
   }
 
   const sessionUuid = extractSessionUuid(contextFile);
-  const settingsManager = createMamaSettingsManager(join(conversationDir, ".."));
-
-  // Create AuthStorage and ModelRegistry
-  // Auth stored outside workspace so agent can't access it
-  const authStorage = AuthStorage.create(join(homedir(), ".pi", "mama", "auth.json"));
-  const modelRegistry = ModelRegistry.create(authStorage);
-
-  // Create agent
-  const agent = new Agent({
-    initialState: {
-      systemPrompt,
-      model,
-      thinkingLevel: agentConfig.thinkingLevel,
-      tools,
-    },
-    convertToLlm,
-    getApiKey: async () => {
-      const key = await modelRegistry.getApiKeyForProvider(model.provider);
-      if (!key)
-        throw new Error(
-          `No API key for provider "${model.provider}". Set the appropriate environment variable or configure via auth.json`,
-        );
-      return key;
-    },
-  });
-
-  // Load existing messages
-  const loadedSession = sessionManager.buildSessionContext();
-  if (loadedSession.messages.length > 0) {
-    agent.state.messages = loadedSession.messages;
-    log.logInfo(
-      `[${conversationId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`,
-    );
-  }
-
-  // Load extensions, skills, prompts, themes via DefaultResourceLoader
-  // This reads ~/.pi/agent/settings.json (packages, extensions enable/disable)
-  // and discovers resources from standard locations + npm/git packages.
-  const resourceLoader = new DefaultResourceLoader({
-    cwd: workspaceDir,
-    agentDir: getAgentDir(),
+  const settingsManager = SettingsManager.inMemory();
+  const { agent, session } = await createConfiguredAgentSession({
+    conversationId,
+    workspaceDir,
+    workspacePath,
     systemPrompt,
-  });
-  try {
-    await resourceLoader.reload();
-    const extResult = resourceLoader.getExtensions();
-    if (extResult.errors.length > 0) {
-      for (const err of extResult.errors) {
-        log.logWarning(`[${conversationId}] Extension load error: ${err.path}`, err.error);
-      }
-    }
-    log.logInfo(
-      `[${conversationId}] Loaded ${extResult.extensions.length} extension(s): ${extResult.extensions.map((e) => e.path).join(", ")}`,
-    );
-  } catch (error) {
-    log.logWarning(`[${conversationId}] Failed to load resources`, String(error));
-  }
-
-  const baseToolsOverride = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
-
-  // Create AgentSession wrapper
-  const session = new AgentSession({
-    agent,
+    model,
+    thinkingLevel: agentConfig.thinkingLevel,
+    tools,
     sessionManager,
     settingsManager,
-    cwd: workspacePath,
-    modelRegistry,
-    resourceLoader,
-    baseToolsOverride,
   });
 
   // Mutable per-run state - event handler references this
-  const runState = {
-    responseCtx: null as ChatResponseContext | null,
-    logCtx: null as {
-      conversationId: string;
-      userName?: string;
-      conversationName?: string;
-      sessionId?: string;
-    } | null,
-    queue: null as {
-      enqueue(fn: () => Promise<void>, errorContext: string): void;
-    } | null,
-    pendingTools: new Map<string, { toolName: string; args: unknown; startTime: number }>(),
-    totalUsage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    llmCallCount: 0,
-    stopReason: "stop",
-    errorMessage: undefined as string | undefined,
-  };
-
-  // Subscribe to events ONCE
-  session.subscribe(async (event) => {
-    // Skip if no active run
-    if (!runState.responseCtx || !runState.logCtx || !runState.queue) return;
-
-    const { responseCtx, logCtx, queue, pendingTools } = runState;
-    const baseAttrs = { channel_id: logCtx.conversationId, session_id: logCtx.sessionId };
-
-    if (event.type === "tool_execution_start") {
-      const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
-      const args = agentEvent.args as { label?: string };
-      const label = args.label || agentEvent.toolName;
-
-      pendingTools.set(agentEvent.toolCallId, {
-        toolName: agentEvent.toolName,
-        args: agentEvent.args,
-        startTime: Date.now(),
-      });
-      addLifecycleBreadcrumb("agent.tool.started", {
-        tool: agentEvent.toolName,
-        ...baseAttrs,
-      });
-
-      log.logToolStart(
-        logCtx,
-        agentEvent.toolName,
-        label,
-        agentEvent.args as Record<string, unknown>,
-      );
-    } else if (event.type === "tool_execution_end") {
-      const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
-      const resultStr = extractToolResultText(agentEvent.result);
-      const pending = pendingTools.get(agentEvent.toolCallId);
-      pendingTools.delete(agentEvent.toolCallId);
-
-      const durationMs = pending ? Date.now() - pending.startTime : 0;
-
-      Sentry.metrics.count("agent.tool.calls", 1, {
-        attributes: metricAttributes({
-          tool: agentEvent.toolName,
-          error: String(agentEvent.isError),
-          ...baseAttrs,
-        }),
-      });
-      Sentry.metrics.distribution("agent.tool.duration", durationMs, {
-        unit: "millisecond",
-        attributes: metricAttributes({
-          tool: agentEvent.toolName,
-          ...baseAttrs,
-        }),
-      });
-      addLifecycleBreadcrumb("agent.tool.completed", {
-        tool: agentEvent.toolName,
-        error: agentEvent.isError,
-        duration_ms: durationMs,
-        ...baseAttrs,
-      });
-
-      if (agentEvent.isError) {
-        log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);
-      } else {
-        log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
-      }
-
-      if (shouldSurfaceToolDiagnostic(agentEvent.toolName)) {
-        const toolResult: ChatToolResult = {
-          toolName: agentEvent.toolName,
-          label: pending?.args ? (pending.args as { label?: string }).label : undefined,
-          args: pending?.args as Record<string, unknown> | undefined,
-          result: truncate(resultStr, TOOL_RESULT_DIAGNOSTIC_CAP),
-          isError: agentEvent.isError,
-          durationMs,
-        };
-        queue.enqueue(() => responseCtx.respondToolResult(toolResult), "tool result diagnostic");
-      }
-
-      if (agentEvent.isError) {
-        queue.enqueue(
-          () => responseCtx.respond(`_Error: ${truncate(resultStr, 200)}_`),
-          "tool error",
-        );
-      }
-    } else if (event.type === "message_start") {
-      const agentEvent = event as AgentEvent & { type: "message_start" };
-      if (agentEvent.message.role === "assistant") {
-        runState.llmCallCount += 1;
-        addLifecycleBreadcrumb("agent.llm.call.started", {
-          call_index: runState.llmCallCount,
-          provider: model.provider,
-          model: agentConfig.model,
-          ...baseAttrs,
-        });
-        log.logResponseStart(logCtx);
-      }
-    } else if (event.type === "message_end") {
-      const agentEvent = event as AgentEvent & { type: "message_end" };
-      if (agentEvent.message.role === "assistant") {
-        const assistantMsg = agentEvent.message as any;
-
-        if (assistantMsg.stopReason) {
-          runState.stopReason = assistantMsg.stopReason;
-        }
-        if (assistantMsg.errorMessage) {
-          runState.errorMessage = assistantMsg.errorMessage;
-        }
-
-        if (assistantMsg.usage) {
-          runState.totalUsage.input += assistantMsg.usage.input;
-          runState.totalUsage.output += assistantMsg.usage.output;
-          runState.totalUsage.cacheRead += assistantMsg.usage.cacheRead;
-          runState.totalUsage.cacheWrite += assistantMsg.usage.cacheWrite;
-          runState.totalUsage.cost.input += assistantMsg.usage.cost.input;
-          runState.totalUsage.cost.output += assistantMsg.usage.cost.output;
-          runState.totalUsage.cost.cacheRead += assistantMsg.usage.cost.cacheRead;
-          runState.totalUsage.cost.cacheWrite += assistantMsg.usage.cost.cacheWrite;
-          runState.totalUsage.cost.total += assistantMsg.usage.cost.total;
-
-          // Per-turn LLM metrics
-          const llmAttributes = metricAttributes({
-            provider: model.provider,
-            model: agentConfig.model,
-            ...baseAttrs,
-            stop_reason: assistantMsg.stopReason,
-            error: Boolean(assistantMsg.errorMessage),
-          });
-          Sentry.metrics.count("agent.llm.calls", 1, { attributes: llmAttributes });
-          Sentry.metrics.distribution("agent.llm.tokens_in", assistantMsg.usage.input, {
-            attributes: llmAttributes,
-          });
-          Sentry.metrics.distribution("agent.llm.tokens_out", assistantMsg.usage.output, {
-            attributes: llmAttributes,
-          });
-          if (assistantMsg.usage.cacheRead > 0) {
-            Sentry.metrics.distribution("agent.llm.cache_read", assistantMsg.usage.cacheRead, {
-              attributes: llmAttributes,
-            });
-          }
-          if (assistantMsg.usage.cacheWrite > 0) {
-            Sentry.metrics.distribution("agent.llm.cache_write", assistantMsg.usage.cacheWrite, {
-              attributes: llmAttributes,
-            });
-          }
-          Sentry.metrics.distribution("agent.llm.cost_per_turn", assistantMsg.usage.cost.total, {
-            attributes: llmAttributes,
-          });
-          addLifecycleBreadcrumb("agent.llm.call.completed", {
-            call_index: runState.llmCallCount,
-            provider: model.provider,
-            model: agentConfig.model,
-            stop_reason: assistantMsg.stopReason,
-            error: Boolean(assistantMsg.errorMessage),
-            input_tokens: assistantMsg.usage.input,
-            output_tokens: assistantMsg.usage.output,
-            cost_total_usd: assistantMsg.usage.cost.total,
-          });
-        }
-
-        const content = agentEvent.message.content;
-        const thinkingParts: string[] = [];
-        const textParts: string[] = [];
-        for (const part of content) {
-          if (part.type === "thinking") {
-            thinkingParts.push((part as any).thinking);
-          } else if (part.type === "text") {
-            textParts.push((part as any).text);
-          }
-        }
-
-        const text = textParts.join("\n");
-
-        for (const thinking of thinkingParts) {
-          log.logThinking(logCtx, thinking);
-          queue.enqueue(() => responseCtx.respond(`_${thinking}_`), "thinking main");
-          queue.enqueue(
-            () => responseCtx.respondDiagnostic(`_${thinking}_`),
-            "thinking diagnostic",
-          );
-        }
-
-        if (text.trim()) {
-          log.logResponse(logCtx, text);
-          queue.enqueue(() => responseCtx.respond(text), "response main");
-        }
-      }
-    } else if (event.type === "compaction_start") {
-      log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
-      queue.enqueue(() => responseCtx.respond("_Compacting context..._"), "compaction start");
-    } else if (event.type === "compaction_end") {
-      const compEvent = event as any;
-      if (compEvent.result) {
-        log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
-      } else if (compEvent.aborted) {
-        log.logInfo("Auto-compaction aborted");
-      }
-    } else if (event.type === "auto_retry_start") {
-      const retryEvent = event as any;
-      log.logWarning(
-        `Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`,
-        retryEvent.errorMessage,
-      );
-      queue.enqueue(
-        () =>
-          responseCtx.respond(`_Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})..._`),
-        "retry",
-      );
-    }
-  });
+  const runState = createRunState();
+  attachSessionEventHandlers({ session, runState, model, agentConfig });
 
   return {
     async run(
@@ -855,312 +1360,73 @@ export async function createRunner(
       responseCtx: ChatResponseContext,
       platform: PlatformInfo,
     ): Promise<{ stopReason: string; errorMessage?: string }> {
-      // Extract conversationId from sessionKey (format: "conversationId:rootTs" or just "conversationId")
-      const sessionConversation = message.sessionKey.split(":")[0];
-
-      // Ensure conversation workspace exists on the host side before it is mounted/routed.
-      await mkdir(join(conversationDir, "scratch"), { recursive: true });
-
-      if (executionResolver) {
-        executionResolver.refresh();
-        activeExecutor = await executionResolver.resolve({
-          platform: platform.name,
-          userId: message.userId,
-          conversationId,
-        });
-        workspacePath = getWorkspacePath();
-      }
-
-      // Sync messages from log.jsonl that arrived while we were offline or busy
-      // Exclude the current message (it will be added via prompt())
-      // Default sync range is 10 days (handled by syncLogToSessionManager)
-      // Thread filter ensures only messages from this session's thread are synced
-      const threadFilter = message.sessionKey.includes(":")
-        ? { scope: "thread" as const, rootTs, threadTs: message.threadTs }
-        : { scope: "top-level" as const, rootTs };
-      const syncedCount = await syncLogToSessionManager(
-        sessionManager,
-        conversationDir,
-        message.id,
-        undefined,
-        threadFilter,
-      );
-      if (syncedCount > 0) {
-        log.logInfo(`[${conversationId}] Synced ${syncedCount} messages from log.jsonl`);
-      }
-
-      // Reload messages from context.jsonl
-      // This picks up any messages synced above
-      const reloadedSession = sessionManager.buildSessionContext();
-      if (reloadedSession.messages.length > 0) {
-        agent.state.messages = reloadedSession.messages;
-        log.logInfo(
-          `[${conversationId}] Reloaded ${reloadedSession.messages.length} messages from context`,
-        );
-      }
-
-      // Update system prompt with fresh memory, channel/user info, and skills
-      const memory = await getMemory(conversationDir);
-      const skills = loadMamaSkills(conversationDir, workspacePath);
-      const systemPrompt = buildSystemPrompt(
-        workspacePath,
-        conversationId,
-        message.conversationKind,
-        message.userId,
-        memory,
-        executor.getSandboxConfig(),
+      const prepared = await prepareRunContext({
+        message,
+        responseCtx,
         platform,
-        skills,
-      );
-      session.agent.state.systemPrompt = systemPrompt;
-
-      setEventContext({
-        platform: platform.name,
         conversationId,
-        conversationKind: message.conversationKind,
-        userId: message.userId,
-        sessionKey: message.sessionKey,
-        // For Slack scheduled events, preserve thread targeting only when the
-        // request was created inside an existing thread. Top-level reminders
-        // should come back as top-level messages.
-        threadTs: message.threadTs,
+        conversationDir,
+        sessionUuid,
+        runState,
+        executor,
+        executionResolver,
+        resolveExecutorForRun,
+        getWorkspacePath,
+        sessionManager,
+        session,
+        agent,
+        setEventContext,
+        setUploadFunction,
+        workspacePath,
       });
-
-      const uploadFile = async (filePath: string, title?: string) => {
-        const hostPath = translateToHostPath(
-          filePath,
-          conversationDir,
-          workspacePath,
-          conversationId,
-        );
-        await responseCtx.uploadFile(hostPath, title);
-      };
-
-      // Set up file upload function
-      setUploadFunction(uploadFile);
+      workspacePath = prepared.workspacePath;
 
       const browserOutputDir = join(conversationDir, "scratch", "browser");
       mkdirSync(browserOutputDir, { recursive: true });
       setBrowserContext({
         conversationId,
         hostOutputDir: browserOutputDir,
-        uploadFile,
+        uploadFile: async (filePath: string, title?: string) => {
+          const hostPath = translateToHostPath(
+            filePath,
+            conversationDir,
+            workspacePath,
+            conversationId,
+          );
+          await responseCtx.uploadFile(hostPath, title);
+        },
       });
 
-      // Reset per-run state
-      runState.responseCtx = responseCtx;
-      runState.logCtx = {
-        conversationId: sessionConversation,
-        userName: message.userName,
-        conversationName: undefined,
-        sessionId: sessionUuid,
-      };
-      runState.pendingTools.clear();
-      runState.totalUsage = {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      };
-      runState.llmCallCount = 0;
-      runState.stopReason = "stop";
-      runState.errorMessage = undefined;
-
-      // Create queue for this run
-      let queueChain = Promise.resolve();
-      runState.queue = {
-        enqueue(fn: () => Promise<void>, errorContext: string): void {
-          queueChain = queueChain.then(async () => {
-            try {
-              await fn();
-            } catch (err) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              log.logWarning(`API error (${errorContext})`, errMsg);
-              try {
-                await responseCtx.respondDiagnostic(`Error: ${errMsg}`, { style: "error" });
-              } catch {
-                // Ignore
-              }
-            }
-          });
-        },
-      };
-
-      // Log context info
-      log.logInfo(
-        `Context sizes - system: ${systemPrompt.length} chars, memory: ${memory.length} chars`,
-      );
-      log.logInfo(`Channels: ${platform.channels.length}, Users: ${platform.users.length}`);
-
-      // Build user message with timestamp and username prefix
-      // Format: "[YYYY-MM-DD HH:MM:SS+HH:MM] [username]: message" so LLM knows when and who
-      const now = new Date();
-      const pad = (n: number) => n.toString().padStart(2, "0");
-      const offset = -now.getTimezoneOffset();
-      const offsetSign = offset >= 0 ? "+" : "-";
-      const offsetHours = pad(Math.floor(Math.abs(offset) / 60));
-      const offsetMins = pad(Math.abs(offset) % 60);
-      const timestamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetSign}${offsetHours}:${offsetMins}`;
-      const threadContext = message.threadTs ? ` [in-thread:${message.threadTs}]` : "";
-      let userMessage = `[${timestamp}] [${message.userName || "unknown"}]${threadContext}: ${message.text}`;
-
-      const imageAttachments: ImageContent[] = [];
-      const nonImagePaths: string[] = [];
-
-      for (const a of message.attachments || []) {
-        // a.localPath is the path relative to the workspace.
-        const fullPath = `${workspacePath}/${a.localPath}`;
-        const mimeType = getImageMimeType(a.localPath);
-
-        if (mimeType && existsSync(fullPath)) {
-          try {
-            imageAttachments.push({
-              type: "image",
-              mimeType,
-              data: readFileSync(fullPath).toString("base64"),
-            });
-          } catch {
-            nonImagePaths.push(fullPath);
-          }
-        } else {
-          nonImagePaths.push(fullPath);
-        }
-      }
-
-      if (nonImagePaths.length > 0) {
-        userMessage += `\n\n<slack_attachments>\n${nonImagePaths.join("\n")}\n</slack_attachments>`;
-      }
-
-      // Debug: write context to last_prompt.jsonl
-      const debugContext = {
-        systemPrompt,
-        messages: session.messages,
-        newUserMessage: userMessage,
-        imageAttachmentCount: imageAttachments.length,
-      };
-      await writeFile(
-        join(conversationDir, "last_prompt.jsonl"),
-        JSON.stringify(debugContext, null, 2),
-      );
       addLifecycleBreadcrumb("agent.prompt.sent", {
         provider: model.provider,
         model: agentConfig.model,
-        channel_id: sessionConversation,
+        channel_id: prepared.sessionConversation,
         session_id: sessionUuid,
         attachment_count: message.attachments?.length ?? 0,
-        image_attachment_count: imageAttachments.length,
+        image_attachment_count: prepared.imageAttachments.length,
       });
 
       await session.prompt(
-        userMessage,
-        imageAttachments.length > 0 ? { images: imageAttachments } : undefined,
+        prepared.userMessage,
+        prepared.imageAttachments.length > 0 ? { images: prepared.imageAttachments } : undefined,
       );
 
       // Wait for queued messages
-      await queueChain;
+      await prepared.runQueue.wait();
 
-      // Handle error case - update main message and post error to thread
-      if (runState.stopReason === "error" && runState.errorMessage) {
-        try {
-          await responseCtx.replaceResponse("_Sorry, something went wrong_");
-          await responseCtx.respondDiagnostic(`Error: ${runState.errorMessage}`, {
-            style: "error",
-          });
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          log.logWarning("Failed to post error message", errMsg);
-        }
-      } else {
-        // Final message update
-        const messages = session.messages;
-        const lastAssistant = messages.filter((m) => m.role === "assistant").pop();
-        const finalText =
-          lastAssistant?.content
-            .filter((c): c is { type: "text"; text: string } => c.type === "text")
-            .map((c) => c.text)
-            .join("\n") || "";
+      await finalizeRunResponse(responseCtx, session, runState);
 
-        // Check for [SILENT] marker - delete message and thread instead of posting
-        if (finalText.trim() === "[SILENT]" || finalText.trim().startsWith("[SILENT]")) {
-          try {
-            await responseCtx.deleteResponse();
-            log.logInfo("Silent response - deleted message and thread");
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            log.logWarning("Failed to delete message for silent response", errMsg);
-          }
-        } else if (finalText.trim()) {
-          try {
-            await responseCtx.replaceResponse(finalText);
-          } catch (err) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            log.logWarning("Failed to replace message with final text", errMsg);
-          }
-        }
-      }
-
-      // Log usage summary with context info
-      if (runState.totalUsage.cost.total > 0) {
-        // Get last non-aborted assistant message for context calculation
-        const messages = session.messages;
-        const lastAssistantMessage = messages
-          .slice()
-          .reverse()
-          .find((m) => m.role === "assistant" && (m as any).stopReason !== "aborted") as any;
-
-        const contextTokens = lastAssistantMessage
-          ? lastAssistantMessage.usage.input +
-            lastAssistantMessage.usage.output +
-            lastAssistantMessage.usage.cacheRead +
-            lastAssistantMessage.usage.cacheWrite
-          : 0;
-        const contextWindow = model.contextWindow || 200000;
-
-        // Run-level Sentry metrics
-        const { totalUsage } = runState;
-        const runMetricAttributes = metricAttributes({
-          provider: model.provider,
-          model: agentConfig.model,
-          channel_id: sessionConversation,
-          session_id: sessionUuid,
-          stop_reason: runState.stopReason,
-          llm_calls: runState.llmCallCount,
-        });
-        Sentry.metrics.distribution("agent.run.tokens_in", totalUsage.input, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.tokens_out", totalUsage.output, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cache_read", totalUsage.cacheRead, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cache_write", totalUsage.cacheWrite, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.distribution("agent.run.cost", totalUsage.cost.total, {
-          attributes: runMetricAttributes,
-        });
-        Sentry.metrics.gauge("agent.context.utilization", contextTokens / contextWindow, {
-          unit: "ratio",
-          attributes: runMetricAttributes,
-        });
-
-        const summary = log.logUsageSummary(
-          runState.logCtx!,
-          runState.totalUsage,
-          contextTokens,
-          contextWindow,
-        );
-        if (platform.diagnostics?.showUsageSummary === true) {
-          runState.queue!.enqueue(
-            () => responseCtx.respondDiagnostic(summary, { style: "muted" }),
-            "usage summary",
-          );
-          await queueChain;
-        }
-      }
+      await reportUsageSummary({
+        session,
+        runState,
+        responseCtx,
+        platform,
+        model,
+        agentConfig,
+        sessionConversation: prepared.sessionConversation,
+        sessionUuid,
+        waitForQueue: () => prepared.runQueue.wait(),
+      });
 
       // Clear run state
       runState.responseCtx = null;

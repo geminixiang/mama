@@ -1,7 +1,8 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { existsSync, mkdirSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class MissingGlobalSettingsError extends Error {
@@ -22,12 +23,13 @@ export interface AgentConfig {
   sandboxMemory?: string;
   sandboxBoostCpus?: string;
   sandboxBoostMemory?: string;
+  sandboxImageWorkspaceMount?: "private" | "full";
 }
 
 const ONBOARD_SETTINGS: SettingsFileConfig = {
   llm: {
     provider: "anthropic",
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-4-6",
     thinkingLevel: "off",
   },
   log: {
@@ -41,6 +43,9 @@ const ONBOARD_SETTINGS: SettingsFileConfig = {
       cpus: "2",
       memory: "4g",
     },
+    image: {
+      workspaceMount: "private",
+    },
   },
 };
 
@@ -48,28 +53,23 @@ interface SettingsFileConfig {
   llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
   log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
   sentry?: { dsn?: string };
-  sandbox?: { cpus?: string; memory?: string; boost?: { cpus?: string; memory?: string } };
+  sandbox?: {
+    cpus?: string;
+    memory?: string;
+    boost?: { cpus?: string; memory?: string };
+    image?: { workspaceMount?: AgentConfig["sandboxImageWorkspaceMount"] };
+  };
 }
 
 function loadSettingsFile(settingsPath: string): SettingsFileConfig | undefined {
-  if (!existsSync(settingsPath)) {
-    return undefined;
-  }
-
-  const raw = readFileSync(settingsPath, "utf-8");
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    throw new Error(`Malformed settings file at ${settingsPath}: ${detail}`);
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`,
-    );
-  }
-  return parsed as SettingsFileConfig;
+  return readJsonFileIfExists(
+    settingsPath,
+    (value): value is SettingsFileConfig => isRecord(value),
+    (detail) =>
+      detail === "unexpected JSON shape"
+        ? `Malformed settings file at ${settingsPath}: expected a JSON object at the top level`
+        : `Malformed settings file at ${settingsPath}: ${detail}`,
+  );
 }
 
 function getStateDir(): string {
@@ -92,6 +92,9 @@ function normalizeSettingsConfig(config: SettingsFileConfig): Partial<AgentConfi
       : {}),
     ...(config.sandbox?.boost?.memory !== undefined
       ? { sandboxBoostMemory: config.sandbox.boost.memory }
+      : {}),
+    ...(config.sandbox?.image?.workspaceMount !== undefined
+      ? { sandboxImageWorkspaceMount: config.sandbox.image.workspaceMount }
       : {}),
   };
 }
@@ -148,6 +151,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
   const sandboxMemory = fromFile.sandboxMemory;
   const sandboxBoostCpus = fromFile.sandboxBoostCpus;
   const sandboxBoostMemory = fromFile.sandboxBoostMemory;
+  const sandboxImageWorkspaceMount = fromFile.sandboxImageWorkspaceMount;
 
   return {
     provider,
@@ -160,6 +164,7 @@ function toAgentConfig(fromFile: Partial<AgentConfig>): AgentConfig {
     sandboxMemory,
     sandboxBoostCpus,
     sandboxBoostMemory,
+    sandboxImageWorkspaceMount,
   };
 }
 
@@ -184,13 +189,35 @@ export function saveConversationModelConfig(
   config: Pick<AgentConfig, "provider" | "model"> & Partial<Pick<AgentConfig, "thinkingLevel">>,
 ): void {
   if (!existsSync(conversationDir)) {
-    mkdirSync(conversationDir, { recursive: true });
+    ensureDirExists(conversationDir);
   }
   const settingsPath = join(conversationDir, "settings.json");
   const existing = loadSettingsFile(settingsPath) ?? {};
   const scopedConfig: SettingsFileConfig = {
     ...existing,
     llm: { ...existing.llm, ...config },
+  };
+  atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
+}
+
+export function saveConversationSandboxConfig(
+  conversationDir: string,
+  config: { imageWorkspaceMount: AgentConfig["sandboxImageWorkspaceMount"] },
+): void {
+  if (!existsSync(conversationDir)) {
+    ensureDirExists(conversationDir);
+  }
+  const settingsPath = join(conversationDir, "settings.json");
+  const existing = loadSettingsFile(settingsPath) ?? {};
+  const scopedConfig: SettingsFileConfig = {
+    ...existing,
+    sandbox: {
+      ...existing.sandbox,
+      image: {
+        ...existing.sandbox?.image,
+        workspaceMount: config.imageWorkspaceMount,
+      },
+    },
   };
   atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
 }
@@ -253,7 +280,7 @@ export function createGlobalSettingsFile(stateDir: string): string {
     throw new Error(`Global settings already exists at ${settingsPath}`);
   }
   if (!existsSync(stateDir)) {
-    mkdirSync(stateDir, { recursive: true });
+    ensureDirExists(stateDir);
   }
   atomicWritePrivateFile(settingsPath, JSON.stringify(ONBOARD_SETTINGS, null, 2));
   return settingsPath;
@@ -336,16 +363,14 @@ export function saveAgentConfig(config: Partial<AgentConfig>): void {
       const message = detail.startsWith("Malformed settings file")
         ? detail.replace("Malformed settings file", "Refusing to overwrite malformed settings file")
         : detail;
-      throw new Error(message);
+      throw new Error(message, { cause: err });
     }
   }
 
   const merged = patchSettingsConfig(existing, config);
 
   const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
+  ensureDirExists(dir);
 
   atomicWritePrivateFile(settingsPath, JSON.stringify(merged, null, 2));
 }

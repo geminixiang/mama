@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync } from "fs";
 import { appendFile, writeFile } from "fs/promises";
 import { join } from "path";
+import { ensureDirExists, isRecord, parseJsonValue, readTextFileIfExists } from "./file-guards.js";
 import * as log from "./log.js";
 
 export interface Attachment {
@@ -37,9 +37,7 @@ export class ChannelStore {
     this.botToken = config.botToken;
 
     // Ensure working directory exists
-    if (!existsSync(this.workingDir)) {
-      mkdirSync(this.workingDir, { recursive: true });
-    }
+    ensureDirExists(this.workingDir);
   }
 
   /**
@@ -47,9 +45,7 @@ export class ChannelStore {
    */
   getChannelDir(channelId: string): string {
     const channelDir = join(this.workingDir, channelId);
-    if (!existsSync(channelDir)) {
-      mkdirSync(channelDir, { recursive: true });
-    }
+    ensureDirExists(channelDir);
     return channelDir;
   }
 
@@ -161,18 +157,22 @@ export class ChannelStore {
    */
   getLastTimestamp(channelId: string): string | null {
     const logPath = join(this.workingDir, channelId, "log.jsonl");
-    if (!existsSync(logPath)) {
+    const content = readTextFileIfExists(logPath);
+    if (content === undefined) {
       return null;
     }
 
     try {
-      const content = readFileSync(logPath, "utf-8");
       const lines = content.trim().split("\n");
       if (lines.length === 0 || lines[0] === "") {
         return null;
       }
       const lastLine = lines[lines.length - 1];
-      const message = JSON.parse(lastLine) as LoggedMessage;
+      const message = parseJsonValue(
+        lastLine,
+        (value): value is LoggedMessage => isRecord(value) && typeof value.ts === "string",
+        (detail) => (detail === "unexpected JSON shape" ? "log entry missing timestamp" : detail),
+      );
       return message.ts;
     } catch {
       return null;
@@ -187,9 +187,7 @@ export class ChannelStore {
 
     // Ensure directory exists
     const parentDir = join(this.workingDir, localPath.substring(0, localPath.lastIndexOf("/")));
-    if (!existsSync(parentDir)) {
-      mkdirSync(parentDir, { recursive: true });
-    }
+    ensureDirExists(parentDir);
 
     const response = await fetch(url, {
       headers: {

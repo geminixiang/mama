@@ -11,6 +11,7 @@ import {
   resolveWorkspaceDirFromArgv,
   saveAgentConfig,
   saveConversationModelConfig,
+  saveConversationSandboxConfig,
 } from "../src/config.js";
 
 describe("loadAgentConfig", () => {
@@ -38,7 +39,7 @@ describe("loadAgentConfig", () => {
     expect(settingsPath).toBe(join(stateDir, "settings.json"));
     const config = loadAgentConfig();
     expect(config.provider).toBe("anthropic");
-    expect(config.model).toBe("claude-sonnet-4-5");
+    expect(config.model).toBe("claude-sonnet-4-6");
     expect(config.thinkingLevel).toBe("off");
     expect(config.logFormat).toBe("console");
     expect(config.logLevel).toBe("info");
@@ -46,6 +47,7 @@ describe("loadAgentConfig", () => {
     expect(config.sandboxMemory).toBe("1g");
     expect(config.sandboxBoostCpus).toBe("2");
     expect(config.sandboxBoostMemory).toBe("4g");
+    expect(config.sandboxImageWorkspaceMount).toBe("private");
   });
 
   test("reads provider and model from settings.json", () => {
@@ -79,7 +81,7 @@ describe("loadAgentConfig", () => {
     writeFileSync(
       join(stateDir, "settings.json"),
       JSON.stringify({
-        llm: { provider: "anthropic", model: "claude-sonnet-4-5", thinkingLevel: "off" },
+        llm: { provider: "anthropic", model: "claude-sonnet-4-6", thinkingLevel: "off" },
         log: { format: "console", level: "info" },
       }),
       "utf-8",
@@ -113,7 +115,7 @@ describe("loadAgentConfig", () => {
       createGlobalSettingsFile(stateDir);
       const config = loadAgentConfig();
       expect(config.provider).toBe("anthropic");
-      expect(config.model).toBe("claude-sonnet-4-5");
+      expect(config.model).toBe("claude-sonnet-4-6");
     } finally {
       rmSync(otherDir, { recursive: true, force: true });
     }
@@ -130,7 +132,7 @@ describe("loadAgentConfig", () => {
   });
 
   test("conversation model config overrides global provider and model only", () => {
-    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-5" });
+    saveAgentConfig({ provider: "anthropic", model: "claude-sonnet-4-6" });
     const conversationDir = join(stateDir, "workspace", "C123");
     saveConversationModelConfig(conversationDir, {
       provider: "openai",
@@ -144,6 +146,18 @@ describe("loadAgentConfig", () => {
     expect(config.thinkingLevel).toBe("low");
     expect(JSON.parse(readFileSync(join(conversationDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "openai", model: "gpt-4o", thinkingLevel: "low" },
+    });
+  });
+
+  test("conversation sandbox config overrides global image workspace mount", () => {
+    createGlobalSettingsFile(stateDir);
+    const conversationDir = join(stateDir, "workspace", "C123");
+    saveConversationSandboxConfig(conversationDir, { imageWorkspaceMount: "full" });
+
+    const config = loadAgentConfigForConversation(conversationDir);
+    expect(config.sandboxImageWorkspaceMount).toBe("full");
+    expect(JSON.parse(readFileSync(join(conversationDir, "settings.json"), "utf-8"))).toEqual({
+      sandbox: { image: { workspaceMount: "full" } },
     });
   });
 });
@@ -216,7 +230,12 @@ describe("saveAgentConfig", () => {
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "google", model: "gemini-2.0-flash", thinkingLevel: "off" },
       log: { format: "console", level: "info" },
-      sandbox: { cpus: "0.5", memory: "1g", boost: { cpus: "2", memory: "4g" } },
+      sandbox: {
+        cpus: "0.5",
+        memory: "1g",
+        boost: { cpus: "2", memory: "4g" },
+        image: { workspaceMount: "private" },
+      },
     });
   });
 
@@ -230,7 +249,12 @@ describe("saveAgentConfig", () => {
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
       llm: { provider: "openai", model: "gpt-4o-mini", thinkingLevel: "off" },
       log: { format: "console", level: "debug" },
-      sandbox: { cpus: "0.5", memory: "1g", boost: { cpus: "2", memory: "4g" } },
+      sandbox: {
+        cpus: "0.5",
+        memory: "1g",
+        boost: { cpus: "2", memory: "4g" },
+        image: { workspaceMount: "private" },
+      },
     });
   });
 

@@ -2,7 +2,6 @@ import { Cron } from "croner";
 import {
   existsSync,
   type FSWatcher,
-  mkdirSync,
   readdirSync,
   readFileSync,
   statSync,
@@ -12,6 +11,7 @@ import {
 import { readFile } from "fs/promises";
 import { join } from "path";
 import type { Bot, BotEvent, ConversationKind } from "./adapter.js";
+import { ensureDirExists, isRecord, parseJsonValue } from "./file-guards.js";
 import * as log from "./log.js";
 import { inferConversationKind } from "./session-policy.js";
 
@@ -100,9 +100,7 @@ export class EventsWatcher {
    */
   start(): void {
     // Ensure events directory exists
-    if (!existsSync(this.eventsDir)) {
-      mkdirSync(this.eventsDir, { recursive: true });
-    }
+    ensureDirExists(this.eventsDir);
 
     log.logInfo(`Events watcher starting, dir: ${this.eventsDir}`);
 
@@ -327,15 +325,19 @@ export class EventsWatcher {
   }
 
   private parseEvent(content: string, filename: string): MamaEvent | null {
-    const data = JSON.parse(content);
+    const data = parseJsonValue(content, isRecord, (detail) =>
+      detail === "unexpected JSON shape" ? `Expected top-level JSON object in ${filename}` : detail,
+    );
     const conversationId =
       typeof data.conversationId === "string"
         ? data.conversationId
         : typeof data.channelId === "string"
           ? data.channelId
           : undefined;
+    const type = typeof data.type === "string" ? data.type : undefined;
+    const text = typeof data.text === "string" ? data.text : undefined;
 
-    if (!data.type || !conversationId || !data.text) {
+    if (!type || !conversationId || !text) {
       throw new Error(`Missing required fields (type, conversationId, text) in ${filename}`);
     }
 
@@ -349,7 +351,7 @@ export class EventsWatcher {
     const sessionKey = typeof data.sessionKey === "string" ? data.sessionKey : undefined;
     const threadTs = typeof data.threadTs === "string" ? data.threadTs : undefined;
 
-    switch (data.type) {
+    switch (type) {
       case "immediate":
         return {
           type: "immediate",
@@ -357,13 +359,13 @@ export class EventsWatcher {
           conversationId,
           conversationKind,
           userId,
-          text: data.text,
+          text,
           sessionKey,
           threadTs,
         };
 
       case "one-shot":
-        if (!data.at) {
+        if (typeof data.at !== "string" || data.at.length === 0) {
           throw new Error(`Missing 'at' field for one-shot event in ${filename}`);
         }
         return {
@@ -372,15 +374,15 @@ export class EventsWatcher {
           conversationId,
           conversationKind,
           userId,
-          text: data.text,
+          text,
           at: data.at,
         };
 
       case "periodic":
-        if (!data.schedule) {
+        if (typeof data.schedule !== "string" || data.schedule.length === 0) {
           throw new Error(`Missing 'schedule' field for periodic event in ${filename}`);
         }
-        if (!data.timezone) {
+        if (typeof data.timezone !== "string" || data.timezone.length === 0) {
           throw new Error(`Missing 'timezone' field for periodic event in ${filename}`);
         }
         return {
@@ -389,14 +391,14 @@ export class EventsWatcher {
           conversationId,
           conversationKind,
           userId,
-          text: data.text,
+          text,
           schedule: data.schedule,
           timezone: data.timezone,
           sessionKey,
         };
 
       default:
-        throw new Error(`Unknown event type '${data.type}' in ${filename}`);
+        throw new Error(`Unknown event type '${type}' in ${filename}`);
     }
   }
 

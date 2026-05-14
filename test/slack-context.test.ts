@@ -81,17 +81,13 @@ describe("session key derivation", () => {
 // ============================================================================
 
 describe("respond() — non-threaded", () => {
-  test("first call posts in-thread under the user's message", async () => {
+  test("first call posts top-level in the channel", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("hello");
-    expect(bot.postInThread).toHaveBeenCalledWith(
-      "C001",
-      "1000.0001",
-      expect.stringContaining("hello"),
-    );
-    expect(bot.postMessage).not.toHaveBeenCalled();
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("hello"));
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 
   test("synthetic event posts top-level instead of using an invalid thread root", async () => {
@@ -125,12 +121,12 @@ describe("respond() — non-threaded", () => {
   });
 
   test("subsequent calls update the same message", async () => {
-    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG1") });
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG1") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("first");
     await responseCtx.respond("second");
-    expect(bot.postInThread).toHaveBeenCalledTimes(1);
+    expect(bot.postMessage).toHaveBeenCalledTimes(1);
     expect(bot.updateMessage).toHaveBeenCalledWith(
       "C001",
       "MSG1",
@@ -182,36 +178,32 @@ describe("respond() — threaded", () => {
 // ============================================================================
 
 describe("respondDiagnostic()", () => {
-  test("non-threaded: anchors to event.ts (rootTs), not bot message ts", async () => {
-    const postInThreadMock = vi
-      .fn()
-      .mockResolvedValueOnce("BOT_MSG")
-      .mockResolvedValueOnce("THREAD_MSG");
-    const bot = makeSlackBot({ postInThread: postInThreadMock });
+  test("non-threaded: anchors diagnostics under the bot message when one exists", async () => {
+    const bot = makeSlackBot({
+      postMessage: vi.fn().mockResolvedValue("BOT_MSG"),
+      postInThread: vi.fn().mockResolvedValue("THREAD_MSG"),
+    });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("main");
     await responseCtx.respondDiagnostic("detail");
-    // respondDiagnostic always uses rootTs (event.ts), not the bot reply ts
-    expect(postInThreadMock).toHaveBeenNthCalledWith(
-      2,
+    expect(bot.postInThread).toHaveBeenCalledWith(
       "C001",
-      "1000.0001",
+      "BOT_MSG",
       expect.stringContaining("detail"),
     );
   });
 
-  test("threaded: anchors to rootTs (user's thread root), not bot message ts", async () => {
+  test("threaded: anchors diagnostics under the bot message when one exists", async () => {
     const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("BOT_THREAD_MSG") });
     const event = makeEvent({ ts: "1000.0003", thread_ts: "1000.0001" });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("main");
     vi.clearAllMocks();
     await responseCtx.respondDiagnostic("detail");
-    // Always anchored to rootTs (1000.0001), not the bot message ts
     expect(bot.postInThread).toHaveBeenCalledWith(
       "C001",
-      "1000.0001",
+      "BOT_THREAD_MSG",
       expect.stringContaining("detail"),
     );
   });
@@ -329,7 +321,7 @@ describe("setTyping()", () => {
 // ============================================================================
 
 describe("setWorking()", () => {
-  test("setWorking(false) before first respond omits indicator and still replies in thread", async () => {
+  test("setWorking(false) before first respond omits indicator and still replies top-level", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
@@ -337,8 +329,8 @@ describe("setWorking()", () => {
     await responseCtx.setWorking(false);
     await responseCtx.respond("login link");
 
-    expect(bot.postInThread).toHaveBeenCalledWith("C001", "1000.0001", "login link");
-    expect(bot.postMessage).not.toHaveBeenCalled();
+    expect(bot.postMessage).toHaveBeenCalledWith("C001", "login link");
+    expect(bot.postInThread).not.toHaveBeenCalled();
   });
 });
 
@@ -348,7 +340,7 @@ describe("setWorking()", () => {
 
 describe("text accumulation", () => {
   test("multiple respond() calls accumulate text with newlines", async () => {
-    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("line1");
@@ -360,7 +352,7 @@ describe("text accumulation", () => {
   });
 
   test("replaceResponse() replaces accumulated text entirely", async () => {
-    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     await responseCtx.respond("original text");
@@ -371,34 +363,35 @@ describe("text accumulation", () => {
   });
 
   test("text is truncated at 35K chars with truncation note", async () => {
-    const bot = makeSlackBot({ postInThread: vi.fn().mockResolvedValue("MSG") });
+    const bot = makeSlackBot({ postMessage: vi.fn().mockResolvedValue("MSG") });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     const longText = "x".repeat(36000);
     await responseCtx.respond(longText);
-    const postedText = vi.mocked(bot.postInThread).mock.calls[0][2] as string;
+    const postedText = vi.mocked(bot.postMessage).mock.calls[0][1] as string;
     expect(postedText.length).toBeLessThan(36000);
     expect(postedText).toContain("message truncated");
   });
 
-  test("replaceResponse posts long final text to diagnostics", async () => {
-    const postInThread = vi.fn().mockResolvedValue("MSG");
-    const bot = makeSlackBot({ postInThread });
+  test("replaceResponse posts long final text to diagnostics under the bot message", async () => {
+    const bot = makeSlackBot({
+      postMessage: vi.fn().mockResolvedValue("BOT_MSG"),
+      postInThread: vi.fn().mockResolvedValue("THREAD_MSG"),
+    });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);
     const longText = `${"x".repeat(35900)}END`;
     await responseCtx.replaceResponse(longText);
-    expect(postInThread).toHaveBeenNthCalledWith(
+    expect(bot.postMessage).toHaveBeenNthCalledWith(
       1,
       "C001",
-      "1000.0001",
       expect.stringContaining("see thread for full response"),
     );
-    expect(postInThread).toHaveBeenCalledTimes(3);
-    expect(postInThread).toHaveBeenNthCalledWith(
-      3,
+    expect(bot.postInThread).toHaveBeenCalledTimes(2);
+    expect(bot.postInThread).toHaveBeenNthCalledWith(
+      2,
       "C001",
-      "1000.0001",
+      "BOT_MSG",
       expect.stringContaining("END"),
     );
   });
@@ -411,10 +404,8 @@ describe("text accumulation", () => {
 describe("deleteResponse()", () => {
   test("deletes main message and all thread messages", async () => {
     const bot = makeSlackBot({
-      postInThread: vi
-        .fn()
-        .mockResolvedValueOnce("MAIN") // from respond()
-        .mockResolvedValueOnce("THREAD1"), // from respondDiagnostic()
+      postMessage: vi.fn().mockResolvedValue("MAIN"),
+      postInThread: vi.fn().mockResolvedValueOnce("THREAD1"),
     });
     const event = makeEvent({ thread_ts: undefined });
     const { responseCtx } = createSlackAdapters(event, bot);

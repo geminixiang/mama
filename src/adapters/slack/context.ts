@@ -39,7 +39,7 @@ function formatSlackToolResult(result: ChatToolResult): string {
 export function createSlackAdapters(
   event: SlackEvent,
   slack: SlackBot,
-  isEvent?: boolean,
+  isSyntheticEvent?: boolean,
 ): {
   message: ChatMessage;
   responseCtx: ChatResponseContext;
@@ -66,7 +66,7 @@ export function createSlackAdapters(
   const user = slack.getUser(event.user);
 
   // Extract event filename for status message
-  const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+  const eventFilename = isSyntheticEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
   const rootTs =
     event.thread_ts ?? (isSlackMessageTs(event.ts) ? resolveSlackRootTs(event.ts) : undefined);
@@ -74,26 +74,28 @@ export function createSlackAdapters(
 
   /**
    * Post the first visible reply.
-   * Normal Slack messages reply in-thread under the triggering user message.
+   * Default Slack behavior is now top-level channel replies.
+   * If the triggering message is already inside a thread, stay in that thread.
    * Synthetic event messages have no real Slack root ts, so they must post top-level.
    */
   const postFirstMessage = async (text: string): Promise<string> => {
-    if (isEvent) {
+    if (isSyntheticEvent) {
       if (event.thread_ts) {
         return slack.postInThread(channelId, event.thread_ts, text);
       }
       return slack.postMessage(channelId, text);
     }
-    return isSlackMessageTs(event.ts)
-      ? slack.postInThread(channelId, event.ts, text)
-      : slack.postMessage(channelId, text);
+    if (isThreaded && rootTs) {
+      return slack.postInThread(channelId, rootTs, text);
+    }
+    return slack.postMessage(channelId, text);
   };
 
   const postDiagnosticDirect = async (
     text: string,
     options?: { style?: "muted" | "error" },
   ): Promise<void> => {
-    const threadAnchor = rootTs ?? messageTs;
+    const threadAnchor = messageTs ?? rootTs;
     if (!threadAnchor) return;
 
     for (const part of splitText(text, MAX_THREAD_LENGTH, formatSlackContinuation)) {

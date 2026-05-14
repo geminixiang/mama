@@ -1,10 +1,13 @@
+import { join } from "node:path";
+import { saveConversationSandboxConfig } from "../config.js";
+import { readConversationWorkspaceMountMode } from "../execution-resolver.js";
 import { resolveActorVaultKey } from "../vault-routing.js";
 import type { CommandContext, CommandHandler } from "./types.js";
 import { replyDiagnosticWithContext } from "./utils.js";
 
 export interface ParsedSandboxCommand {
   command: "/pi-sandbox" | "/sandbox";
-  action?: "boost";
+  action?: "boost" | "private" | "full";
 }
 
 export function parseSandboxCommand(text: string): ParsedSandboxCommand | null {
@@ -14,8 +17,11 @@ export function parseSandboxCommand(text: string): ParsedSandboxCommand | null {
   const command = tokens[0].replace(/@\w+$/i, "").toLowerCase();
   if (command !== "/pi-sandbox" && command !== "/sandbox") return null;
   if (tokens.length === 1) return { command };
-  if (tokens.length === 2 && tokens[1].toLowerCase() === "boost") {
-    return { command, action: "boost" };
+  if (tokens.length === 2) {
+    const action = tokens[1].toLowerCase();
+    if (action === "boost" || action === "private" || action === "full") {
+      return { command, action };
+    }
   }
   return { command };
 }
@@ -45,6 +51,26 @@ export class SandboxCommandHandler implements CommandHandler {
       context.platformUserId,
       context.conversationId,
     );
+
+    if (parsed.action === "private" || parsed.action === "full") {
+      saveConversationSandboxConfig(join(context.services.workingDir, context.conversationId), {
+        imageWorkspaceMount: parsed.action,
+      });
+      await replyDiagnosticWithContext(
+        context.responseCtx,
+        formatSandboxCommandSummary("Sandbox Workspace", [
+          parsed.action === "full"
+            ? "已將此 conversation 的 sandbox 設為 full workspace mode。"
+            : "已將此 conversation 的 sandbox 設為 private workspace mode。",
+          `Workspace mount: ${parsed.action}`,
+          parsed.action === "full"
+            ? "之後這個 container 會把整個 host workspace 掛到 /workspace。"
+            : "之後這個 container 只會掛載 private workspace 檔案與當前 conversation 目錄。",
+        ]),
+        { style: "muted" },
+      );
+      return true;
+    }
 
     if (parsed.action === "boost") {
       const boostLimits = context.services.provisioner.getBoostLimits();
@@ -76,6 +102,10 @@ export class SandboxCommandHandler implements CommandHandler {
     const status = context.services.provisioner.getLimitStatus(containerKey);
     const defaultLimits = context.services.provisioner.getDefaultLimits();
     const boostLimits = context.services.provisioner.getBoostLimits();
+    const workspaceMount = readConversationWorkspaceMountMode(
+      context.services.workingDir,
+      context.conversationId,
+    );
     await replyDiagnosticWithContext(
       context.responseCtx,
       formatSandboxCommandSummary(
@@ -83,6 +113,7 @@ export class SandboxCommandHandler implements CommandHandler {
         [
           `Current: ${formatLimits(status.limits)}`,
           `Status: ${status.boosted ? "boosted" : "default"}`,
+          `Workspace mount: ${workspaceMount}`,
           "",
           `Default: ${formatLimits(defaultLimits)}`,
           boostLimits ? `Boost: ${formatLimits({ ...defaultLimits, ...boostLimits })}` : undefined,

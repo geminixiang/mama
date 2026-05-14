@@ -1,7 +1,8 @@
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "fs";
+import { existsSync, mkdirSync, renameSync, rmSync } from "fs";
 import { join } from "path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { isRecord, parseJsonValue, readTextFileIfExists } from "./file-guards.js";
 import { atomicWritePrivateFile } from "./fs-atomic.js";
 
 export class ThreadRootNotFoundError extends Error {
@@ -86,7 +87,8 @@ export function extractSessionUuid(sessionFile: string): string {
  * "channelId:threadId" → "threadId", "channelId" → "channelId"
  */
 export function extractSessionSuffix(sessionKey: string): string {
-  return sessionKey.includes(":") ? sessionKey.split(":").pop()! : sessionKey;
+  const parts = sessionKey.split(":");
+  return parts.length > 1 ? parts[parts.length - 1] : sessionKey;
 }
 
 /**
@@ -206,11 +208,17 @@ export function resolveGenericSessionScope(
 
 function hasSessionHeader(sessionFile: string): boolean {
   try {
-    const lines = readFileSync(sessionFile, "utf-8").split("\n");
+    const raw = readTextFileIfExists(sessionFile);
+    if (raw === undefined) return false;
+    const lines = raw.split("\n");
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
-      const entry = JSON.parse(trimmed) as { type?: string };
+      const entry = parseJsonValue(
+        trimmed,
+        (value): value is { type?: string } => isRecord(value),
+        (detail) => (detail === "unexpected JSON shape" ? "expected a JSON object" : detail),
+      );
       return entry.type === "session";
     }
   } catch {
@@ -220,14 +228,20 @@ function hasSessionHeader(sessionFile: string): boolean {
 }
 
 function shouldRecreatePreinitializedSession(sessionFile: string): boolean {
-  if (!existsSync(sessionFile)) return false;
-
   try {
-    const entries = readFileSync(sessionFile, "utf-8")
+    const raw = readTextFileIfExists(sessionFile);
+    if (raw === undefined) return false;
+    const entries = raw
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
-      .map((line) => JSON.parse(line) as { type?: string });
+      .map((line) =>
+        parseJsonValue(
+          line,
+          (value): value is { type?: string } => isRecord(value),
+          (detail) => (detail === "unexpected JSON shape" ? "expected a JSON object" : detail),
+        ),
+      );
 
     return entries.length === 1 && entries[0]?.type === "session";
   } catch {
@@ -320,8 +334,7 @@ function normalizeComparableUserText(text: string): string {
 
 function getCurrentSessionPath(sessionDir: string): string | null {
   const pointerFile = join(sessionDir, "current");
-  if (!existsSync(pointerFile)) return null;
-  const filename = readFileSync(pointerFile, "utf-8").trim();
+  const filename = readTextFileIfExists(pointerFile)?.trim();
   if (!filename) return null;
   return join(sessionDir, filename);
 }

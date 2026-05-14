@@ -1077,8 +1077,8 @@ function describeVaultSecrets(vaultManager: VaultManager, vaultId: string): Exis
   }
 
   return {
-    envKeys: Object.keys(vault.env).sort((left, right) => left.localeCompare(right)),
-    mountTargets: [...new Set(vault.mounts.map((mount) => mount.target))].sort((left, right) =>
+    envKeys: Object.keys(vault.env).toSorted((left, right) => left.localeCompare(right)),
+    mountTargets: [...new Set(vault.mounts.map((mount) => mount.target))].toSorted((left, right) =>
       left.localeCompare(right),
     ),
   };
@@ -1510,7 +1510,7 @@ async function handleLinkComplete(
     return;
   }
 
-  const envKeys = Object.keys(updates).sort((left, right) => left.localeCompare(right));
+  const envKeys = Object.keys(updates).toSorted((left, right) => left.localeCompare(right));
 
   // Atomic consume prevents two concurrent requests from both passing the
   // validity check before either deletes the token.
@@ -1652,7 +1652,7 @@ async function handleOAuthCallback(
 ): Promise<void> {
   const state = url.searchParams.get("state") ?? "";
   const code = url.searchParams.get("code") ?? "";
-  const error = url.searchParams.get("error");
+  const oauthError = url.searchParams.get("error");
 
   // Atomic pop: whatever path we take from here, this state is spent.
   // Done before any `await` to close the TOCTOU window between the state
@@ -1660,9 +1660,9 @@ async function handleOAuthCallback(
   const pending = oauthStates.get(state);
   if (pending) oauthStates.delete(state);
 
-  if (error) {
+  if (oauthError) {
     res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(renderErrorPage(`OAuth authorization failed: ${error}`));
+    res.end(renderErrorPage(`OAuth authorization failed: ${oauthError}`));
     return;
   }
 
@@ -1757,7 +1757,7 @@ async function handleOAuthCallback(
   try {
     if (Object.keys(updates).length > 0) {
       vaultManager.upsertEnv(linkToken.vaultId, updates);
-      storedTargets.push(...Object.keys(updates).sort());
+      storedTargets.push(...Object.keys(updates).toSorted());
     }
     if (fileOutput?.type === "authorized_user" && refreshToken) {
       vaultManager.upsertFile(
@@ -1768,10 +1768,10 @@ async function handleOAuthCallback(
       );
       if (mountedPath) storedTargets.push(mountedPath);
     }
-  } catch (error) {
+  } catch (persistError) {
     log.logWarning(
       `Failed to persist OAuth credentials for ${linkToken.platform}/${linkToken.platformUserId}`,
-      error instanceof Error ? error.message : String(error),
+      persistError instanceof Error ? persistError.message : String(persistError),
     );
     res.writeHead(500, { "Content-Type": "text/html; charset=utf-8" });
     res.end(

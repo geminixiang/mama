@@ -102,7 +102,7 @@ export class TelegramBot implements Bot {
       log.logWarning("Telegram polling error", err instanceof Error ? err.message : String(err));
     });
 
-    log.logConnected();
+    log.logConnected("Telegram");
     log.logInfo(`Telegram bot started as @${this.botUsername ?? this.botUserId}`);
   }
 
@@ -413,7 +413,7 @@ export class TelegramBot implements Bot {
     this.client.command("new", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      await this.handler.handleNew(mc.sessionKey, mc.chatId, this);
+      await this.handler.handleNewCommand(mc.sessionKey, mc.chatId, this);
     });
 
     this.client.command("sandbox", async (ctx) => {

@@ -12,7 +12,7 @@ function makeHandler(): BotHandler {
     handleEvent: vi.fn(),
     handleStop: vi.fn(),
     forceStop: vi.fn(),
-    handleNew: vi.fn(),
+    handleNewCommand: vi.fn(),
   };
 }
 
@@ -26,7 +26,7 @@ function makeHandlerWithRunningKeys(runningKeys: string[]): BotHandler {
     handleEvent: vi.fn(),
     handleStop: vi.fn(),
     forceStop: vi.fn(),
-    handleNew: vi.fn(),
+    handleNewCommand: vi.fn(),
   };
 }
 

@@ -169,7 +169,12 @@ export class SlackBot implements Bot {
     this.handler = handler;
     this.workingDir = config.workingDir;
     this.store = config.store;
-    this.socketClient = new SocketModeClient({ appToken: config.appToken });
+    this.socketClient = new SocketModeClient({
+      appToken: config.appToken,
+      // Default 5s is too tight: brief event-loop stalls (e.g. backfill, sync fs)
+      // cause false pong timeouts; 4 in a row makes Slack drop the socket.
+      clientPingTimeout: 12_000,
+    });
     this.webClient = new WebClient(config.botToken);
   }
 
@@ -197,7 +202,7 @@ export class SlackBot implements Bot {
     // Record startup time - messages older than this are just logged, not processed
     this.startupTs = (Date.now() / 1000).toFixed(6);
 
-    log.logConnected();
+    log.logConnected("Slack");
   }
 
   getUser(userId: string): SlackUser | undefined {
@@ -698,12 +703,15 @@ export class SlackBot implements Bot {
     const responseCtx: ChatResponseContext = {
       respond,
       replaceResponse: respond,
-      respondDiagnostic: async (responseText: string, options?: { style?: "muted" | "error" }) => {
-        if (options?.style === "muted") {
+      respondDiagnostic: async (
+        responseText: string,
+        responseOptions?: { style?: "muted" | "error" },
+      ) => {
+        if (responseOptions?.style === "muted") {
           await respondMuted(responseText);
           return;
         }
-        await respond(options?.style === "error" ? `_${responseText}_` : responseText);
+        await respond(responseOptions?.style === "error" ? `_${responseText}_` : responseText);
       },
       respondToolResult: async (result: ChatToolResult) => {
         const duration = (result.durationMs / 1000).toFixed(1);
@@ -833,7 +841,7 @@ export class SlackBot implements Bot {
     });
 
     const commandBot = this.createSlashCommandBot(conversationId);
-    await this.handler.handleNew(conversationId, conversationId, commandBot);
+    await this.handler.handleNewCommand(conversationId, conversationId, commandBot);
   }
 
   private async routeSlashModelCommand(payload: {
@@ -943,6 +951,16 @@ export class SlackBot implements Bot {
   }
 
   private setupEventHandlers(): void {
+    this.socketClient.on("disconnect", (err: unknown) => {
+      log.logWarning("Slack socket disconnect", err ? String(err) : "");
+    });
+    this.socketClient.on("error", (err: unknown) => {
+      log.logWarning("Slack socket error", err ? String(err) : "");
+    });
+    this.socketClient.on("unable_to_socket_mode_start", (err: unknown) => {
+      log.logWarning("Slack socket unable_to_start", err ? String(err) : "");
+    });
+
     // Channel @mentions
     this.socketClient.on("app_mention", ({ event, ack }) => {
       const e = event as {

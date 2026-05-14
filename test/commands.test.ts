@@ -1,17 +1,17 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Bot, ChatResponseContext } from "../src/adapter.js";
-import type { UserBindingStore } from "../src/bindings.js";
 import { CommandRegistry } from "../src/commands/registry.js";
 import { LoginCommandHandler } from "../src/commands/login.js";
 import { NewCommandHandler } from "../src/commands/new.js";
+import { SandboxCommandHandler } from "../src/commands/sandbox.js";
 import { SessionViewCommandHandler } from "../src/commands/session-view.js";
 import type { CommandContext, CommandHandler, CommandServices } from "../src/commands/types.js";
 import { createManagedSessionFile, getChannelSessionDir } from "../src/session-store.js";
 import type { SandboxConfig } from "../src/sandbox.js";
-import type { VaultEntry, VaultManager } from "../src/vault.js";
+import type { VaultManager } from "../src/vault.js";
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -54,40 +54,24 @@ function fakeBot(overrides: Partial<Bot> = {}): Bot {
   };
 }
 
-function fakeVaultManager(): VaultManager & { entries: Map<string, VaultEntry> } {
-  const entries = new Map<string, VaultEntry>();
+function fakeVaultManager(): VaultManager & { entries: Set<string> } {
+  const entries = new Set<string>();
   return {
     entries,
     hasEntry: (key) => entries.has(key),
     resolve: () => undefined,
     getSandboxConfig: (_uid, base) => base,
     list: () => [],
-    reload: () => {},
     isEnabled: () => true,
-    addEntry: (key, entry) => {
-      if (!entries.has(key)) entries.set(key, entry);
+    upsertEnv: (key) => {
+      entries.add(key);
     },
-    ensureImageSandboxEntry: (key, entry) => entries.set(key, entry),
-    upsertEnv: () => {},
-    upsertFile: () => {},
+    upsertFile: (key) => {
+      entries.add(key);
+    },
     listSharedVaults: () => [],
     deleteSharedVault: () => false,
     copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
-  };
-}
-
-function fakeBindingStore(): UserBindingStore {
-  return {
-    isEnabled: () => true,
-    resolve: () => undefined,
-    list: () => [],
-    create: () => {
-      throw new Error("not used");
-    },
-    activate: () => {
-      throw new Error("not used");
-    },
-    revoke: () => {},
   };
 }
 
@@ -155,7 +139,7 @@ function buildContext(args: BuildContextArgs): CommandContext & {
       forceStop: vi.fn(),
       getRunningSessions: vi.fn().mockReturnValue([]),
       handleEvent: vi.fn(),
-      handleNew: vi.fn(),
+      handleNewCommand: vi.fn(),
       handleStop: vi.fn(),
       isRunning: vi.fn().mockReturnValue(false),
       runSession: vi.fn(),
@@ -163,7 +147,6 @@ function buildContext(args: BuildContextArgs): CommandContext & {
     } as any,
     sandbox,
     vaultManager: fakeVaultManager(),
-    bindingStore: fakeBindingStore(),
     linkTokenStore: fakeLinkTokenStore(),
     sessionViewTokenStore: fakeSessionViewTokenStore(),
     portalBaseUrl: "https://portal.example",
@@ -345,7 +328,7 @@ describe("LoginCommandHandler", () => {
 
   test("uses vaultConversationId for vault routing when reply channel differs", async () => {
     const linkTokenStore = fakeLinkTokenStore();
-    const entries = new Map<string, VaultEntry>();
+    const entries = new Set<string>();
     const ctx = buildContext({
       commandText: "/login",
       privateConversation: true,
@@ -360,14 +343,13 @@ describe("LoginCommandHandler", () => {
           resolve: () => undefined,
           getSandboxConfig: (_uid: string, base: SandboxConfig) => base,
           list: () => [],
-          reload: () => {},
           isEnabled: () => true,
-          addEntry: (key: string, entry: VaultEntry) => {
-            if (!entries.has(key)) entries.set(key, entry);
+          upsertEnv: (key: string) => {
+            entries.add(key);
           },
-          ensureImageSandboxEntry: (key: string, entry: VaultEntry) => entries.set(key, entry),
-          upsertEnv: () => {},
-          upsertFile: () => {},
+          upsertFile: (key: string) => {
+            entries.add(key);
+          },
           listSharedVaults: () => [],
           deleteSharedVault: () => false,
           copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
@@ -386,6 +368,91 @@ describe("LoginCommandHandler", () => {
       },
     ]);
     expect(entries.size).toBe(0);
+  });
+});
+
+// ── SandboxCommandHandler ───────────────────────────────────────────────────
+
+describe("SandboxCommandHandler", () => {
+  const handler = new SandboxCommandHandler();
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(
+      tmpdir(),
+      `cmd-sandbox-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("reports current workspace mount mode", async () => {
+    const ctx = buildContext({
+      commandText: "/pi-sandbox",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: { cpus: "0.5", memory: "1g" }, boosted: false }),
+          getDefaultLimits: () => ({ cpus: "0.5", memory: "1g" }),
+          getBoostLimits: () => ({ cpus: "2", memory: "4g" }),
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: private");
+  });
+
+  test("switches a conversation to full workspace mode", async () => {
+    const ctx = buildContext({
+      commandText: "/pi-sandbox full",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: undefined, boosted: false }),
+          getDefaultLimits: () => undefined,
+          getBoostLimits: () => undefined,
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    const sandboxConfig = JSON.parse(
+      readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"),
+    ) as { sandbox: { image: { workspaceMount: string } } };
+    expect(sandboxConfig.sandbox.image.workspaceMount).toBe("full");
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: full");
+  });
+
+  test("switches a conversation back to private workspace mode", async () => {
+    mkdirSync(join(workingDir, "C123"), { recursive: true });
+    const ctx = buildContext({
+      commandText: "/pi-sandbox private",
+      conversationId: "C123",
+      services: {
+        workingDir,
+        sandbox: { type: "image", image: "ubuntu:24.04" },
+        provisioner: {
+          getLimitStatus: () => ({ limits: undefined, boosted: false }),
+          getDefaultLimits: () => undefined,
+          getBoostLimits: () => undefined,
+        } as any,
+      },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    const sandboxConfig = JSON.parse(
+      readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"),
+    ) as { sandbox: { image: { workspaceMount: string } } };
+    expect(sandboxConfig.sandbox.image.workspaceMount).toBe("private");
+    expect(ctx.responseCtx.responses[0]).toContain("Workspace mount: private");
   });
 });
 
@@ -503,7 +570,7 @@ describe("NewCommandHandler", () => {
 
     expect(await handler.tryHandle(ctx)).toBe(true);
     expect(ctx.responseCtx.responses[0]).toContain("只能在與機器人的私訊");
-    expect(ctx.services.runtime.handleNew).not.toHaveBeenCalled();
+    expect(ctx.services.runtime.handleNewCommand).not.toHaveBeenCalled();
   });
 
   test("resets the active private session", async () => {
@@ -514,6 +581,6 @@ describe("NewCommandHandler", () => {
     });
 
     expect(await handler.tryHandle(ctx)).toBe(true);
-    expect(ctx.services.runtime.handleNew).toHaveBeenCalledWith("D123", "D123", ctx.bot);
+    expect(ctx.services.runtime.handleNewCommand).toHaveBeenCalledWith("D123", "D123", ctx.bot);
   });
 });

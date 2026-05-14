@@ -371,7 +371,7 @@ export class DockerContainerManager {
     return mounts
       .map((mount) => this.toBindSpec(mount))
       .slice()
-      .sort();
+      .toSorted();
   }
 
   private sameBinds(expected: string[], actual: string[]): boolean {
@@ -400,7 +400,7 @@ export class DockerContainerManager {
       throw new Error(`Unexpected docker bind mount payload for container "${containerName}"`);
     }
 
-    return [...parsed].sort();
+    return [...parsed].toSorted();
   }
 
   private async hasNetworkModeDrift(containerKey: string, containerName: string): Promise<boolean> {
@@ -571,6 +571,3 @@ export class DockerContainerManager {
     );
   }
 }
-
-/** @deprecated Use DockerContainerManager */
-export const DockerProvisioner = DockerContainerManager;

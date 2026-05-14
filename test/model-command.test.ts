@@ -12,10 +12,10 @@ describe("model command parsing", () => {
   });
 
   test("parses provider/model:thinking shorthand", () => {
-    expect(parseModelCommand("/pi-model anthropic/claude-sonnet-4-5:off")).toEqual({
+    expect(parseModelCommand("/pi-model anthropic/claude-sonnet-4-6:off")).toEqual({
       command: "/pi-model",
       provider: "anthropic",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-4-6",
       thinkingLevel: "off",
     });
   });
