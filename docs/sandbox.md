@@ -30,7 +30,6 @@ state directory 預設是：
 ~/.mama/
 ├── settings.json
 └── vaults/
-    ├── vault.json
     └── <vault-id>/
 ```
 
@@ -54,17 +53,17 @@ mama --state-dir=/secure/mama-state --sandbox=container:mama-tools /path/to/work
 
 ## Vault 內容
 
-每個 vault entry 可包含：
+每個 vault 是 `vaults/` 下的一個目錄，裡面可包含：
 
 - `env` file：`KEY=value` 形式的環境變數
 - file credentials：例如 `gws.json`、`.ssh/config`
-- mount metadata：記錄 file credential 理想上應該投影到 sandbox 內哪個 target path
+
+mount target 從檔名/路徑自動推斷（例如 `gws.json` → `/root/.config/gws/credentials.json`、`.ssh/` → `/root/.ssh`）。
 
 範例：
 
 ```text
 ~/.mama/vaults/
-├── vault.json
 └── container-mama-tools/
     ├── env
     └── gws.json

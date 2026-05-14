@@ -8,6 +8,5 @@ bin/
 
 # Local mama state / credential vaults
 .mama/
-vaults/vault.json
 vaults/*/
 

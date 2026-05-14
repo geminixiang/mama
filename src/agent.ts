@@ -498,7 +498,6 @@ function createRunnerExecutionContext(
     getWorkspacePath: () => executor.getWorkspacePath(hostWorkspacePath),
     async resolveExecutorForRun(context): Promise<void> {
       if (!executionResolver) return;
-      executionResolver.refresh();
       activeExecutor = await executionResolver.resolve(context);
     },
   };

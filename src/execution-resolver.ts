@@ -69,10 +69,6 @@ export class ActorExecutionResolver {
     private workspaceDir?: string,
   ) {}
 
-  refresh(): void {
-    this.vaultManager.reload();
-  }
-
   async resolve(context: ActorContext): Promise<Executor> {
     const vaultKey = resolveActorVaultKey(this.baseConfig, context.userId, context.conversationId);
 

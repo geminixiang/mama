@@ -185,7 +185,6 @@ For GCP Cloud Logging, set `log.format: "json"`, give the VM service account `ro
 <state-dir>/
 ├── settings.json
 └── vaults/
-    ├── vault.json
     └── <vault-id>/
         ├── env
         └── ...                # credential files

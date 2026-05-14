@@ -11,7 +11,7 @@ import { SessionViewCommandHandler } from "../src/commands/session-view.js";
 import type { CommandContext, CommandHandler, CommandServices } from "../src/commands/types.js";
 import { createManagedSessionFile, getChannelSessionDir } from "../src/session-store.js";
 import type { SandboxConfig } from "../src/sandbox.js";
-import type { VaultEntry, VaultManager } from "../src/vault.js";
+import type { VaultManager } from "../src/vault.js";
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
 
@@ -54,22 +54,21 @@ function fakeBot(overrides: Partial<Bot> = {}): Bot {
   };
 }
 
-function fakeVaultManager(): VaultManager & { entries: Map<string, VaultEntry> } {
-  const entries = new Map<string, VaultEntry>();
+function fakeVaultManager(): VaultManager & { entries: Set<string> } {
+  const entries = new Set<string>();
   return {
     entries,
     hasEntry: (key) => entries.has(key),
     resolve: () => undefined,
     getSandboxConfig: (_uid, base) => base,
     list: () => [],
-    reload: () => {},
     isEnabled: () => true,
-    addEntry: (key, entry) => {
-      if (!entries.has(key)) entries.set(key, entry);
+    upsertEnv: (key) => {
+      entries.add(key);
     },
-    ensureImageSandboxEntry: (key, entry) => entries.set(key, entry),
-    upsertEnv: () => {},
-    upsertFile: () => {},
+    upsertFile: (key) => {
+      entries.add(key);
+    },
     listSharedVaults: () => [],
     deleteSharedVault: () => false,
     copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
@@ -329,7 +328,7 @@ describe("LoginCommandHandler", () => {
 
   test("uses vaultConversationId for vault routing when reply channel differs", async () => {
     const linkTokenStore = fakeLinkTokenStore();
-    const entries = new Map<string, VaultEntry>();
+    const entries = new Set<string>();
     const ctx = buildContext({
       commandText: "/login",
       privateConversation: true,
@@ -344,14 +343,13 @@ describe("LoginCommandHandler", () => {
           resolve: () => undefined,
           getSandboxConfig: (_uid: string, base: SandboxConfig) => base,
           list: () => [],
-          reload: () => {},
           isEnabled: () => true,
-          addEntry: (key: string, entry: VaultEntry) => {
-            if (!entries.has(key)) entries.set(key, entry);
+          upsertEnv: (key: string) => {
+            entries.add(key);
           },
-          ensureImageSandboxEntry: (key: string, entry: VaultEntry) => entries.set(key, entry),
-          upsertEnv: () => {},
-          upsertFile: () => {},
+          upsertFile: (key: string) => {
+            entries.add(key);
+          },
           listSharedVaults: () => [],
           deleteSharedVault: () => false,
           copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
