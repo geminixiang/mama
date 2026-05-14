@@ -51,10 +51,19 @@ export interface ProvisionOptions {
   conversationId?: string;
 }
 
+export interface ContainerLifecycleHooks {
+  /** Called after a sandbox container is stopped (e.g., idle timeout). */
+  onStop?(containerKey: string): Promise<void>;
+  /** Called after a sandbox container is removed. */
+  onRemove?(containerKey: string): Promise<void>;
+}
+
 export interface DockerContainerManagerOptions {
   limits?: ResourceLimits;
   boostLimits?: ResourceLimits;
   execFileImpl?: ExecFileAsync;
+  /** Optional hooks to coordinate resources tied to each container key. */
+  lifecycleHooks?: ContainerLifecycleHooks;
 }
 
 export class DockerContainerManager {
@@ -69,6 +78,7 @@ export class DockerContainerManager {
   private readonly boostLimits?: ResourceLimits;
   private readonly boostedKeys = new Set<string>();
   private readonly execFileImpl: ExecFileAsync;
+  private readonly lifecycleHooks?: ContainerLifecycleHooks;
 
   constructor(
     private readonly image: string,
@@ -80,6 +90,7 @@ export class DockerContainerManager {
       this.limits = options.limits;
       this.boostLimits = options.boostLimits;
       this.execFileImpl = options.execFileImpl ?? execFileAsync;
+      this.lifecycleHooks = options.lifecycleHooks;
     }
   }
 
@@ -183,6 +194,7 @@ export class DockerContainerManager {
         err instanceof Error ? err.message : String(err),
       );
     }
+    await this.lifecycleHooks?.onStop?.(containerKey);
   }
 
   async remove(containerKey: string): Promise<void> {
@@ -207,6 +219,7 @@ export class DockerContainerManager {
 
     this.state.delete(containerKey);
     this.boostedKeys.delete(containerKey);
+    await this.lifecycleHooks?.onRemove?.(containerKey);
   }
 
   async stopIdle(maxIdleMs: number): Promise<void> {
