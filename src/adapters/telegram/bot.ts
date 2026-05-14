@@ -102,7 +102,7 @@ export class TelegramBot implements Bot {
       log.logWarning("Telegram polling error", err instanceof Error ? err.message : String(err));
     });
 
-    log.logConnected();
+    log.logConnected("Telegram");
     log.logInfo(`Telegram bot started as @${this.botUsername ?? this.botUserId}`);
   }
 

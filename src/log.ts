@@ -355,9 +355,9 @@ export function logStartup(workingDir: string, sandbox: string): void {
   console.log(`  Sandbox: ${sandbox}`);
 }
 
-export function logConnected(): void {
-  if (logger) logger.info({ event: "connected" }, "Mama connected and listening");
-  console.log("⚡️ Mama connected and listening!");
+export function logConnected(platform: string): void {
+  if (logger) logger.info({ event: "connected", platform }, "Mama connected and listening");
+  console.log(`⚡️ Mama connected to ${platform} and listening!`);
   console.log("");
 }
 

@@ -99,7 +99,7 @@ export class DiscordBot implements Bot {
       this.client.once(Events.ClientReady, async (readyClient) => {
         this.botUserId = readyClient.user.id;
         this.startupTime = Date.now();
-        log.logConnected();
+        log.logConnected("Discord");
         log.logInfo(`Discord bot started as ${readyClient.user.tag}`);
         this.loadCachedGuildData();
         this.setupEventHandlers();
