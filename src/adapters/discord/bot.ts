@@ -554,7 +554,7 @@ export class DiscordBot implements Bot {
       );
       try {
         if (interaction.commandName === "new") {
-          await this.handler.handleNew(sessionKey, conversationId, this);
+          await this.handler.handleNewCommand(sessionKey, conversationId, this);
           return;
         }
 

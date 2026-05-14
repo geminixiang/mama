@@ -37,7 +37,7 @@ function formatToolResult(result: ChatToolResult): string {
 export function createDiscordAdapters(
   event: DiscordEvent,
   bot: DiscordBot,
-  isEvent?: boolean,
+  isSyntheticEvent?: boolean,
 ): {
   message: ChatMessage;
   responseCtx: ChatResponseContext;
@@ -60,7 +60,7 @@ export function createDiscordAdapters(
 
   const conversationId = event.conversationId;
   const channelId = conversationId;
-  const _eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+  const _eventFilename = isSyntheticEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
   const threadTargetId = isDiscordMessageReference(event.thread_ts) ? event.thread_ts : undefined;
   const replyTargetId = isDiscordMessageReference(event.ts) ? event.ts : undefined;
 

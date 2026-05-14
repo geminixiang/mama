@@ -13,7 +13,7 @@ function makeHandler(): BotHandler {
     handleEvent: vi.fn(),
     handleStop: vi.fn(),
     forceStop: vi.fn(),
-    handleNew: vi.fn(),
+    handleNewCommand: vi.fn(),
   };
 }
 
@@ -95,7 +95,7 @@ describe("SlackBot slash commands", () => {
       store: {} as any,
     });
 
-    handler.handleNew = vi.fn(async (_sessionKey, conversationId, commandBot) => {
+    handler.handleNewCommand = vi.fn(async (_sessionKey, conversationId, commandBot) => {
       await commandBot.postMessage(
         conversationId,
         "Conversation reset. Send a new message to start fresh.",
@@ -118,7 +118,7 @@ describe("SlackBot slash commands", () => {
       user_name: "alice",
     });
 
-    expect(handler.handleNew).toHaveBeenCalledWith("D123", "D123", expect.any(Object));
+    expect(handler.handleNewCommand).toHaveBeenCalledWith("D123", "D123", expect.any(Object));
     expect(postMessage).toHaveBeenCalledWith({
       channel: "D123",
       text: "Conversation reset. Send a new message to start fresh.",
@@ -151,7 +151,7 @@ describe("SlackBot slash commands", () => {
       user_name: "alice",
     });
 
-    expect(handler.handleNew).not.toHaveBeenCalled();
+    expect(handler.handleNewCommand).not.toHaveBeenCalled();
     expect(postEphemeral).toHaveBeenCalledWith({
       channel: "C123",
       user: "U123",

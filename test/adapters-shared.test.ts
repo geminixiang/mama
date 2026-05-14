@@ -15,7 +15,7 @@ function makeHandler(runningKeys: string[] = []): BotHandler {
     handleEvent: vi.fn(),
     handleStop: vi.fn(),
     forceStop: vi.fn(),
-    handleNew: vi.fn(),
+    handleNewCommand: vi.fn(),
   };
 }
 

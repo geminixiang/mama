@@ -26,7 +26,7 @@ export interface RunSessionOptions {
   event: BotEvent;
   bot: Bot;
   adapters: BotAdapters;
-  isEvent?: boolean;
+  isSyntheticEvent?: boolean;
 }
 
 export interface CreateSessionSandboxOptions {
@@ -136,7 +136,7 @@ class MamaSessionRuntime implements SessionRuntime {
     }
   }
 
-  async handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
+  async handleNewCommand(sessionKey: string, conversationId: string, bot: Bot): Promise<void> {
     const state = this.conversationStates.get(sessionKey);
     if (state?.running) {
       state.stopRequested = true;
@@ -161,13 +161,13 @@ class MamaSessionRuntime implements SessionRuntime {
     event: BotEvent,
     bot: Bot,
     adapters: BotAdapters,
-    isEvent?: boolean,
+    isSyntheticEvent?: boolean,
   ): Promise<void> {
     const sessionKey = event.sessionKey ?? `${event.conversationId}:${event.thread_ts ?? event.ts}`;
     const previous = this.sessionQueues.get(sessionKey) ?? Promise.resolve();
     const next = previous
       .catch(() => {})
-      .then(() => this.runSession({ event, bot, adapters, isEvent }));
+      .then(() => this.runSession({ event, bot, adapters, isSyntheticEvent }));
     this.sessionQueues.set(sessionKey, next);
     try {
       await next;
@@ -178,8 +178,8 @@ class MamaSessionRuntime implements SessionRuntime {
     }
   }
 
-  async runSession({ event, bot, adapters, isEvent }: RunSessionOptions): Promise<void> {
-    await this.orchestrator.runSession({ event, bot, adapters, isEvent });
+  async runSession({ event, bot, adapters, isSyntheticEvent }: RunSessionOptions): Promise<void> {
+    await this.orchestrator.runSession({ event, bot, adapters, isSyntheticEvent });
   }
 
   async createSessionSandbox(options: CreateSessionSandboxOptions): Promise<AgentRunner> {

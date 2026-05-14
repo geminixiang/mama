@@ -1,4 +1,4 @@
-import { Agent, type AgentEvent, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { Agent, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { getModel, type ImageContent } from "@earendil-works/pi-ai";
 import {
   AgentSession,
@@ -153,6 +153,40 @@ function buildRuntimePaths(workspacePath: string, conversationId: string) {
   };
 }
 
+function buildEnvDescription(sandboxType: SandboxConfig["type"], workspaceRoot: string): string {
+  switch (sandboxType) {
+    case "image":
+      return `You are running inside a managed per-user container.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Install tools with the image's package manager
+- Your changes persist for this user's container until it is recreated`;
+    case "container":
+      return `You are running inside a shared container.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Install tools with the container's package manager
+- Your changes persist across sessions`;
+    case "firecracker":
+      return `You are running inside a Firecracker microVM.
+- Runtime workspace root: ${workspaceRoot}
+- Use cd or absolute paths; project files are under ${workspaceRoot}
+- Install tools with: apt-get install <package> (Debian-based)
+- Your changes persist across sessions`;
+    case "cloudflare":
+      return `You are running through a Cloudflare Sandbox bridge.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${workspaceRoot}
+- Your commands run in a remote container managed by Cloudflare
+- Important: the remote filesystem is not automatically synced back to the host workspace`;
+    default:
+      return `You are running directly on the host machine.
+- Runtime workspace root: ${workspaceRoot}
+- Bash commands start in: ${process.cwd()}
+- Be careful with system modifications`;
+  }
+}
+
 function buildSystemPrompt(
   workspacePath: string,
   conversationId: string,
@@ -167,10 +201,9 @@ function buildSystemPrompt(
     workspacePath,
     conversationId,
   );
-  const isContainer = sandboxConfig.type === "container" || sandboxConfig.type === "image";
-  const isImageSandbox = sandboxConfig.type === "image";
-  const isFirecracker = sandboxConfig.type === "firecracker";
-  const isCloudflareSandbox = sandboxConfig.type === "cloudflare";
+  const sandboxType = sandboxConfig.type;
+  const isContainerLike = sandboxType === "container" || sandboxType === "image";
+  const isFirecracker = sandboxType === "firecracker";
 
   // Format channel mappings
   const channelMappings =
@@ -184,34 +217,7 @@ function buildSystemPrompt(
       ? platform.users.map((u) => `${u.id}\t@${u.userName}\t${u.displayName}`).join("\n")
       : "(no users loaded)";
 
-  const envDescription = isImageSandbox
-    ? `You are running inside a managed per-user container.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Install tools with the image's package manager
-- Your changes persist for this user's container until it is recreated`
-    : isContainer
-      ? `You are running inside a shared container.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Install tools with the container's package manager
-- Your changes persist across sessions`
-      : isFirecracker
-        ? `You are running inside a Firecracker microVM.
-- Runtime workspace root: ${workspaceRoot}
-- Use cd or absolute paths; project files are under ${workspaceRoot}
-- Install tools with: apt-get install <package> (Debian-based)
-- Your changes persist across sessions`
-        : isCloudflareSandbox
-          ? `You are running through a Cloudflare Sandbox bridge.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${workspaceRoot}
-- Your commands run in a remote container managed by Cloudflare
-- Important: the remote filesystem is not automatically synced back to the host workspace`
-          : `You are running directly on the host machine.
-- Runtime workspace root: ${workspaceRoot}
-- Bash commands start in: ${process.cwd()}
-- Be careful with system modifications`;
+  const envDescription = buildEnvDescription(sandboxType, workspaceRoot);
 
   return `You are mama, a ${platform.name} bot assistant. Be concise. No emojis.
 
@@ -366,8 +372,7 @@ Update this file whenever you modify the environment. On fresh container, read i
 Format: \`{"date":"...","ts":"...","user":"...","userName":"...","text":"...","isBot":false}\`
 The log contains user messages and your final responses (not tool calls/results).
 Use \`log.jsonl\` for quick grep-style history. Use \`${conversationPath}/sessions/\` when you need structured turns, tool outputs, or branch lineage.
-${isContainer ? "Install jq: apt-get install jq" : ""}
-${isFirecracker ? "Install jq: apt-get install jq" : ""}
+${isContainerLike || isFirecracker ? "Install jq: apt-get install jq" : ""}
 
 \`\`\`bash
 # Recent messages
@@ -785,25 +790,39 @@ async function finalizeRunResponse(
   }
 }
 
-async function maybeReportUsageSummary(
-  session: AgentSession,
-  runState: RunnerSessionState,
-  responseCtx: ChatResponseContext,
-  platform: PlatformInfo,
-  model: ReturnType<typeof getModel>,
-  agentConfig: ReturnType<typeof loadAgentConfigForConversation>,
-  sessionConversation: string,
-  sessionUuid: string,
-  waitForQueue: () => Promise<void>,
-): Promise<void> {
+interface UsageReportContext {
+  session: AgentSession;
+  runState: RunnerSessionState;
+  responseCtx: ChatResponseContext;
+  platform: PlatformInfo;
+  model: ReturnType<typeof getModel>;
+  agentConfig: ReturnType<typeof loadAgentConfigForConversation>;
+  sessionConversation: string;
+  sessionUuid: string;
+  waitForQueue: () => Promise<void>;
+}
+
+async function reportUsageSummary(ctx: UsageReportContext): Promise<void> {
+  const {
+    session,
+    runState,
+    responseCtx,
+    platform,
+    model,
+    agentConfig,
+    sessionConversation,
+    sessionUuid,
+    waitForQueue,
+  } = ctx;
   if (runState.totalUsage.cost.total <= 0) return;
 
   const lastAssistantMessage = session.messages
     .slice()
     .reverse()
     .find(
-      (message) => message.role === "assistant" && (message as any).stopReason !== "aborted",
-    ) as any | undefined;
+      (message): message is Extract<typeof message, { role: "assistant" }> =>
+        message.role === "assistant" && message.stopReason !== "aborted",
+    );
 
   const contextTokens = lastAssistantMessage
     ? lastAssistantMessage.usage.input +
@@ -998,76 +1017,69 @@ function attachSessionEventHandlers(params: {
     const baseAttrs = { channel_id: logCtx.conversationId, session_id: logCtx.sessionId };
 
     if (event.type === "tool_execution_start") {
-      const agentEvent = event as AgentEvent & { type: "tool_execution_start" };
-      const args = agentEvent.args as { label?: string };
-      const label = args.label || agentEvent.toolName;
+      const args = (event.args ?? {}) as { label?: string };
+      const label = args.label || event.toolName;
 
-      pendingTools.set(agentEvent.toolCallId, {
-        toolName: agentEvent.toolName,
-        args: agentEvent.args,
+      pendingTools.set(event.toolCallId, {
+        toolName: event.toolName,
+        args: event.args,
         startTime: Date.now(),
       });
       addLifecycleBreadcrumb("agent.tool.started", {
-        tool: agentEvent.toolName,
+        tool: event.toolName,
         ...baseAttrs,
       });
 
-      log.logToolStart(
-        logCtx,
-        agentEvent.toolName,
-        label,
-        agentEvent.args as Record<string, unknown>,
-      );
+      log.logToolStart(logCtx, event.toolName, label, event.args as Record<string, unknown>);
       return;
     }
 
     if (event.type === "tool_execution_end") {
-      const agentEvent = event as AgentEvent & { type: "tool_execution_end" };
-      const resultStr = extractToolResultText(agentEvent.result);
-      const pending = pendingTools.get(agentEvent.toolCallId);
-      pendingTools.delete(agentEvent.toolCallId);
+      const resultStr = extractToolResultText(event.result);
+      const pending = pendingTools.get(event.toolCallId);
+      pendingTools.delete(event.toolCallId);
       const durationMs = pending ? Date.now() - pending.startTime : 0;
 
       Sentry.metrics.count("agent.tool.calls", 1, {
         attributes: metricAttributes({
-          tool: agentEvent.toolName,
-          error: String(agentEvent.isError),
+          tool: event.toolName,
+          error: String(event.isError),
           ...baseAttrs,
         }),
       });
       Sentry.metrics.distribution("agent.tool.duration", durationMs, {
         unit: "millisecond",
         attributes: metricAttributes({
-          tool: agentEvent.toolName,
+          tool: event.toolName,
           ...baseAttrs,
         }),
       });
       addLifecycleBreadcrumb("agent.tool.completed", {
-        tool: agentEvent.toolName,
-        error: agentEvent.isError,
+        tool: event.toolName,
+        error: event.isError,
         duration_ms: durationMs,
         ...baseAttrs,
       });
 
-      if (agentEvent.isError) {
-        log.logToolError(logCtx, agentEvent.toolName, durationMs, resultStr);
+      if (event.isError) {
+        log.logToolError(logCtx, event.toolName, durationMs, resultStr);
       } else {
-        log.logToolSuccess(logCtx, agentEvent.toolName, durationMs, resultStr);
+        log.logToolSuccess(logCtx, event.toolName, durationMs, resultStr);
       }
 
-      if (shouldSurfaceToolDiagnostic(agentEvent.toolName)) {
+      if (shouldSurfaceToolDiagnostic(event.toolName)) {
         const toolResult: ChatToolResult = {
-          toolName: agentEvent.toolName,
+          toolName: event.toolName,
           label: pending?.args ? (pending.args as { label?: string }).label : undefined,
           args: pending?.args as Record<string, unknown> | undefined,
           result: truncate(resultStr, TOOL_RESULT_DIAGNOSTIC_CAP),
-          isError: agentEvent.isError,
+          isError: event.isError,
           durationMs,
         };
         queue.enqueue(() => responseCtx.respondToolResult(toolResult), "tool result diagnostic");
       }
 
-      if (agentEvent.isError) {
+      if (event.isError) {
         queue.enqueue(
           () => responseCtx.respond(`_Error: ${truncate(resultStr, 200)}_`),
           "tool error",
@@ -1077,8 +1089,7 @@ function attachSessionEventHandlers(params: {
     }
 
     if (event.type === "message_start") {
-      const agentEvent = event as AgentEvent & { type: "message_start" };
-      if (agentEvent.message.role === "assistant") {
+      if (event.message.role === "assistant") {
         runState.llmCallCount += 1;
         addLifecycleBreadcrumb("agent.llm.call.started", {
           call_index: runState.llmCallCount,
@@ -1092,9 +1103,8 @@ function attachSessionEventHandlers(params: {
     }
 
     if (event.type === "message_end") {
-      const agentEvent = event as AgentEvent & { type: "message_end" };
-      if (agentEvent.message.role === "assistant") {
-        const assistantMsg = agentEvent.message as any;
+      if (event.message.role === "assistant") {
+        const assistantMsg = event.message;
 
         if (assistantMsg.stopReason) {
           runState.stopReason = assistantMsg.stopReason;
@@ -1153,14 +1163,13 @@ function attachSessionEventHandlers(params: {
           });
         }
 
-        const content = agentEvent.message.content;
         const thinkingParts: string[] = [];
         const textParts: string[] = [];
-        for (const part of content) {
+        for (const part of assistantMsg.content) {
           if (part.type === "thinking") {
-            thinkingParts.push((part as any).thinking);
+            thinkingParts.push(part.thinking);
           } else if (part.type === "text") {
-            textParts.push((part as any).text);
+            textParts.push(part.text);
           }
         }
 
@@ -1184,30 +1193,24 @@ function attachSessionEventHandlers(params: {
     }
 
     if (event.type === "compaction_start") {
-      log.logInfo(`Auto-compaction started (reason: ${(event as any).reason})`);
+      log.logInfo(`Auto-compaction started (reason: ${event.reason})`);
       queue.enqueue(() => responseCtx.respond("_Compacting context..._"), "compaction start");
       return;
     }
 
     if (event.type === "compaction_end") {
-      const compEvent = event as any;
-      if (compEvent.result) {
-        log.logInfo(`Auto-compaction complete: ${compEvent.result.tokensBefore} tokens compacted`);
-      } else if (compEvent.aborted) {
+      if (event.result) {
+        log.logInfo(`Auto-compaction complete: ${event.result.tokensBefore} tokens compacted`);
+      } else if (event.aborted) {
         log.logInfo("Auto-compaction aborted");
       }
       return;
     }
 
     if (event.type === "auto_retry_start") {
-      const retryEvent = event as any;
-      log.logWarning(
-        `Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})`,
-        retryEvent.errorMessage,
-      );
+      log.logWarning(`Retrying (${event.attempt}/${event.maxAttempts})`, event.errorMessage);
       queue.enqueue(
-        () =>
-          responseCtx.respond(`_Retrying (${retryEvent.attempt}/${retryEvent.maxAttempts})..._`),
+        () => responseCtx.respond(`_Retrying (${event.attempt}/${event.maxAttempts})..._`),
         "retry",
       );
     }
@@ -1388,17 +1391,17 @@ export async function createRunner(
 
       await finalizeRunResponse(responseCtx, session, runState);
 
-      await maybeReportUsageSummary(
+      await reportUsageSummary({
         session,
         runState,
         responseCtx,
         platform,
         model,
         agentConfig,
-        prepared.sessionConversation,
+        sessionConversation: prepared.sessionConversation,
         sessionUuid,
-        () => prepared.runQueue.wait(),
-      );
+        waitForQueue: () => prepared.runQueue.wait(),
+      });
 
       // Clear run state
       runState.responseCtx = null;

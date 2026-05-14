@@ -27,7 +27,7 @@ export interface RunConversationOptions {
   event: BotEvent;
   bot: Bot;
   adapters: BotAdapters;
-  isEvent?: boolean;
+  isSyntheticEvent?: boolean;
 }
 
 interface ConversationOrchestratorOptions {
@@ -49,7 +49,12 @@ interface ConversationOrchestratorOptions {
 export class ConversationOrchestrator {
   constructor(private readonly options: ConversationOrchestratorOptions) {}
 
-  async runSession({ event, bot, adapters, isEvent }: RunConversationOptions): Promise<void> {
+  async runSession({
+    event,
+    bot,
+    adapters,
+    isSyntheticEvent,
+  }: RunConversationOptions): Promise<void> {
     const conversationId = event.conversationId;
     if (this.options.isShuttingDown()) {
       log.logInfo(
@@ -107,7 +112,7 @@ export class ConversationOrchestrator {
       try {
         const result = await this.runWithInstrumentation(
           adapters,
-          { conversationId, sessionKey, isEvent, startedAt: state.startedAt! },
+          { conversationId, sessionKey, isSyntheticEvent, startedAt: state.startedAt! },
           async () => {
             await adapters.responseCtx.setTyping(true);
             await adapters.responseCtx.setWorking(true);
@@ -146,10 +151,15 @@ export class ConversationOrchestrator {
 
   private async runWithInstrumentation(
     adapters: BotAdapters,
-    meta: { conversationId: string; sessionKey: string; isEvent?: boolean; startedAt: number },
+    meta: {
+      conversationId: string;
+      sessionKey: string;
+      isSyntheticEvent?: boolean;
+      startedAt: number;
+    },
     body: () => Promise<{ stopReason: string; errorMessage?: string }>,
   ): Promise<{ stopReason: string; errorMessage?: string } | undefined> {
-    const { conversationId, sessionKey, isEvent, startedAt } = meta;
+    const { conversationId, sessionKey, isSyntheticEvent, startedAt } = meta;
     const { message, platform } = adapters;
 
     Sentry.metrics.count("agent.run.started", 1, {
@@ -168,7 +178,7 @@ export class ConversationOrchestrator {
             userId: message.userId,
             userName: message.userName,
             threadTs: message.threadTs,
-            isEvent,
+            isSyntheticEvent,
           });
           addLifecycleBreadcrumb("agent.run.started", {
             channel_id: conversationId,

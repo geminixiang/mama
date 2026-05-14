@@ -83,7 +83,7 @@ export class ActorExecutionResolver {
     return createExecutor(
       config,
       env,
-      this.getEnsureReady(vaultKey, context.conversationId, config, vault),
+      this.buildEnsureReadyCallback(vaultKey, context.conversationId, config, vault),
     );
   }
 
@@ -103,7 +103,7 @@ export class ActorExecutionResolver {
     };
   }
 
-  private getEnsureReady(
+  private buildEnsureReadyCallback(
     vaultKey: string,
     conversationId: string,
     config: SandboxConfig,

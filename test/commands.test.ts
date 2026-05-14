@@ -156,7 +156,7 @@ function buildContext(args: BuildContextArgs): CommandContext & {
       forceStop: vi.fn(),
       getRunningSessions: vi.fn().mockReturnValue([]),
       handleEvent: vi.fn(),
-      handleNew: vi.fn(),
+      handleNewCommand: vi.fn(),
       handleStop: vi.fn(),
       isRunning: vi.fn().mockReturnValue(false),
       runSession: vi.fn(),
@@ -589,7 +589,7 @@ describe("NewCommandHandler", () => {
 
     expect(await handler.tryHandle(ctx)).toBe(true);
     expect(ctx.responseCtx.responses[0]).toContain("只能在與機器人的私訊");
-    expect(ctx.services.runtime.handleNew).not.toHaveBeenCalled();
+    expect(ctx.services.runtime.handleNewCommand).not.toHaveBeenCalled();
   });
 
   test("resets the active private session", async () => {
@@ -600,6 +600,6 @@ describe("NewCommandHandler", () => {
     });
 
     expect(await handler.tryHandle(ctx)).toBe(true);
-    expect(ctx.services.runtime.handleNew).toHaveBeenCalledWith("D123", "D123", ctx.bot);
+    expect(ctx.services.runtime.handleNewCommand).toHaveBeenCalledWith("D123", "D123", ctx.bot);
   });
 });

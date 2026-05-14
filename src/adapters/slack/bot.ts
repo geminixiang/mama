@@ -833,7 +833,7 @@ export class SlackBot implements Bot {
     });
 
     const commandBot = this.createSlashCommandBot(conversationId);
-    await this.handler.handleNew(conversationId, conversationId, commandBot);
+    await this.handler.handleNewCommand(conversationId, conversationId, commandBot);
   }
 
   private async routeSlashModelCommand(payload: {

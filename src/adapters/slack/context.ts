@@ -39,7 +39,7 @@ function formatSlackToolResult(result: ChatToolResult): string {
 export function createSlackAdapters(
   event: SlackEvent,
   slack: SlackBot,
-  isEvent?: boolean,
+  isSyntheticEvent?: boolean,
 ): {
   message: ChatMessage;
   responseCtx: ChatResponseContext;
@@ -66,7 +66,7 @@ export function createSlackAdapters(
   const user = slack.getUser(event.user);
 
   // Extract event filename for status message
-  const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+  const eventFilename = isSyntheticEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
   const rootTs =
     event.thread_ts ?? (isSlackMessageTs(event.ts) ? resolveSlackRootTs(event.ts) : undefined);
@@ -79,7 +79,7 @@ export function createSlackAdapters(
    * Synthetic event messages have no real Slack root ts, so they must post top-level.
    */
   const postFirstMessage = async (text: string): Promise<string> => {
-    if (isEvent) {
+    if (isSyntheticEvent) {
       if (event.thread_ts) {
         return slack.postInThread(channelId, event.thread_ts, text);
       }

@@ -735,19 +735,19 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
       if (!jumpLatestBtn) return;
       jumpLatestBtn.hidden = isNearBottom();
     };
-    const maybeFollow = () => {
+    const updateFollowState = () => {
       if (isNearBottom()) scrollToLatest('smooth');
       else toggleJumpButton();
     };
     const canSubmit = () => Boolean(textarea && textarea.value.trim()) && !running;
-    const syncSubmitState = () => {
+    const updateSubmitButtonState = () => {
       if (submitButton) submitButton.disabled = !canSubmit();
     };
     const setRunning = (value) => {
       running = value;
       document.body.dataset.sessionRunning = value ? 'true' : 'false';
       if (statusEl) statusEl.textContent = value ? 'Running' : 'Idle';
-      syncSubmitState();
+      updateSubmitButtonState();
       if (composerStatus && !value && composerStatus.textContent === 'Thinking…') {
         composerStatus.textContent = '';
       }
@@ -766,7 +766,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
       };
       textarea.addEventListener('input', () => {
         resize();
-        syncSubmitState();
+        updateSubmitButtonState();
       });
       textarea.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
@@ -778,7 +778,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
     }
 
     setRunning(running);
-    syncSubmitState();
+    updateSubmitButtonState();
 
     const streamUrl = form
       ? '/session/stream?token=' + encodeURIComponent(form.token.value) + '&session=' + encodeURIComponent(form.session.value)
@@ -796,7 +796,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
           case 'tool':
           case 'system': {
             timelineList?.insertAdjacentHTML('beforeend', payload.html);
-            maybeFollow();
+            updateFollowState();
             break;
           }
           case 'assistant': {
@@ -807,7 +807,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
               liveAssistant.outerHTML = payload.html;
               liveAssistant = timelineList?.querySelector('[data-live-assistant]:last-of-type') || null;
             }
-            maybeFollow();
+            updateFollowState();
             break;
           }
           case 'assistant_remove':
@@ -821,7 +821,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
             if (entriesEl) entriesEl.textContent = String(payload.entryCount);
             setRunning(Boolean(payload.running));
             if (composerStatus) composerStatus.textContent = '';
-            maybeFollow();
+            updateFollowState();
             break;
           case 'error':
             if (composerStatus) composerStatus.textContent = payload.message || 'Something went wrong';
@@ -837,7 +837,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
       const text = textarea.value.trim();
       if (!text || running) return;
       composerStatus.textContent = 'Sending…';
-      syncSubmitState();
+      updateSubmitButtonState();
       try {
         const response = await fetch('/session/message', {
           method: 'POST',
@@ -850,7 +850,7 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
         textarea.style.height = 'auto';
         composerStatus.textContent = 'Thinking…';
         setRunning(true);
-        syncSubmitState();
+        updateSubmitButtonState();
         scrollToLatest('smooth');
       } catch (err) {
         composerStatus.textContent = err && err.message ? err.message : String(err);

@@ -125,10 +125,15 @@ export interface RunningSession {
 export interface BotHandler {
   isRunning(sessionKey: string): boolean;
   getRunningSessions(): RunningSession[];
-  handleEvent(event: BotEvent, bot: Bot, adapters: BotAdapters, isEvent?: boolean): Promise<void>;
+  handleEvent(
+    event: BotEvent,
+    bot: Bot,
+    adapters: BotAdapters,
+    isSyntheticEvent?: boolean,
+  ): Promise<void>;
   handleStop(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
   /** Force stop a running session (bypass normal stop mechanism) */
   forceStop(sessionKey: string): void;
   /** Reset a session: abort if running, delete history, remove from cache */
-  handleNew(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
+  handleNewCommand(sessionKey: string, conversationId: string, bot: Bot): Promise<void>;
 }

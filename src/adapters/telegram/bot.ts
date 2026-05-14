@@ -413,7 +413,7 @@ export class TelegramBot implements Bot {
     this.client.command("new", async (ctx) => {
       const mc = this.extractMessageContext(ctx.message);
       if (!mc) return;
-      await this.handler.handleNew(mc.sessionKey, mc.chatId, this);
+      await this.handler.handleNewCommand(mc.sessionKey, mc.chatId, this);
     });
 
     this.client.command("sandbox", async (ctx) => {
