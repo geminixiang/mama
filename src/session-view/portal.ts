@@ -264,7 +264,7 @@ function renderSessionPage(
         <input type="hidden" name="token" value="${esc(token)}">
         <input type="hidden" name="session" value="${esc(model.fileName)}">
         <input type="hidden" name="sessionKey" value="${esc(displayedSessionKey)}">
-        <textarea name="text" rows="3" placeholder="Ask a follow-up…" required></textarea>
+        <textarea name="text" rows="1" placeholder="Write a message…" required></textarea>
         <div class="composer-actions">
           <span class="composer-status" data-composer-status></span>
           <button class="composer-send-btn" type="submit" aria-label="Send" title="Send">↑</button>
@@ -341,6 +341,10 @@ export function parseUserBody(raw: string): {
 
 type ParsedUserBody = ReturnType<typeof parseUserBody>;
 
+function renderCopyButton(label = "Copy message"): string {
+  return `<div class="msg-actions"><button class="copy-action-btn" type="button" data-copy-button data-copy-label="${esc(label)}" aria-label="${esc(label)}" title="${esc(label)}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.8"></rect><path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path></svg></button></div>`;
+}
+
 function renderItem(item: SessionViewItem, token?: string): string {
   if (item.kind === "system") {
     const parts = [item.title, item.body].filter((x): x is string => Boolean(x)).map(esc);
@@ -378,13 +382,16 @@ function renderItem(item: SessionViewItem, token?: string): string {
       ? `<div class="thread-badge" title="Thread ${esc(threadTs)}">Thread · <code>${esc(threadTs)}</code></div>`
       : "";
     const forks = renderForkLinks(item.forks, token ?? "");
-    return `<div class="msg-row msg-user">
-  <div class="user-bubble">
-    ${rawHeader}
-    ${threadBadge}
-    ${body}
-    ${forks}
-    ${time}
+    return `<div class="msg-row msg-user copy-host">
+  <div class="msg-main user-main">
+    <div class="user-bubble">
+      ${rawHeader}
+      ${threadBadge}
+      ${body}
+      ${forks}
+      ${time}
+    </div>
+    ${renderCopyButton()}
   </div>
   <div class="msg-avatar user-avatar" title="${username ? esc(username) : "User"}">${initial}</div>
 </div>`;
@@ -393,12 +400,15 @@ function renderItem(item: SessionViewItem, token?: string): string {
   // assistant
   const body = item.body ? renderMarkdownBlock(item.body, "assistant") : "";
   const forks = renderForkLinks(item.forks, token ?? "");
-  return `<div class="msg-row msg-assistant">
+  return `<div class="msg-row msg-assistant copy-host">
   <div class="msg-avatar asst-avatar" aria-hidden="true">A</div>
-  <div class="asst-card">
-    ${body}
-    ${forks}
-    ${time}
+  <div class="msg-main asst-main">
+    <div class="asst-card">
+      ${body}
+      ${forks}
+      ${time}
+    </div>
+    ${renderCopyButton()}
   </div>
 </div>`;
 }
@@ -409,19 +419,25 @@ function renderMarkdownBlock(text: string, variant: "user" | "assistant"): strin
 
 function renderLiveUserMessage(text: string, userName: string): string {
   const initial = esc(userName.slice(0, 2).toUpperCase());
-  return `<div class="msg-row msg-user" data-live-item>
-  <div class="user-bubble">
-    ${renderMarkdownBlock(text, "user")}
+  return `<div class="msg-row msg-user copy-host" data-live-item>
+  <div class="msg-main user-main">
+    <div class="user-bubble">
+      ${renderMarkdownBlock(text, "user")}
+    </div>
+    ${renderCopyButton()}
   </div>
   <div class="msg-avatar user-avatar" title="${esc(userName)}">${initial}</div>
 </div>`;
 }
 
 function renderLiveAssistantMessage(text: string): string {
-  return `<div class="msg-row msg-assistant" data-live-assistant>
+  return `<div class="msg-row msg-assistant copy-host" data-live-assistant>
   <div class="msg-avatar asst-avatar" aria-hidden="true">A</div>
-  <div class="asst-card">
-    ${renderMarkdownBlock(text, "assistant")}
+  <div class="msg-main asst-main">
+    <div class="asst-card">
+      ${renderMarkdownBlock(text, "assistant")}
+    </div>
+    ${renderCopyButton()}
   </div>
 </div>`;
 }
@@ -757,6 +773,31 @@ function renderHtmlDocument(title: string, shellContent: string, isRunning: bool
       scrollToLatest('smooth');
       toggleJumpButton();
     });
+    document.addEventListener('click', async (event) => {
+      const button = event.target instanceof Element ? event.target.closest('[data-copy-button]') : null;
+      if (!(button instanceof HTMLButtonElement)) return;
+      const label = button.dataset.copyLabel || 'Copy message';
+      const source = button.closest('.msg-actions')?.previousElementSibling;
+      const text = source instanceof HTMLElement ? (source.innerText || source.textContent || '').trim() : '';
+      if (!text) return;
+      const setState = (state, transient) => {
+        button.dataset.copyState = state;
+        button.title = transient;
+        button.setAttribute('aria-label', transient);
+        window.setTimeout(() => {
+          if (!button.isConnected) return;
+          delete button.dataset.copyState;
+          button.title = label;
+          button.setAttribute('aria-label', label);
+        }, 1200);
+      };
+      try {
+        await navigator.clipboard.writeText(text);
+        setState('done', 'Copied');
+      } catch {
+        setState('error', 'Copy failed');
+      }
+    });
     window.addEventListener('scroll', toggleJumpButton, { passive: true });
 
     if (textarea) {
@@ -916,7 +957,7 @@ const styles = `
 
   body {
     min-height: 100vh;
-    padding: 40px 20px 80px;
+    padding: 40px 20px calc(140px + env(safe-area-inset-bottom, 0px));
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1193,8 +1234,100 @@ const styles = `
   .timeline-list {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 14px;
     min-width: 0;
+  }
+
+  .copy-host {
+    position: relative;
+  }
+
+  .msg-actions {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 140ms ease, visibility 140ms ease;
+  }
+
+  .copy-host:hover .msg-actions,
+  .copy-host .msg-actions:hover,
+  .copy-host:focus-within .msg-actions,
+  .timeline-list > .copy-host:last-child .msg-actions,
+  .copy-action-btn[data-copy-state] {
+    opacity: 1;
+    visibility: visible;
+  }
+
+  .copy-action-btn {
+    width: 24px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: rgba(63,63,70,0.8);
+    transition: color 140ms ease, opacity 140ms ease;
+    cursor: pointer;
+    padding: 0;
+    appearance: none;
+  }
+
+  .copy-action-btn:hover {
+    background: transparent;
+    color: rgba(24,24,27,0.96);
+    border-color: transparent;
+  }
+
+  .copy-action-btn[data-copy-state='done'] {
+    background: transparent;
+    border-color: transparent;
+    color: rgba(24,24,27,0.96);
+  }
+
+  .copy-action-btn[data-copy-state='done'] svg {
+    position: absolute;
+    opacity: 0;
+    transform: scale(0.6);
+    pointer-events: none;
+  }
+
+  .copy-action-btn svg {
+    transition: opacity 140ms ease, transform 140ms ease;
+  }
+
+  .copy-action-btn[data-copy-state='done']::before {
+    content: '';
+    width: 14px;
+    height: 14px;
+    background-color: currentColor;
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='4 12 10 18 20 6'/></svg>") center / contain no-repeat;
+            mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><polyline points='4 12 10 18 20 6'/></svg>") center / contain no-repeat;
+    animation: copy-check-in 200ms ease-out both;
+  }
+
+  @keyframes copy-check-in {
+    from { opacity: 0; transform: scale(0.6); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .copy-action-btn svg,
+    .copy-action-btn[data-copy-state='done']::before {
+      transition: none;
+      animation: none;
+    }
+  }
+
+  .copy-action-btn[data-copy-state='error'] {
+    background: transparent;
+    border-color: transparent;
+    color: #b91c1c;
   }
 
   /* ── Message rows ─────────────────────────────────────────────────────── */
@@ -1203,7 +1336,7 @@ const styles = `
     display: flex;
     align-items: flex-end;
     gap: 8px;
-    padding: 2px 0;
+    padding: 4px 0;
     min-width: 0;
   }
 
@@ -1213,8 +1346,19 @@ const styles = `
     justify-content: flex-end;
   }
 
-  .user-bubble {
+  .msg-main {
+    min-width: 0;
+  }
+
+  .user-main {
     max-width: 85%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .user-bubble {
+    max-width: 100%;
     min-width: 0;
     padding: 12px 16px;
     border-radius: 18px 18px 4px 18px;
@@ -1303,6 +1447,14 @@ const styles = `
     align-items: flex-end;
     gap: 8px;
     max-width: 85%;
+    min-width: 0;
+  }
+
+  .asst-main {
+    max-width: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .asst-card {
@@ -1335,7 +1487,7 @@ const styles = `
     overflow: hidden;
     border: 1px solid rgba(255,255,255,0.06);
     box-shadow: 0 2px 8px rgba(0,0,0,0.16);
-    margin: 6px 0;
+    margin: 2px 0;
   }
 
   .tool-header {
@@ -1607,18 +1759,35 @@ const styles = `
   /* ── Composer ─────────────────────────────────────────────────────────── */
 
   .composer-card {
-    padding: 8px 2px 0;
-    border: none;
-    border-radius: 0;
-    background: transparent;
-    box-shadow: none;
+    position: fixed;
+    left: 50%;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    transform: translateX(-50%);
+    width: calc(100% - 32px);
+    max-width: 780px;
+    padding: 10px 12px 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    background: rgba(250, 248, 244, 0.92);
+    box-shadow: 0 12px 36px rgba(0,0,0,0.10), 0 2px 6px rgba(0,0,0,0.04);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    z-index: 20;
+  }
+
+  .composer-card .composer-copy { display: none; }
+
+  .composer-form {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .jump-latest-btn {
     position: fixed;
     left: 50%;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
-    z-index: 10;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 120px);
+    z-index: 25;
     width: 42px;
     height: 42px;
     border: 1px solid var(--border);
@@ -1655,18 +1824,23 @@ const styles = `
     width: 100%;
     resize: none;
     overflow-y: auto;
-    min-height: 84px;
-    padding: 12px 14px;
-    border: 1px solid var(--border);
-    border-radius: 14px;
+    min-height: 28px;
+    max-height: 200px;
+    padding: 6px 6px 2px;
+    border: 0;
+    border-radius: 0;
     font: inherit;
     color: var(--text);
-    background: #fafafa;
+    background: transparent;
+  }
+
+  .composer-form textarea::placeholder {
+    color: rgba(63,63,70,0.55);
   }
 
   .composer-form textarea:focus {
-    outline: 2px solid rgba(34, 197, 94, 0.18);
-    border-color: rgba(34, 197, 94, 0.45);
+    outline: none;
+    border: 0;
   }
 
   .composer-actions {
@@ -1674,7 +1848,7 @@ const styles = `
     align-items: center;
     justify-content: space-between;
     gap: 12px;
-    margin-top: 10px;
+    margin-top: 0;
   }
 
   .composer-status { color: var(--muted); font-size: 13px; }
@@ -1684,8 +1858,8 @@ const styles = `
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 42px;
-    height: 42px;
+    width: 32px;
+    height: 32px;
     border: none;
     border-radius: 999px;
     background: #d97706;
@@ -1720,7 +1894,9 @@ const styles = `
   /* ── Responsive ───────────────────────────────────────────────────────── */
 
   @media (max-width: 600px) {
-    body { padding: 20px 12px 60px; }
+    body { padding: 20px 12px calc(130px + env(safe-area-inset-bottom, 0px)); }
+
+    .composer-card { width: calc(100% - 16px); bottom: calc(8px + env(safe-area-inset-bottom, 0px)); padding: 8px 10px; border-radius: 18px; }
 
     .hero-card, .card { padding: 20px; border-radius: 16px; }
 
