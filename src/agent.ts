@@ -923,8 +923,6 @@ async function prepareRunContext(params: {
     conversationId: string;
     conversationKind: ConversationKind;
     userId: string;
-    sessionKey: string;
-    threadTs?: string;
   }) => void;
   setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
   workspacePath: string;
@@ -983,8 +981,6 @@ async function prepareRunContext(params: {
     conversationId,
     conversationKind: message.conversationKind,
     userId: message.userId,
-    sessionKey: message.sessionKey,
-    threadTs: message.threadTs,
   });
 
   setUploadFunction(async (filePath: string, title?: string) => {

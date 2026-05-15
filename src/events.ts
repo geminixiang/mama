@@ -27,10 +27,6 @@ export interface ImmediateEvent {
   /** Creator userId — routes tool execution to that user's vault selection when fired. */
   userId?: string;
   text: string;
-  /** Determines which AgentRunner handles the event. */
-  sessionKey?: string;
-  /** Sub-conversation target (Slack thread ts, Discord thread id, Telegram reply-to id). */
-  threadTs?: string;
 }
 
 export interface OneShotEvent {
@@ -53,9 +49,6 @@ export interface PeriodicEvent {
   text: string;
   schedule: string; // cron syntax
   timezone: string; // IANA timezone
-  /** Determines which AgentRunner handles the event. */
-  sessionKey?: string;
-  // No threadTs: recurring events always fire as top-level messages.
 }
 
 export type MamaEvent = ImmediateEvent | OneShotEvent | PeriodicEvent;
@@ -348,9 +341,6 @@ export class EventsWatcher {
       data.conversationKind,
     );
     const userId = typeof data.userId === "string" ? data.userId : undefined;
-    const sessionKey = typeof data.sessionKey === "string" ? data.sessionKey : undefined;
-    const threadTs = typeof data.threadTs === "string" ? data.threadTs : undefined;
-
     switch (type) {
       case "immediate":
         return {
@@ -360,8 +350,6 @@ export class EventsWatcher {
           conversationKind,
           userId,
           text,
-          sessionKey,
-          threadTs,
         };
 
       case "one-shot":
@@ -394,7 +382,6 @@ export class EventsWatcher {
           text,
           schedule: data.schedule,
           timezone: data.timezone,
-          sessionKey,
         };
 
       default:
@@ -515,20 +502,14 @@ export class EventsWatcher {
       return;
     }
 
-    // Create a synthetic BotEvent with a stable event-specific session key.
-    // The session persists across follow-ups but starts fresh instead of inheriting
-    // prior conversation history.
     const eventId = filename.replace(/\.json$/i, "");
-    const threadTs = event.type === "immediate" ? event.threadTs : undefined;
     const syntheticEvent: BotEvent = {
       type: "mention",
       conversationId: event.conversationId,
       conversationKind: event.conversationKind,
       user: event.userId ?? "EVENT",
       text: message,
-      ts: `event:${filename}`,
-      thread_ts: threadTs,
-      sessionKey: `${event.conversationId}:event-${eventId}`,
+      ts: `event:${eventId}`,
     };
 
     // Enqueue for processing

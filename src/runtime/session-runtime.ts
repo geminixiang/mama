@@ -266,7 +266,7 @@ class MamaSessionRuntime implements SessionRuntime {
     sessionKey: string,
     cwd: string,
   ): Promise<ResolvedSessionScope> {
-    if (sessionKey.includes(":event-")) {
+    if (sessionKey.includes(":event:")) {
       const sessionDir = getChannelSessionDir(conversationDir);
       const contextFile = createManagedSessionFileAtPath(
         getThreadSessionFile(conversationDir, sessionKey),

@@ -81,7 +81,7 @@ export class ConversationOrchestrator {
 
     const conversationDir = join(this.options.workingDir, conversationId);
     const waitedForParent =
-      adapters.platform.name === "slack"
+      adapters.platform.name === "slack" && !isSyntheticEvent
         ? await waitForSlackBranchBootstrap({
             parentSessionKey: conversationId,
             sessionKey,

@@ -58,7 +58,7 @@ describe("createEventTool", () => {
     );
   });
 
-  test("writes threaded Slack event payload with threadTs", async () => {
+  test("writes immediate event payload without thread state even when scheduled from a thread", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000001);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -67,7 +67,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      threadTs: "1000.0001",
     });
 
     await tool.execute("call-1", {
@@ -86,7 +85,6 @@ describe("createEventTool", () => {
       conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
-      threadTs: "1000.0001",
     });
   });
 
@@ -103,7 +101,7 @@ describe("createEventTool", () => {
     ).rejects.toThrow("Event context not configured");
   });
 
-  test("one-shot event strips sessionKey and threadTs even when set in context", async () => {
+  test("one-shot event strips thread state even when set in context", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000200);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -112,7 +110,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      threadTs: "1000.0001",
     });
 
     await tool.execute("call-1", {
@@ -135,7 +132,7 @@ describe("createEventTool", () => {
     });
   });
 
-  test("periodic event strips threadTs and sessionKey when in a thread", async () => {
+  test("periodic event strips thread state when in a thread", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000300);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -144,7 +141,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      threadTs: "1000.0001",
     });
 
     await tool.execute("call-1", {
@@ -177,7 +173,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      threadTs: "1000.0001",
     });
 
     await expect(

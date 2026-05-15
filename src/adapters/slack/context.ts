@@ -121,7 +121,9 @@ export function createSlackAdapters(
 
   const message: ChatMessage = {
     id: event.ts,
-    sessionKey: event.sessionKey ?? resolveSlackSessionKey(conversationId, event.thread_ts),
+    sessionKey: isSyntheticEvent
+      ? `${conversationId}:${event.ts}`
+      : (event.sessionKey ?? resolveSlackSessionKey(conversationId, event.thread_ts)),
     conversationKind: event.conversationKind,
     userId: event.user,
     userName: user?.userName,
@@ -166,8 +168,8 @@ export function createSlackAdapters(
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
-            if (isSyntheticEvent && !event.thread_ts && messageTs && event.sessionKey) {
-              slack.rememberSyntheticThreadSession(channelId, messageTs, event.sessionKey);
+            if (isSyntheticEvent && !event.thread_ts && messageTs) {
+              slack.aliasSyntheticEventThread(channelId, messageTs, event.ts);
             }
           }
 
@@ -198,8 +200,8 @@ export function createSlackAdapters(
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
-            if (isSyntheticEvent && !event.thread_ts && messageTs && event.sessionKey) {
-              slack.rememberSyntheticThreadSession(channelId, messageTs, event.sessionKey);
+            if (isSyntheticEvent && !event.thread_ts && messageTs) {
+              slack.aliasSyntheticEventThread(channelId, messageTs, event.ts);
             }
           }
 

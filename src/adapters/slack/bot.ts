@@ -1,6 +1,6 @@
 import { SocketModeClient } from "@slack/socket-mode";
 import { WebClient } from "@slack/web-api";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, linkSync, readFileSync } from "fs";
 import { readFile } from "fs/promises";
 import { basename, join } from "path";
 import type {
@@ -26,6 +26,10 @@ import {
   resolveStopTarget,
   withRetry,
 } from "../shared.js";
+import { getThreadSessionFile } from "../../session-store.js";
+import { createSlackAdapters } from "./context.js";
+import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
+import { resolveSlackSessionKey } from "./session.js";
 
 // Slack WebClient errors carry either `code: "rate_limited"` (retry-after) or
 // the legacy `data.error === "rate_limited"` / 429 status shape.
@@ -72,10 +76,6 @@ function buildSlackAppMessageText(event: {
   const deduped = parts.filter((part, index) => parts.indexOf(part) === index);
   return deduped.join("\n");
 }
-
-import { createSlackAdapters } from "./context.js";
-import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
-import { resolveSlackSessionKey } from "./session.js";
 
 // ============================================================================
 // Types
@@ -160,7 +160,6 @@ export class SlackBot implements Bot {
   private users = new Map<string, SlackUser>();
   private channels = new Map<string, SlackChannel>();
   private queues = new Map<string, ChannelQueue>();
-  private syntheticThreadSessions = new Map<string, string>();
   private eventsWatcher: EventsWatcher | null = null;
 
   constructor(
@@ -398,6 +397,29 @@ export class SlackBot implements Bot {
     appendBotResponseLog(this.workingDir, channel, text, ts, threadTs);
   }
 
+  aliasSyntheticEventThread(channel: string, threadTs: string, eventTs: string): void {
+    const conversationDir = join(this.workingDir, channel);
+    const source = getThreadSessionFile(conversationDir, `${channel}:${eventTs}`);
+    const target = getThreadSessionFile(conversationDir, `${channel}:${threadTs}`);
+    if (source === target) return;
+
+    try {
+      linkSync(source, target);
+      log.logInfo(`Aliased synthetic event session ${source} -> ${target}`);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return;
+      if (code === "ENOENT") {
+        log.logWarning(`Cannot alias synthetic event session; source missing: ${source}`);
+        return;
+      }
+      log.logWarning(
+        `Failed to alias synthetic event session ${source} -> ${target}`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   getPlatformInfo(): PlatformInfo {
     return {
       name: "slack",
@@ -470,8 +492,7 @@ export class SlackBot implements Bot {
 
   private resolveQueueKey(conversationId: string, sessionKey: string): string {
     if (!sessionKey.includes(":")) return sessionKey;
-    if (sessionKey.includes(":event-")) return sessionKey;
-
+    if (sessionKey.includes(":event:")) return sessionKey;
     return hasMaterializedSlackBranchSession(join(this.workingDir, conversationId), sessionKey)
       ? sessionKey
       : conversationId;
@@ -479,9 +500,6 @@ export class SlackBot implements Bot {
 
   private shouldTriggerSharedThreadReply(channelId: string, threadTs?: string): boolean {
     if (!threadTs) return false;
-
-    const syntheticSessionKey = this.syntheticThreadSessionKey(channelId, threadTs);
-    if (syntheticSessionKey) return true;
 
     const sessionKey = resolveSlackSessionKey(channelId, threadTs);
     if (this.handler.isRunning(sessionKey)) return true;
@@ -647,28 +665,11 @@ export class SlackBot implements Bot {
     return { type: "home", blocks };
   }
 
-  private syntheticThreadSessionKey(channelId: string, threadTs?: string): string | undefined {
-    if (!threadTs) return undefined;
-    return this.syntheticThreadSessions?.get(`${channelId}:${threadTs}`);
-  }
-
-  rememberSyntheticThreadSession(channelId: string, threadTs: string, sessionKey: string): void {
-    this.syntheticThreadSessions ??= new Map<string, string>();
-    this.syntheticThreadSessions.set(`${channelId}:${threadTs}`, sessionKey);
-  }
-
-  private resolveSlackSessionForThread(channelId: string, threadTs?: string): string {
-    return (
-      this.syntheticThreadSessionKey(channelId, threadTs) ??
-      resolveSlackSessionKey(channelId, threadTs)
-    );
-  }
-
   private resolveStopTarget(channelId: string, threadTs?: string): string | null {
     const directTarget = resolveStopTarget({
       handler: this.handler,
       conversationId: channelId,
-      sessionKey: this.resolveSlackSessionForThread(channelId, threadTs),
+      sessionKey: resolveSlackSessionKey(channelId, threadTs),
     });
     if (directTarget) return directTarget;
     if (threadTs) return null;
@@ -1002,7 +1003,7 @@ export class SlackBot implements Bot {
 
       // Top-level mentions use a persistent channel session.
       // Thread replies get their own isolated session (channelId:thread_ts).
-      const sessionKey = this.resolveSlackSessionForThread(e.channel, e.thread_ts);
+      const sessionKey = resolveSlackSessionKey(e.channel, e.thread_ts);
 
       const slackEvent: SlackEvent = {
         type: "mention",
@@ -1131,9 +1132,7 @@ export class SlackBot implements Bot {
       const isSharedThreadReply =
         !isDM && this.shouldTriggerSharedThreadReply(e.channel, e.thread_ts);
       const sessionKey =
-        isDM || isSharedThreadReply
-          ? this.resolveSlackSessionForThread(e.channel, e.thread_ts)
-          : undefined;
+        isDM || isSharedThreadReply ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
@@ -1181,7 +1180,7 @@ export class SlackBot implements Bot {
       // Trigger handler for DMs and bare replies inside shared-channel threads.
       if (isDM || isSharedThreadReply) {
         const activeSessionKey =
-          slackEvent.sessionKey ?? this.resolveSlackSessionForThread(e.channel, e.thread_ts);
+          slackEvent.sessionKey ?? resolveSlackSessionKey(e.channel, e.thread_ts);
         // Check for stop command - execute immediately, don't queue!
         if (this.isStopText(slackEvent.text)) {
           const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);

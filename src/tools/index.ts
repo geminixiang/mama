@@ -18,8 +18,6 @@ export function createMamaTools(
     conversationId: string;
     conversationKind: "direct" | "shared";
     userId: string;
-    sessionKey: string;
-    threadTs?: string;
   }) => void;
 } {
   const { tool: attachTool, setUploadFunction } = createAttachTool();

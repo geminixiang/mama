@@ -40,8 +40,6 @@ interface EventToolContext {
   conversationId: string;
   conversationKind: "direct" | "shared";
   userId: string;
-  sessionKey: string;
-  threadTs?: string;
 }
 
 type EventToolParams = {
@@ -62,8 +60,6 @@ type EventPayload =
       conversationKind: "direct" | "shared";
       userId: string;
       text: string;
-      sessionKey?: string;
-      threadTs?: string;
     }
   | {
       type: "one-shot";
@@ -83,7 +79,6 @@ type EventPayload =
       text: string;
       schedule: string;
       timezone: string;
-      sessionKey?: string;
     };
 
 export function createEventTool(workspaceDir: string): {
@@ -168,8 +163,6 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
     return {
       ...base,
       type: "immediate",
-      sessionKey: context.sessionKey,
-      ...(context.threadTs ? { threadTs: context.threadTs } : {}),
     };
   }
 
@@ -198,13 +191,11 @@ function buildEventPayload(params: EventToolParams, context: EventToolContext): 
   if (!params.timezone) {
     throw new Error("`timezone` is required for periodic events");
   }
-  // No threadTs: periodic events should always be top-level; keep sessionKey for task context
   return {
     ...base,
     type: "periodic",
     schedule: params.schedule,
     timezone: params.timezone,
-    sessionKey: context.sessionKey,
   };
 }
 

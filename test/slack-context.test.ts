@@ -16,7 +16,7 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
     updateMessage: vi.fn().mockResolvedValue(undefined),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
     logBotResponse: vi.fn(),
-    rememberSyntheticThreadSession: vi.fn(),
+    aliasSyntheticEventThread: vi.fn(),
     uploadFile: vi.fn().mockResolvedValue(undefined),
     start: vi.fn(),
     getChannel: vi.fn().mockReturnValue(undefined),
@@ -97,16 +97,15 @@ describe("respond() — non-threaded", () => {
       ts: "event:deploy-reminder.json",
       text: "Deploy now",
       thread_ts: undefined,
-      sessionKey: "C001:event-deploy-reminder",
     });
     const { responseCtx } = createSlackAdapters(event, bot, true);
     await responseCtx.respond("done");
     expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("done"));
     expect(bot.postInThread).not.toHaveBeenCalled();
-    expect((bot as any).rememberSyntheticThreadSession).toHaveBeenCalledWith(
+    expect((bot as any).aliasSyntheticEventThread).toHaveBeenCalledWith(
       "C001",
       "T001",
-      "C001:event-deploy-reminder",
+      "event:deploy-reminder.json",
     );
   });
 
@@ -116,7 +115,6 @@ describe("respond() — non-threaded", () => {
       ts: "event:deploy-reminder.json",
       text: "Deploy now",
       thread_ts: "1000.0001",
-      sessionKey: "C001:event-deploy-reminder",
     });
     const { responseCtx } = createSlackAdapters(event, bot, true);
     await responseCtx.respond("done");
