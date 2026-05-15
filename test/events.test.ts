@@ -214,7 +214,6 @@ describe("EventsWatcher platform routing", () => {
       conversationKind: "shared",
       text: "Deploy in 10 minutes",
       userId: "U123",
-      sessionKey: "CH-42:THREAD-1",
       threadTs: "THREAD-1",
     });
 
@@ -225,10 +224,15 @@ describe("EventsWatcher platform routing", () => {
       conversationId: "CH-42",
       conversationKind: "shared",
       user: "U123",
-      text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy in 10 minutes",
+      text: [
+        "Handle the following event/update in a concise, context-appropriate way.",
+        "If it reads like a reminder or follow-up, deliver it directly without greeting or generic offers to help.",
+        "",
+        "Event: Deploy in 10 minutes",
+      ].join("\n"),
       ts: "event:deploy-reminder.json",
       thread_ts: "THREAD-1",
-      sessionKey: "CH-42:THREAD-1",
+      sessionKey: "CH-42:event-deploy-reminder",
     });
   });
 });

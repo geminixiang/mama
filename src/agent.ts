@@ -196,6 +196,7 @@ function buildSystemPrompt(
   sandboxConfig: SandboxConfig,
   platform: PlatformInfo,
   skills: Skill[],
+  isSyntheticEvent = false,
 ): string {
   const { workspaceRoot, conversationPath, scratchPath } = buildRuntimePaths(
     workspacePath,
@@ -218,6 +219,16 @@ function buildSystemPrompt(
       : "(no users loaded)";
 
   const envDescription = buildEnvDescription(sandboxType, workspaceRoot);
+  const syntheticEventInstructions = isSyntheticEvent
+    ? `
+## Synthetic Event Mode
+- You are handling a scheduled/background event, not opening a brand new chat with a stranger.
+- Treat the incoming user message as a self-contained task prepared by an earlier run.
+- Complete the task directly. Avoid generic greetings, self-introductions, or boilerplate offers to help.
+- For reminders/follow-ups, prefer a short direct response that sounds like a continuation of prior intent.
+- If the event text includes tone, brevity, or language instructions, follow them literally.
+`
+    : "";
 
   return `You are mama, a ${platform.name} bot assistant. Be concise. No emojis.
 
@@ -229,7 +240,7 @@ function buildSystemPrompt(
 - The active top-level session is selected by \`${conversationPath}/sessions/current\`, which points to a timestamped \`.jsonl\` file in the same directory.
 - Scoped/thread sessions use fixed files at \`${conversationPath}/sessions/<scope_id>.jsonl\` (for example \`${conversationPath}/sessions/1777386320.800769.jsonl\`).
 - User messages include a \`[in-thread:TS]\` marker when sent from within a platform thread/reply (TS is the thread or parent message identifier). Without this marker, the message is a top-level conversation message.
-
+${syntheticEventInstructions}
 ${platform.formattingGuide}
 
 ## Platform IDs
@@ -319,6 +330,8 @@ Set \`platform\` to the target bot platform (\`${platform.name}\` for this conve
 Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single shared vault.
 
 Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`conversationId\`, \`conversationKind\`, and \`userId\` for the current conversation automatically.
+
+When scheduling an event, write \`text\` as a self-contained task for your future self. Include the minimum necessary context, tone, and constraints in the text itself because events do not inherit normal conversation history. Good: \`Please remind the user that break time is over and it is time to return to class. Keep it brief, in Traditional Chinese, and do not ask follow-up questions.\` Bad: \`back to class\`.
 
 ### Creating Events
 Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
@@ -961,6 +974,7 @@ async function prepareRunContext(params: {
     executor.getSandboxConfig(),
     platform,
     skills,
+    message.id.startsWith("event:"),
   );
   session.agent.state.systemPrompt = systemPrompt;
 

@@ -160,6 +160,7 @@ export class SlackBot implements Bot {
   private users = new Map<string, SlackUser>();
   private channels = new Map<string, SlackChannel>();
   private queues = new Map<string, ChannelQueue>();
+  private syntheticThreadSessions = new Map<string, string>();
   private eventsWatcher: EventsWatcher | null = null;
 
   constructor(
@@ -469,6 +470,7 @@ export class SlackBot implements Bot {
 
   private resolveQueueKey(conversationId: string, sessionKey: string): string {
     if (!sessionKey.includes(":")) return sessionKey;
+    if (sessionKey.includes(":event-")) return sessionKey;
 
     return hasMaterializedSlackBranchSession(join(this.workingDir, conversationId), sessionKey)
       ? sessionKey
@@ -477,6 +479,9 @@ export class SlackBot implements Bot {
 
   private shouldTriggerSharedThreadReply(channelId: string, threadTs?: string): boolean {
     if (!threadTs) return false;
+
+    const syntheticSessionKey = this.syntheticThreadSessionKey(channelId, threadTs);
+    if (syntheticSessionKey) return true;
 
     const sessionKey = resolveSlackSessionKey(channelId, threadTs);
     if (this.handler.isRunning(sessionKey)) return true;
@@ -642,11 +647,28 @@ export class SlackBot implements Bot {
     return { type: "home", blocks };
   }
 
+  private syntheticThreadSessionKey(channelId: string, threadTs?: string): string | undefined {
+    if (!threadTs) return undefined;
+    return this.syntheticThreadSessions?.get(`${channelId}:${threadTs}`);
+  }
+
+  rememberSyntheticThreadSession(channelId: string, threadTs: string, sessionKey: string): void {
+    this.syntheticThreadSessions ??= new Map<string, string>();
+    this.syntheticThreadSessions.set(`${channelId}:${threadTs}`, sessionKey);
+  }
+
+  private resolveSlackSessionForThread(channelId: string, threadTs?: string): string {
+    return (
+      this.syntheticThreadSessionKey(channelId, threadTs) ??
+      resolveSlackSessionKey(channelId, threadTs)
+    );
+  }
+
   private resolveStopTarget(channelId: string, threadTs?: string): string | null {
     const directTarget = resolveStopTarget({
       handler: this.handler,
       conversationId: channelId,
-      sessionKey: threadTs ? resolveSlackSessionKey(channelId, threadTs) : undefined,
+      sessionKey: this.resolveSlackSessionForThread(channelId, threadTs),
     });
     if (directTarget) return directTarget;
     if (threadTs) return null;
@@ -980,7 +1002,7 @@ export class SlackBot implements Bot {
 
       // Top-level mentions use a persistent channel session.
       // Thread replies get their own isolated session (channelId:thread_ts).
-      const sessionKey = resolveSlackSessionKey(e.channel, e.thread_ts);
+      const sessionKey = this.resolveSlackSessionForThread(e.channel, e.thread_ts);
 
       const slackEvent: SlackEvent = {
         type: "mention",
@@ -1109,7 +1131,9 @@ export class SlackBot implements Bot {
       const isSharedThreadReply =
         !isDM && this.shouldTriggerSharedThreadReply(e.channel, e.thread_ts);
       const sessionKey =
-        isDM || isSharedThreadReply ? resolveSlackSessionKey(e.channel, e.thread_ts) : undefined;
+        isDM || isSharedThreadReply
+          ? this.resolveSlackSessionForThread(e.channel, e.thread_ts)
+          : undefined;
 
       const slackEvent: SlackEvent = {
         type: isDM ? "dm" : "mention",
@@ -1157,7 +1181,7 @@ export class SlackBot implements Bot {
       // Trigger handler for DMs and bare replies inside shared-channel threads.
       if (isDM || isSharedThreadReply) {
         const activeSessionKey =
-          slackEvent.sessionKey ?? resolveSlackSessionKey(e.channel, e.thread_ts);
+          slackEvent.sessionKey ?? this.resolveSlackSessionForThread(e.channel, e.thread_ts);
         // Check for stop command - execute immediately, don't queue!
         if (this.isStopText(slackEvent.text)) {
           const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);

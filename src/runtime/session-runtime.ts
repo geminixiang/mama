@@ -266,6 +266,15 @@ class MamaSessionRuntime implements SessionRuntime {
     sessionKey: string,
     cwd: string,
   ): Promise<ResolvedSessionScope> {
+    if (sessionKey.includes(":event-")) {
+      const sessionDir = getChannelSessionDir(conversationDir);
+      const contextFile = createManagedSessionFileAtPath(
+        getThreadSessionFile(conversationDir, sessionKey),
+        cwd,
+      );
+      return { sessionDir, contextFile, threadRootMessage: null };
+    }
+
     if (platformName === "slack") {
       return resolveSlackSessionScope({ conversationDir, sessionKey, cwd });
     }

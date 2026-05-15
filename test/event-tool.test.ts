@@ -32,7 +32,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      sessionKey: "C123",
     });
 
     const result = await tool.execute("call-1", {
@@ -52,7 +51,6 @@ describe("createEventTool", () => {
       conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
-      sessionKey: "C123",
     });
     expect(result.content[0]?.type).toBe("text");
     expect(result.content[0]?.text).toContain(
@@ -69,7 +67,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      sessionKey: "C123:1000.0001",
       threadTs: "1000.0001",
     });
 
@@ -89,7 +86,6 @@ describe("createEventTool", () => {
       conversationKind: "shared",
       userId: "U123",
       text: "Check deployment status",
-      sessionKey: "C123:1000.0001",
       threadTs: "1000.0001",
     });
   });
@@ -116,7 +112,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      sessionKey: "C123:1000.0001",
       threadTs: "1000.0001",
     });
 
@@ -140,7 +135,7 @@ describe("createEventTool", () => {
     });
   });
 
-  test("periodic event strips threadTs but keeps sessionKey when in a thread", async () => {
+  test("periodic event strips threadTs and sessionKey when in a thread", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000300);
     const workspaceDir = makeWorkspace();
     const { tool, setEventContext } = createEventTool(workspaceDir);
@@ -149,7 +144,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      sessionKey: "C123:1000.0001",
       threadTs: "1000.0001",
     });
 
@@ -172,7 +166,6 @@ describe("createEventTool", () => {
       text: "Check inbox",
       schedule: "0 9 * * 1-5",
       timezone: "Asia/Taipei",
-      sessionKey: "C123:1000.0001",
     });
   });
 
@@ -184,7 +177,6 @@ describe("createEventTool", () => {
       conversationId: "C123",
       conversationKind: "shared",
       userId: "U123",
-      sessionKey: "C123",
       threadTs: "1000.0001",
     });
 
@@ -205,7 +197,6 @@ describe("createEventTool", () => {
       conversationId: "D123",
       conversationKind: "direct",
       userId: "U123",
-      sessionKey: "D123",
     });
 
     await expect(
@@ -227,7 +218,6 @@ describe("createEventTool", () => {
       conversationId: "D123",
       conversationKind: "direct",
       userId: "U123",
-      sessionKey: "D123",
     });
 
     await expect(
@@ -248,7 +238,6 @@ describe("createEventTool", () => {
       conversationId: "D123",
       conversationKind: "direct",
       userId: "U456",
-      sessionKey: "D123",
     });
 
     await expect(
@@ -279,7 +268,6 @@ describe("createEventTool", () => {
       conversationId: "999",
       conversationKind: "direct",
       userId: "U789",
-      sessionKey: "999",
     });
 
     const result = await tool.execute("call-1", {
@@ -302,7 +290,6 @@ describe("createEventTool", () => {
       text: "Check inbox",
       schedule: "0 9 * * 1-5",
       timezone: "Asia/Taipei",
-      sessionKey: "999",
     });
     expect(result.content[0]?.text).toContain(
       "Scheduled periodic event periodic-1700000000100.json",

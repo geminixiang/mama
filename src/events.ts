@@ -504,21 +504,7 @@ export class EventsWatcher {
   }
 
   private execute(filename: string, event: MamaEvent, deleteAfter: boolean = true): void {
-    // Format the message
-    let scheduleInfo: string;
-    switch (event.type) {
-      case "immediate":
-        scheduleInfo = "immediate";
-        break;
-      case "one-shot":
-        scheduleInfo = event.at;
-        break;
-      case "periodic":
-        scheduleInfo = event.schedule;
-        break;
-    }
-
-    const message = `[EVENT:${filename}:${event.type}:${scheduleInfo}] ${event.text}`;
+    const message = this.buildEventPrompt(event);
     const bot = this.botsByPlatform[event.platform];
 
     if (!bot) {
@@ -529,10 +515,11 @@ export class EventsWatcher {
       return;
     }
 
-    // Create synthetic BotEvent. Keep a stable conversation session key so recurring
-    // reminders share context, but use a unique synthetic message id because
-    // some adapters treat ts/message id as a reply target.
-    const scopedEvent = event as { sessionKey?: string; threadTs?: string };
+    // Create a synthetic BotEvent with a stable event-specific session key.
+    // The session persists across follow-ups but starts fresh instead of inheriting
+    // prior conversation history.
+    const eventId = filename.replace(/\.json$/i, "");
+    const threadTs = event.type === "immediate" ? event.threadTs : undefined;
     const syntheticEvent: BotEvent = {
       type: "mention",
       conversationId: event.conversationId,
@@ -540,8 +527,8 @@ export class EventsWatcher {
       user: event.userId ?? "EVENT",
       text: message,
       ts: `event:${filename}`,
-      thread_ts: scopedEvent.threadTs,
-      sessionKey: scopedEvent.sessionKey ?? event.conversationId,
+      thread_ts: threadTs,
+      sessionKey: `${event.conversationId}:event-${eventId}`,
     };
 
     // Enqueue for processing
@@ -556,6 +543,32 @@ export class EventsWatcher {
       if (deleteAfter) {
         this.deleteFile(filename, "queue-full-discarded");
       }
+    }
+  }
+
+  private buildEventPrompt(event: MamaEvent): string {
+    switch (event.type) {
+      case "one-shot":
+        return [
+          "Please deliver the following reminder to the user in a short, natural way.",
+          "Do not greet, do not introduce yourself, and do not ask generic follow-up questions.",
+          "",
+          `Reminder: ${event.text}`,
+        ].join("\n");
+      case "periodic":
+        return [
+          "Handle the following recurring task.",
+          "Respond concisely. If there is nothing actionable to report, reply with [SILENT].",
+          "",
+          `Task: ${event.text}`,
+        ].join("\n");
+      case "immediate":
+        return [
+          "Handle the following event/update in a concise, context-appropriate way.",
+          "If it reads like a reminder or follow-up, deliver it directly without greeting or generic offers to help.",
+          "",
+          `Event: ${event.text}`,
+        ].join("\n");
     }
   }
 

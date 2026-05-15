@@ -9,7 +9,10 @@ const eventSchema = Type.Object({
     description: "Brief description of the event you're scheduling (shown to user)",
   }),
   type: Type.Union([Type.Literal("immediate"), Type.Literal("one-shot"), Type.Literal("periodic")]),
-  text: Type.String({ description: "The reminder or event text to send when it fires" }),
+  text: Type.String({
+    description:
+      "A self-contained task for the future run. Include the necessary context, tone, and constraints in the text itself because events do not inherit normal conversation history.",
+  }),
   at: Type.Optional(
     Type.String({
       description: "ISO 8601 timestamp with offset, required for one-shot events",
@@ -93,7 +96,7 @@ export function createEventTool(workspaceDir: string): {
     name: "event",
     label: "event",
     description:
-      "Schedule an immediate, one-shot, or periodic event for the current conversation. This automatically writes to the correct events directory and fills the current platform, conversation, conversation kind, and requester userId.",
+      "Schedule an immediate, one-shot, or periodic event for the current conversation. Write text as a self-contained task with any needed context, tone, or constraints because events do not inherit normal conversation history. This automatically writes to the correct events directory and fills the current platform, conversation, conversation kind, and requester userId.",
     parameters: eventSchema,
     execute: async (_toolCallId: string, params: EventToolParams, signal?: AbortSignal) => {
       if (signal?.aborted) {

@@ -65,8 +65,10 @@ export function createSlackAdapters(
   const conversationId = event.conversationId;
   const user = slack.getUser(event.user);
 
-  // Extract event filename for status message
-  const eventFilename = isSyntheticEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+  // Synthetic event ts format: `event:<filename>`.
+  const eventFilename = isSyntheticEvent
+    ? event.ts.match(/^event:([^:]+(?:\.json)?)/)?.[1]
+    : undefined;
 
   const rootTs =
     event.thread_ts ?? (isSlackMessageTs(event.ts) ? resolveSlackRootTs(event.ts) : undefined);
@@ -164,6 +166,9 @@ export function createSlackAdapters(
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
+            if (isSyntheticEvent && !event.thread_ts && messageTs && event.sessionKey) {
+              slack.rememberSyntheticThreadSession(channelId, messageTs, event.sessionKey);
+            }
           }
 
           if (messageTs) {
@@ -193,6 +198,9 @@ export function createSlackAdapters(
             messageTs = await slack.postInThread(channelId, rootTs, displayText);
           } else {
             messageTs = await postFirstMessage(displayText);
+            if (isSyntheticEvent && !event.thread_ts && messageTs && event.sessionKey) {
+              slack.rememberSyntheticThreadSession(channelId, messageTs, event.sessionKey);
+            }
           }
 
           if (overflowed) {

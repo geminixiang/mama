@@ -16,6 +16,7 @@ function makeSlackBot(overrides: Partial<SlackBot> = {}): SlackBot {
     updateMessage: vi.fn().mockResolvedValue(undefined),
     deleteMessage: vi.fn().mockResolvedValue(undefined),
     logBotResponse: vi.fn(),
+    rememberSyntheticThreadSession: vi.fn(),
     uploadFile: vi.fn().mockResolvedValue(undefined),
     start: vi.fn(),
     getChannel: vi.fn().mockReturnValue(undefined),
@@ -94,22 +95,28 @@ describe("respond() — non-threaded", () => {
     const bot = makeSlackBot();
     const event = makeEvent({
       ts: "event:deploy-reminder.json",
-      text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy now",
+      text: "Deploy now",
       thread_ts: undefined,
+      sessionKey: "C001:event-deploy-reminder",
     });
     const { responseCtx } = createSlackAdapters(event, bot, true);
     await responseCtx.respond("done");
     expect(bot.postMessage).toHaveBeenCalledWith("C001", expect.stringContaining("done"));
     expect(bot.postInThread).not.toHaveBeenCalled();
+    expect((bot as any).rememberSyntheticThreadSession).toHaveBeenCalledWith(
+      "C001",
+      "T001",
+      "C001:event-deploy-reminder",
+    );
   });
 
   test("synthetic event in a Slack thread replies inside the original thread", async () => {
     const bot = makeSlackBot();
     const event = makeEvent({
       ts: "event:deploy-reminder.json",
-      text: "[EVENT:deploy-reminder.json:immediate:immediate] Deploy now",
+      text: "Deploy now",
       thread_ts: "1000.0001",
-      sessionKey: "C001:1000.0001",
+      sessionKey: "C001:event-deploy-reminder",
     });
     const { responseCtx } = createSlackAdapters(event, bot, true);
     await responseCtx.respond("done");
