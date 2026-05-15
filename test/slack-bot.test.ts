@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BotHandler } from "../src/adapter.js";
 import { SlackBot } from "../src/adapters/slack/bot.js";
+import { createDefaultCommandRegistry } from "../src/commands/index.js";
+import type { CommandServices } from "../src/commands/types.js";
+import { ConversationOrchestrator } from "../src/runtime/conversation-orchestrator.js";
 import { createManagedSessionFileAtPath, getThreadSessionFile } from "../src/session-store.js";
+import type { SandboxConfig } from "../src/sandbox.js";
+import type { VaultManager } from "../src/vault.js";
 
 function makeHandler(): BotHandler {
   return {
@@ -14,6 +19,32 @@ function makeHandler(): BotHandler {
     handleStop: vi.fn(),
     forceStop: vi.fn(),
     handleNewCommand: vi.fn(),
+  };
+}
+
+function makeCommandServices(workingDir: string): CommandServices {
+  const sandbox: SandboxConfig = { type: "host" };
+  return {
+    workingDir,
+    sandbox,
+    vaultManager: {
+      hasEntry: () => false,
+      resolve: () => undefined,
+      getSandboxConfig: (_uid, base) => base,
+      list: () => [],
+      isEnabled: () => true,
+      upsertEnv: () => {},
+      upsertFile: () => {},
+      listSharedVaults: () => [],
+      deleteSharedVault: () => false,
+      copySharedVaultTo: () => ({ filesCopied: 0, envKeysCopied: 0 }),
+    } as VaultManager,
+    linkTokenStore: {
+      create: () => ({ token: "tok-link" }),
+    },
+    sessionViewTokenStore: {
+      create: () => ({ token: "tok-session" }),
+    },
   };
 }
 
@@ -195,7 +226,7 @@ describe("SlackBot slash commands", () => {
 
     expect(handler.handleEvent).toHaveBeenCalledTimes(1);
     expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
-      type: "dm",
+      type: "mention",
       conversationId: "C123",
       conversationKind: "shared",
       sessionKey: "C123",
@@ -205,6 +236,117 @@ describe("SlackBot slash commands", () => {
       channel: "C123",
       user: "U123",
       text: "sandbox status",
+    });
+  });
+
+  test("/pi-auto-reply in a shared channel routes to command handling ephemerally", async () => {
+    const handler = makeHandler();
+    handler.handleEvent = vi.fn(async (_event, _bot, adapters) => {
+      await adapters.responseCtx.respond("auto reply status");
+    });
+
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    const postEphemeral = vi.fn().mockResolvedValue(undefined);
+    (bot as any).webClient = {
+      chat: {
+        postEphemeral,
+        postMessage: vi.fn().mockResolvedValue({ ts: "3000.0004" }),
+        update: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    (bot as any).users = new Map([
+      ["U123", { id: "U123", userName: "alice", displayName: "Alice" }],
+    ]);
+
+    await (bot as any).routeSlashAutoReplyCommand({
+      command: "/pi-auto-reply",
+      text: "on",
+      channel_id: "C123",
+      user_id: "U123",
+      user_name: "alice",
+    });
+
+    expect(handler.handleEvent).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
+      type: "mention",
+      conversationId: "C123",
+      conversationKind: "shared",
+      sessionKey: "C123",
+      text: "/pi-auto-reply on",
+    });
+    expect(postEphemeral).toHaveBeenCalledWith({
+      channel: "C123",
+      user: "U123",
+      text: "auto reply status",
+    });
+  });
+
+  test("/pi-auto-reply in a shared channel is accepted by the command handler", async () => {
+    const handler = makeHandler();
+    const bot = new SlackBot(handler, {
+      appToken: "xapp-test",
+      botToken: "xoxb-test",
+      workingDir,
+      store: {} as any,
+    });
+
+    const orchestrator = new ConversationOrchestrator({
+      workingDir,
+      commandRegistry: createDefaultCommandRegistry(),
+      commandServices: makeCommandServices(workingDir),
+      isShuttingDown: () => false,
+      getState: () => undefined,
+      getOrCreateState: vi.fn(),
+      beforeRunTracked: vi.fn(),
+      afterRunTracked: vi.fn(),
+      onRunFinished: vi.fn(),
+    });
+    (handler.handleEvent as any).mockImplementation((event: any, eventBot: any, adapters: any) =>
+      orchestrator.runSession({ event, bot: eventBot, adapters, isSyntheticEvent: false }),
+    );
+
+    const postEphemeral = vi.fn().mockResolvedValue(undefined);
+    (bot as any).webClient = {
+      chat: {
+        postEphemeral,
+        postMessage: vi.fn().mockResolvedValue({ ts: "3000.0005" }),
+        update: vi.fn().mockResolvedValue(undefined),
+        delete: vi.fn().mockResolvedValue(undefined),
+      },
+    };
+    (bot as any).users = new Map([
+      ["U123", { id: "U123", userName: "alice", displayName: "Alice" }],
+    ]);
+
+    await (bot as any).routeSlashAutoReplyCommand({
+      command: "/pi-auto-reply",
+      text: "on",
+      channel_id: "C123",
+      user_id: "U123",
+      user_name: "alice",
+    });
+
+    expect(postEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C123",
+        user: "U123",
+        text: expect.stringContaining("Status: `on`"),
+      }),
+    );
+    expect(postEphemeral).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("只能在 group/channel"),
+      }),
+    );
+    expect(JSON.parse(readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"))).toEqual({
+      autoReply: { enabled: true, rules: [] },
     });
   });
 
@@ -243,7 +385,7 @@ describe("SlackBot slash commands", () => {
 
     expect(handler.handleEvent).toHaveBeenCalledTimes(1);
     expect(vi.mocked(handler.handleEvent).mock.calls[0]?.[0]).toMatchObject({
-      type: "dm",
+      type: "mention",
       conversationId: "C123",
       conversationKind: "shared",
       sessionKey: "C123",

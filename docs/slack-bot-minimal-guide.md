@@ -76,6 +76,7 @@ You can add slash commands for common controls:
 - `/pi-new` → start a new DM session
 - `/pi-session` → session viewer
 - `/pi-model` → switch this conversation's LLM (`provider/model[:thinking]`, e.g. `anthropic/claude-sonnet-4-6:off`)
+- `/pi-auto-reply` → manage group/channel auto-reply rules
 
 Slash commands are optional because text commands also work in supported contexts. Keep `stop` as a text command (`stop` or `/stop`) so thread-local stop routing can target the correct session.
 

@@ -116,8 +116,9 @@ For local testing you can set just `MAMA_LINK_PORT`; mama will use `http://local
 - `session` / `/session` (DM only) returns a read-only link showing the current session timeline.
 - `new` / `/new` (DM only) resets the current session and starts fresh.
 - `model` / `/model` / `/pi-model provider/model[:thinking]` switches the LLM for the current conversation, e.g. `/pi-model anthropic/claude-sonnet-4-6:off`.
+- `auto-reply` / `/pi-auto-reply on|off|status|rule <natural language rule>|clear` controls group/channel auto-reply rules for the current conversation.
 - `stop` / `/stop` stops the current run. On Slack, use text commands so thread-local stop routing remains accurate.
-- On Slack you can also register native commands like `/pi-login`, `/pi-session`, `/pi-model`, and `/pi-new`.
+- On Slack you can also register native commands like `/pi-login`, `/pi-session`, `/pi-model`, `/pi-auto-reply`, and `/pi-new`.
 
 Credentials are stored under `<state-dir>/vaults` (default `~/.mama/vaults`). Vault env is only injected in `container`, `image`, `firecracker`, and `cloudflare` modes.
 

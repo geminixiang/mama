@@ -4,6 +4,7 @@ import { Bot as GrammyBot, InputFile } from "grammy";
 import type { Bot, BotEvent, BotHandler, PlatformInfo } from "../../adapter.js";
 import * as log from "../../log.js";
 import { resolveChatSessionKey } from "../../session-policy.js";
+import { evaluateAutoReplyPolicy } from "../../trigger.js";
 import { formatAlreadyWorking, formatNothingRunning } from "../../ui-copy.js";
 import {
   appendBotResponseLog,
@@ -475,13 +476,9 @@ export class TelegramBot implements Bot {
         return;
       }
 
-      // In groups, only respond when addressed to bot
-      if (!addressedToBot) return;
+      const isAutoReplyCandidate = mc.chatType !== "private" && !addressedToBot;
 
-      // Process attachments
-      const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);
-
-      const event: TelegramEvent = {
+      const eventBase: TelegramEvent = {
         type: "message",
         conversationId: mc.chatId,
         conversationKind: mc.conversationKind,
@@ -491,20 +488,31 @@ export class TelegramBot implements Bot {
         user: mc.userId,
         userName: mc.userName,
         text: cleanedText,
-        attachments: processedAttachments,
       };
 
-      // Log the message
-      this.logToFile(mc.chatId, {
+      const triggerResult = isAutoReplyCandidate
+        ? await evaluateAutoReplyPolicy({ event: eventBase, workingDir: this.workingDir })
+        : ({ trigger: true, reason: "addressed" } as const);
+
+      const logEntryBase = {
         date: new Date(mc.msg.date * 1000).toISOString(),
         ts: mc.msgId,
         ...(mc.conversationKind === "shared" && mc.threadTs ? { threadTs: mc.threadTs } : {}),
         user: mc.userId,
         userName: mc.userName,
         text: cleanedText,
-        attachments: processedAttachments,
         isBot: false,
-      });
+      };
+
+      if (!triggerResult.trigger) {
+        this.logToFile(mc.chatId, { ...logEntryBase, attachments: [] });
+        return;
+      }
+
+      const processedAttachments = await this.processAttachments(mc.chatId, mc.msg);
+      const event: TelegramEvent = { ...eventBase, attachments: processedAttachments };
+
+      this.logToFile(mc.chatId, { ...logEntryBase, attachments: processedAttachments });
 
       if (this.handler.isRunning(mc.sessionKey)) {
         await this.postMessage(mc.chatId, formatAlreadyWorking("telegram", "/stop"));

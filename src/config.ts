@@ -26,6 +26,11 @@ export interface AgentConfig {
   sandboxImageWorkspaceMount?: "private" | "full";
 }
 
+export interface AutoReplyConfig {
+  enabled: boolean;
+  rules: string[];
+}
+
 const ONBOARD_SETTINGS: SettingsFileConfig = {
   llm: {
     provider: "anthropic",
@@ -58,6 +63,10 @@ interface SettingsFileConfig {
     memory?: string;
     boost?: { cpus?: string; memory?: string };
     image?: { workspaceMount?: AgentConfig["sandboxImageWorkspaceMount"] };
+  };
+  autoReply?: {
+    enabled?: boolean;
+    rules?: string[];
   };
 }
 
@@ -222,6 +231,36 @@ export function saveConversationSandboxConfig(
   atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
 }
 
+export function loadConversationAutoReplyConfig(conversationDir: string): AutoReplyConfig {
+  const settings = loadSettingsFile(join(conversationDir, "settings.json")) ?? {};
+  const rules = Array.isArray(settings.autoReply?.rules)
+    ? settings.autoReply.rules.filter((rule): rule is string => typeof rule === "string")
+    : [];
+  return {
+    enabled: settings.autoReply?.enabled === true,
+    rules,
+  };
+}
+
+export function saveConversationAutoReplyConfig(
+  conversationDir: string,
+  config: AutoReplyConfig,
+): void {
+  if (!existsSync(conversationDir)) {
+    ensureDirExists(conversationDir);
+  }
+  const settingsPath = join(conversationDir, "settings.json");
+  const existing = loadSettingsFile(settingsPath) ?? {};
+  const scopedConfig: SettingsFileConfig = {
+    ...existing,
+    autoReply: {
+      enabled: config.enabled,
+      rules: config.rules,
+    },
+  };
+  atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
+}
+
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -307,6 +346,7 @@ function compactSettingsConfig(config: SettingsFileConfig): SettingsFileConfig {
     ...(hasDefinedValue(config.log) ? { log: config.log } : {}),
     ...(hasDefinedValue(config.sentry) ? { sentry: config.sentry } : {}),
     ...(hasDefinedValue(config.sandbox) ? { sandbox: config.sandbox } : {}),
+    ...(hasDefinedValue(config.autoReply) ? { autoReply: config.autoReply } : {}),
   };
 }
 

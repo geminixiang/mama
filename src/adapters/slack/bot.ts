@@ -27,6 +27,7 @@ import {
   withRetry,
 } from "../shared.js";
 import { getThreadSessionFile } from "../../session-store.js";
+import { evaluateAutoReplyPolicy } from "../../trigger.js";
 import { createSlackAdapters } from "./context.js";
 import { hasMaterializedSlackBranchSession } from "./branch-manager.js";
 import { resolveSlackSessionKey } from "./session.js";
@@ -894,7 +895,7 @@ export class SlackBot implements Bot {
 
     const sessionKey = conversationId;
     const event: BotEvent = {
-      type: "dm",
+      type: isDirectMessage ? "dm" : "mention",
       conversationId,
       conversationKind: isDirectMessage ? "direct" : "shared",
       ts: eventTs,
@@ -917,6 +918,16 @@ export class SlackBot implements Bot {
   }
 
   private async routeSlashSandboxCommand(payload: {
+    command: string;
+    text?: string;
+    channel_id: string;
+    user_id: string;
+    user_name?: string;
+  }): Promise<void> {
+    await this.routeSlashModelCommand(payload);
+  }
+
+  private async routeSlashAutoReplyCommand(payload: {
     command: string;
     text?: string;
     channel_id: string;
@@ -951,7 +962,7 @@ export class SlackBot implements Bot {
 
     const sessionKey = conversationId;
     const event: BotEvent = {
-      type: "dm",
+      type: isDirectMessage ? "dm" : "mention",
       conversationId,
       conversationKind: isDirectMessage ? "direct" : "shared",
       ts: eventTs,
@@ -1161,9 +1172,8 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // Check for stop command in channel threads (without @mention)
-      // app_mention handles "@mama stop", but bare "stop" in a thread comes here
-      if (!isDM && e.thread_ts && this.isStopText(slackEvent.text)) {
+      // Stop command for DM or shared-channel thread reply (app_mention handles "@mama stop").
+      if ((isDM || (!isDM && e.thread_ts)) && this.isStopText(slackEvent.text)) {
         const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
         if (stopTarget) {
           this.handler.handleStop(stopTarget, e.channel, this);
@@ -1177,25 +1187,9 @@ export class SlackBot implements Bot {
         return;
       }
 
-      // Trigger handler for DMs and bare replies inside shared-channel threads.
-      if (isDM || isSharedThreadReply) {
+      const enqueueTriggered = () => {
         const activeSessionKey =
           slackEvent.sessionKey ?? resolveSlackSessionKey(e.channel, e.thread_ts);
-        // Check for stop command - execute immediately, don't queue!
-        if (this.isStopText(slackEvent.text)) {
-          const stopTarget = this.resolveStopTarget(e.channel, e.thread_ts);
-          if (stopTarget) {
-            this.handler.handleStop(stopTarget, e.channel, this); // Don't await, don't queue
-          } else {
-            this.postMessage(e.channel, formatNothingRunning("slack"));
-          }
-          void attachmentsPromise.catch((err) => {
-            log.logWarning("Failed to log Slack message", String(err));
-          });
-          ack();
-          return;
-        }
-
         this.getQueue(this.resolveQueueKey(e.channel, activeSessionKey)).enqueue(async () => {
           slackEvent.attachments = await attachmentsPromise;
           const adapters = createSlackAdapters(slackEvent, this, false);
@@ -1206,11 +1200,33 @@ export class SlackBot implements Bot {
             false,
           );
         });
-      } else {
+      };
+
+      const logOnly = () => {
         void attachmentsPromise.catch((err) => {
           log.logWarning("Failed to log Slack message", String(err));
         });
+      };
+
+      if (isDM || isSharedThreadReply) {
+        enqueueTriggered();
+        ack();
+        return;
       }
+
+      // Shared-channel non-mention, non-thread: gate via auto-reply policy.
+      evaluateAutoReplyPolicy({
+        event: slackEvent as unknown as import("../../adapter.js").BotEvent,
+        workingDir: this.workingDir,
+      })
+        .then((triggerResult) => {
+          if (triggerResult.trigger) enqueueTriggered();
+          else logOnly();
+        })
+        .catch((err) => {
+          log.logWarning("Failed to evaluate Slack auto-reply trigger", String(err));
+          logOnly();
+        });
 
       ack();
     });
@@ -1269,7 +1285,15 @@ export class SlackBot implements Bot {
                       user_id: payload.user_id,
                       user_name: payload.user_name,
                     })
-                  : null;
+                  : payload.command === "/pi-auto-reply"
+                    ? this.routeSlashAutoReplyCommand({
+                        command: payload.command,
+                        text: payload.text,
+                        channel_id: payload.channel_id,
+                        user_id: payload.user_id,
+                        user_name: payload.user_name,
+                      })
+                    : null;
 
       if (!handlerPromise) {
         return;

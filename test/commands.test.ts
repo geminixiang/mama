@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Bot, ChatResponseContext } from "../src/adapter.js";
+import { AutoReplyCommandHandler } from "../src/commands/auto-reply.js";
 import { CommandRegistry } from "../src/commands/registry.js";
 import { LoginCommandHandler } from "../src/commands/login.js";
 import { NewCommandHandler } from "../src/commands/new.js";
@@ -206,6 +207,62 @@ describe("CommandRegistry", () => {
     expect(handled).toBe(true);
     expect(a.tryHandle).toHaveBeenCalledOnce();
     expect(b.tryHandle).toHaveBeenCalledOnce();
+  });
+});
+
+// ── AutoReplyCommandHandler ─────────────────────────────────────────────────
+
+describe("AutoReplyCommandHandler", () => {
+  const handler = new AutoReplyCommandHandler();
+  let workingDir: string;
+
+  beforeEach(() => {
+    workingDir = join(tmpdir(), `mama-auto-reply-test-${Date.now()}`);
+    mkdirSync(workingDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(workingDir, { recursive: true, force: true });
+  });
+
+  test("declines unrelated commands", async () => {
+    const ctx = buildContext({ commandText: "hello", services: { workingDir } });
+    expect(await handler.tryHandle(ctx)).toBe(false);
+  });
+
+  test("rejects private conversations", async () => {
+    const ctx = buildContext({
+      commandText: "/pi-auto-reply on",
+      privateConversation: true,
+      services: { workingDir },
+    });
+
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.responseCtx.responses[0]).toContain("只能在 group/channel");
+  });
+
+  test("enables auto-reply and appends natural language rules", async () => {
+    const enableCtx = buildContext({
+      commandText: "/pi-auto-reply on",
+      services: { workingDir },
+    });
+    expect(await handler.tryHandle(enableCtx)).toBe(true);
+    expect(enableCtx.responseCtx.responses[0]).toContain("Status: `on`");
+
+    const ruleCtx = buildContext({
+      commandText: "/pi-auto-reply rule Reply when someone asks about deployments.",
+      services: { workingDir },
+    });
+    expect(await handler.tryHandle(ruleCtx)).toBe(true);
+    expect(ruleCtx.responseCtx.responses[0]).toContain(
+      "`Reply when someone asks about deployments.`",
+    );
+
+    const saved = JSON.parse(readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"));
+    expect(saved.autoReply).toEqual({
+      enabled: true,
+      rules: ["Reply when someone asks about deployments."],
+    });
   });
 });
 

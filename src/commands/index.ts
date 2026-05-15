@@ -1,3 +1,4 @@
+import { AutoReplyCommandHandler } from "./auto-reply.js";
 import { LoginCommandHandler } from "./login.js";
 import { ModelCommandHandler } from "./model.js";
 import { NewCommandHandler } from "./new.js";
@@ -12,6 +13,7 @@ export function createDefaultCommandRegistry(): CommandRegistry {
   return new CommandRegistry([
     new LoginCommandHandler(),
     new SessionViewCommandHandler(),
+    new AutoReplyCommandHandler(),
     new ModelCommandHandler(),
     new SandboxCommandHandler(),
     new NewCommandHandler(),
