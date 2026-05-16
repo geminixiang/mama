@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -81,5 +81,49 @@ describe("evaluateAutoReplyPolicy", () => {
       trigger: true,
       reason: "auto-reply-enabled",
     });
+  });
+
+  test("does not throw when the judge throws — falls back to no trigger", async () => {
+    saveConversationAutoReplyConfig(join(workingDir, "C123"), {
+      enabled: true,
+      rules: ["some rule"],
+    });
+
+    await expect(
+      evaluateAutoReplyPolicy({
+        event,
+        workingDir,
+        judge: async () => {
+          throw new Error("upstream LLM down");
+        },
+      }),
+    ).resolves.toEqual({ trigger: false, reason: "auto-reply-judge-failed" });
+  });
+
+  test("does not throw when settings.json is malformed", async () => {
+    const conversationDir = join(workingDir, "C123");
+    mkdirSync(conversationDir, { recursive: true });
+    writeFileSync(join(conversationDir, "settings.json"), "{ not valid json", "utf-8");
+
+    await expect(evaluateAutoReplyPolicy({ event, workingDir })).resolves.toEqual({
+      trigger: false,
+      reason: "auto-reply-judge-failed",
+    });
+  });
+
+  test("times out a slow judge and returns no trigger", async () => {
+    saveConversationAutoReplyConfig(join(workingDir, "C123"), {
+      enabled: true,
+      rules: ["some rule"],
+    });
+
+    await expect(
+      evaluateAutoReplyPolicy({
+        event,
+        workingDir,
+        timeoutMs: 10,
+        judge: () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 200)),
+      }),
+    ).resolves.toEqual({ trigger: false, reason: "auto-reply-judge-timeout" });
   });
 });

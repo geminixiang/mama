@@ -1215,18 +1215,16 @@ export class SlackBot implements Bot {
       }
 
       // Shared-channel non-mention, non-thread: gate via auto-reply policy.
+      // evaluateAutoReplyPolicy never throws — judge errors/timeouts surface as
+      // trigger:false with a distinct reason, and the user message has already
+      // been queued for logging via logUserMessage above.
       evaluateAutoReplyPolicy({
         event: slackEvent as unknown as import("../../adapter.js").BotEvent,
         workingDir: this.workingDir,
-      })
-        .then((triggerResult) => {
-          if (triggerResult.trigger) enqueueTriggered();
-          else logOnly();
-        })
-        .catch((err) => {
-          log.logWarning("Failed to evaluate Slack auto-reply trigger", String(err));
-          logOnly();
-        });
+      }).then((triggerResult) => {
+        if (triggerResult.trigger) enqueueTriggered();
+        else logOnly();
+      });
 
       ack();
     });
@@ -1363,9 +1361,17 @@ export class SlackBot implements Bot {
    */
   private async logUserMessage(event: SlackEvent): Promise<Attachment[]> {
     const user = this.users.get(event.user);
-    const attachments = event.files
-      ? await this.store.processAttachments(event.channel, event.files, event.ts)
-      : [];
+    let attachments: Attachment[] = [];
+    let attachmentError: unknown;
+    if (event.files) {
+      try {
+        attachments = await this.store.processAttachments(event.channel, event.files, event.ts);
+      } catch (err) {
+        attachmentError = err;
+      }
+    }
+    // Always write the text log, even if attachment processing failed — we want
+    // a record of the user message regardless of file-handling errors.
     this.logToFile(event.channel, {
       date: new Date(parseFloat(event.ts) * 1000).toISOString(),
       ts: event.ts,
@@ -1377,6 +1383,7 @@ export class SlackBot implements Bot {
       attachments,
       isBot: false,
     });
+    if (attachmentError) throw attachmentError;
     return attachments;
   }
 
