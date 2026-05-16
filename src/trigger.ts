@@ -1,6 +1,6 @@
 import { completeSimple, getModel } from "@earendil-works/pi-ai";
 import type { BotEvent } from "./adapter.js";
-import { loadAgentConfigForConversation, loadConversationAutoReplyConfig } from "./config.js";
+import { loadAutoReplyJudgeModel, loadConversationAutoReplyConfig } from "./config.js";
 import { join } from "path";
 
 export type TriggerIntent = "mention" | "direct" | "thread-continuation" | "auto-reply-candidate";
@@ -49,10 +49,10 @@ async function judgeAutoReplyWithLlm(input: {
   rules: string[];
   conversationDir: string;
 }): Promise<boolean> {
-  const agentConfig = loadAgentConfigForConversation(input.conversationDir);
-  // getModel has constrained generics for known providers; agentConfig holds plain strings.
+  const judgeConfig = loadAutoReplyJudgeModel(input.conversationDir);
+  // getModel has constrained generics for known providers; judgeConfig holds plain strings.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const model = (getModel as any)(agentConfig.provider, agentConfig.model);
+  const model = (getModel as any)(judgeConfig.provider, judgeConfig.model);
   const answer = await completeSimple(
     model,
     {

@@ -228,7 +228,12 @@ describe("saveAgentConfig", () => {
     expect(config.provider).toBe("google");
     expect(config.model).toBe("gemini-2.0-flash");
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
-      llm: { provider: "google", model: "gemini-2.0-flash", thinkingLevel: "off" },
+      llm: {
+        provider: "google",
+        model: "gemini-2.0-flash",
+        thinkingLevel: "off",
+        autoReply: { provider: "anthropic", model: "claude-haiku-4-5" },
+      },
       log: { format: "console", level: "info" },
       sandbox: {
         cpus: "0.5",
@@ -247,7 +252,12 @@ describe("saveAgentConfig", () => {
     expect(config.model).toBe("gpt-4o-mini");
     expect(config.logLevel).toBe("debug");
     expect(JSON.parse(readFileSync(join(stateDir, "settings.json"), "utf-8"))).toEqual({
-      llm: { provider: "openai", model: "gpt-4o-mini", thinkingLevel: "off" },
+      llm: {
+        provider: "openai",
+        model: "gpt-4o-mini",
+        thinkingLevel: "off",
+        autoReply: { provider: "anthropic", model: "claude-haiku-4-5" },
+      },
       log: { format: "console", level: "debug" },
       sandbox: {
         cpus: "0.5",

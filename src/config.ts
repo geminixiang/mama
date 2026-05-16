@@ -31,11 +31,20 @@ export interface AutoReplyConfig {
   rules: string[];
 }
 
+export interface JudgeModelConfig {
+  provider: string;
+  model: string;
+}
+
 const ONBOARD_SETTINGS: SettingsFileConfig = {
   llm: {
     provider: "anthropic",
     model: "claude-sonnet-4-6",
     thinkingLevel: "off",
+    autoReply: {
+      provider: "anthropic",
+      model: "claude-haiku-4-5",
+    },
   },
   log: {
     format: "console",
@@ -55,7 +64,9 @@ const ONBOARD_SETTINGS: SettingsFileConfig = {
 };
 
 interface SettingsFileConfig {
-  llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">>;
+  llm?: Partial<Pick<AgentConfig, "provider" | "model" | "thinkingLevel">> & {
+    autoReply?: { provider?: string; model?: string };
+  };
   log?: { format?: AgentConfig["logFormat"]; level?: AgentConfig["logLevel"] };
   sentry?: { dsn?: string };
   sandbox?: {
@@ -229,6 +240,23 @@ export function saveConversationSandboxConfig(
     },
   };
   atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
+}
+
+/**
+ * Resolve the model used to judge auto-reply rules. Falls back to the main
+ * llm.{provider,model} when llm.autoReply is not set, so a missing override
+ * keeps current behavior.
+ */
+export function loadAutoReplyJudgeModel(conversationDir?: string): JudgeModelConfig {
+  const global = requireGlobalSettings();
+  const local = conversationDir
+    ? (loadSettingsFile(join(conversationDir, "settings.json")) ?? {})
+    : {};
+  const merged: SettingsFileConfig["llm"] = { ...global.llm, ...local.llm };
+  const judge = { ...global.llm?.autoReply, ...local.llm?.autoReply };
+  const provider = requireString(judge.provider ?? merged?.provider, "llm.autoReply.provider");
+  const model = requireString(judge.model ?? merged?.model, "llm.autoReply.model");
+  return { provider, model };
 }
 
 export function loadConversationAutoReplyConfig(conversationDir: string): AutoReplyConfig {
