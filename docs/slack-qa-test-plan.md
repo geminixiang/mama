@@ -48,7 +48,7 @@ Minimum checks:
 
 ## Automated Smoke Test
 
-A basic Slack smoke runner is available at `scripts/slack-qa-smoke.mjs` and can be run with:
+The Slack smoke suite lives under `e2e/slack/` and runs on Vitest (`vitest.e2e.config.ts`). Run it with:
 
 ```bash
 SLACK_QA_USER_TOKEN=xoxp-... \
@@ -58,7 +58,7 @@ SLACK_QA_MAMA_BOT_USER_ID=UMAMA \
 npm run test:e2e:slack
 ```
 
-The runner currently covers:
+Each scenario is its own `*.e2e.ts` file and is skipped at runtime when the required env vars (`SLACK_QA_USER_TOKEN`, `SLACK_QA_CHANNEL_ID`, and the relevant bot user ID) are missing. Coverage:
 
 - Channel mention to question bot.
 - Channel mention to mama bot.

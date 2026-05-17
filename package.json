@@ -37,7 +37,8 @@
     "fmt:check": "oxfmt --check",
     "prepublishOnly": "npm run clean && npm run build",
     "prepare": "husky",
-    "test:e2e:slack": "node scripts/slack-qa-smoke.mjs"
+    "test:e2e": "vitest --run --config vitest.e2e.config.ts",
+    "test:e2e:slack": "vitest --run --config vitest.e2e.config.ts e2e/slack"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.0",
