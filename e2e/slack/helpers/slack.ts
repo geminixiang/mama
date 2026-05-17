@@ -207,33 +207,6 @@ export async function waitForRecentBotReply(
   return null;
 }
 
-export interface AssertNoBotReplyOptions {
-  client: WebClient;
-  channel: string;
-  botUserIds: string[];
-  startedAt: number;
-  timeoutMs: number;
-  pollMs: number;
-}
-
-export async function assertNoBotReply(
-  opts: AssertNoBotReplyOptions,
-): Promise<SlackMessage | null> {
-  const { client, channel, botUserIds, startedAt, timeoutMs, pollMs } = opts;
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const recentMessages = await fetchRecentMessages(client, channel, startedAt).catch(
-      () => [] as SlackMessage[],
-    );
-    const unexpected = recentMessages.find((message) =>
-      botUserIds.some((botUserId) => isTargetBotMessage(message, botUserId)),
-    );
-    if (unexpected) return unexpected;
-    await sleep(pollMs);
-  }
-  return null;
-}
-
 export interface AssertNoAdditionalBotReplyOptions {
   client: WebClient;
   channel: string;
@@ -252,13 +225,39 @@ export async function assertNoAdditionalBotReply(
   const seen = new Set([String(rootTs), String(afterTs)]);
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const [threadMessages, recentMessages] = await Promise.all([
-      fetchThreadMessages(client, channel, rootTs).catch(() => [] as SlackMessage[]),
-      fetchRecentMessages(client, channel, after).catch(() => [] as SlackMessage[]),
-    ]);
-    const unexpected = [...threadMessages, ...recentMessages]
+    const threadMessages = await fetchThreadMessages(client, channel, rootTs).catch(
+      () => [] as SlackMessage[],
+    );
+    const unexpected = threadMessages
       .filter((message) => !seen.has(String(message.ts)))
       .filter((message) => Number(message.ts) > after)
+      .find((message) => botUserIds.some((botUserId) => isTargetBotMessage(message, botUserId)));
+    if (unexpected) return unexpected;
+    await sleep(pollMs);
+  }
+  return null;
+}
+
+export interface AssertNoBotReplyToRootOptions {
+  client: WebClient;
+  channel: string;
+  rootTs: string;
+  botUserIds: string[];
+  timeoutMs: number;
+  pollMs: number;
+}
+
+export async function assertNoBotReplyToRoot(
+  opts: AssertNoBotReplyToRootOptions,
+): Promise<SlackMessage | null> {
+  const { client, channel, rootTs, botUserIds, timeoutMs, pollMs } = opts;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const threadMessages = await fetchThreadMessages(client, channel, rootTs).catch(
+      () => [] as SlackMessage[],
+    );
+    const unexpected = threadMessages
+      .filter((message) => String(message.ts) !== rootTs)
       .find((message) => botUserIds.some((botUserId) => isTargetBotMessage(message, botUserId)));
     if (unexpected) return unexpected;
     await sleep(pollMs);
