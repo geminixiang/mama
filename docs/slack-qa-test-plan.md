@@ -63,7 +63,10 @@ The runner currently covers:
 - Channel mention to question bot.
 - Channel mention to mama bot.
 - mama thread reply routing.
+- one-shot event delivery.
 - No-mention false-reply check.
+
+Only three variables are required for local E2E: `SLACK_QA_USER_TOKEN`, `SLACK_QA_CHANNEL_ID`, and `SLACK_QA_MAMA_BOT_USER_ID`. The event directory is derived from the current workspace.
 
 Use `SLACK_QA_SKIP_THREAD=1` to skip thread routing. Use `SLACK_QA_SKIP_NO_MENTION=1` if the channel intentionally has auto-reply enabled.
 
@@ -106,6 +109,7 @@ Run these after every deploy or config change.
 | S-008 | Send `stop` while mama is running            | Running task stops or reports stopped                  |
 | S-009 | Upload a small text file and ask for summary | Bot handles file or clearly says unsupported           |
 | S-010 | Observe bot-to-bot messages                  | No reply loop occurs                                   |
+| S-011 | Create one-shot event file                   | mama delivers reminder to Slack                        |
 
 ## Question Bot Test Cases
 

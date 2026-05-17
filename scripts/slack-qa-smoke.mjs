@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { mkdir, writeFile } from "fs/promises";
+import { join } from "path";
 import { WebClient } from "@slack/web-api";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -136,6 +138,28 @@ async function waitForThreadBotReply({
   return null;
 }
 
+async function waitForRecentBotReply({
+  client,
+  channel,
+  botUserId,
+  startedAt,
+  timeoutMs,
+  pollMs,
+  textIncludes,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const recentMessages = await fetchRecentMessages(client, channel, startedAt).catch(() => []);
+    const reply = recentMessages
+      .filter((message) => isTargetBotMessage(message, botUserId))
+      .find((message) => !textIncludes || messageText(message).includes(textIncludes));
+
+    if (reply) return reply;
+    await sleep(pollMs);
+  }
+  return null;
+}
+
 async function assertNoBotReply({ client, channel, botUserIds, startedAt, timeoutMs, pollMs }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -171,6 +195,54 @@ async function runMentionCase({ client, channel, name, botUserId, prompt, timeou
     id: name,
     ok: true,
     detail: `Reply ts=${reply.ts}: ${summarizeMessage(reply)}`,
+  };
+}
+
+async function runOneShotEventCase({ client, channel, botUserId, timeoutMs, pollMs, eventsDir }) {
+  const token = `QA_EVENT_${Date.now()}`;
+  const filename = `slack-e2e-one-shot-${token}.json`;
+  const at = new Date(Date.now() + 5_000).toISOString();
+  const startedAt = nowSeconds();
+
+  await mkdir(eventsDir, { recursive: true });
+  await writeFile(
+    join(eventsDir, filename),
+    JSON.stringify(
+      {
+        type: "one-shot",
+        platform: "slack",
+        conversationId: channel,
+        conversationKind: "shared",
+        text: `One-shot E2E reminder. 請在回覆中原樣包含 ${token}`,
+        at,
+      },
+      null,
+      2,
+    ),
+  );
+
+  const reply = await waitForRecentBotReply({
+    client,
+    channel,
+    botUserId,
+    startedAt,
+    timeoutMs: Math.max(timeoutMs, 45_000),
+    pollMs,
+    textIncludes: token,
+  });
+
+  if (!reply) {
+    return {
+      id: "S-011 one-shot event",
+      ok: false,
+      detail: `No one-shot reminder reply containing ${token}`,
+    };
+  }
+
+  return {
+    id: "S-011 one-shot event",
+    ok: true,
+    detail: `One-shot reply ts=${reply.ts}: ${summarizeMessage(reply)}`,
   };
 }
 
@@ -249,6 +321,7 @@ async function main() {
   const pollMs = Number(env.SLACK_QA_POLL_MS ?? DEFAULT_POLL_MS);
   const questionBotUserId = env.SLACK_QA_QUESTION_BOT_USER_ID;
   const mamaBotUserId = env.SLACK_QA_MAMA_BOT_USER_ID;
+  const eventsDir = env.SLACK_QA_EVENTS_DIR ?? join(process.cwd(), "events");
 
   if (!questionBotUserId && !mamaBotUserId) {
     throw new Error("Set SLACK_QA_QUESTION_BOT_USER_ID and/or SLACK_QA_MAMA_BOT_USER_ID");
@@ -295,6 +368,17 @@ async function main() {
         }),
       );
     }
+
+    results.push(
+      await runOneShotEventCase({
+        client,
+        channel,
+        botUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+        eventsDir,
+      }),
+    );
   }
 
   if (env.SLACK_QA_SKIP_NO_MENTION !== "1") {
