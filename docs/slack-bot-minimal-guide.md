@@ -2,6 +2,8 @@
 
 This guide lists the minimum Slack app settings needed to run `mama` over Socket Mode.
 
+You can also create the app from the example manifest at `examples/slack-app-manifest.json`.
+
 ## 1. Create the Slack app
 
 1. Open <https://api.slack.com/apps>.
@@ -70,7 +72,7 @@ A public request URL is not required for Socket Mode-only local development, but
 
 ## 7. Optional slash commands
 
-You can add slash commands for common controls:
+The example manifest includes slash commands for common controls:
 
 - `/pi-login` → login portal
 - `/pi-new` → start a new DM session

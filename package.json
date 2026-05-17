@@ -36,7 +36,8 @@
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
     "prepublishOnly": "npm run clean && npm run build",
-    "prepare": "husky"
+    "prepare": "husky",
+    "test:e2e:slack": "node scripts/slack-qa-smoke.mjs"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.0",
