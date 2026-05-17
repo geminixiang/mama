@@ -24,6 +24,7 @@ Optional env:
   SLACK_QA_TIMEOUT_MS              Per-case timeout. Default: ${DEFAULT_TIMEOUT_MS}
   SLACK_QA_POLL_MS                 Poll interval. Default: ${DEFAULT_POLL_MS}
   SLACK_QA_SKIP_NO_MENTION=1       Skip no-mention false-reply check
+  SLACK_QA_SKIP_THREAD=1           Skip mama thread reply check
 
 Example:
   SLACK_QA_USER_TOKEN=xoxp-... \\
@@ -61,8 +62,8 @@ function summarizeMessage(message) {
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
-async function postMessage(client, channel, text) {
-  const res = await client.chat.postMessage({ channel, text });
+async function postMessage(client, channel, text, threadTs) {
+  const res = await client.chat.postMessage({ channel, text, thread_ts: threadTs });
   if (!res.ok || !res.ts) throw new Error(`chat.postMessage failed: ${res.error ?? "missing ts"}`);
   return String(res.ts);
 }
@@ -110,6 +111,31 @@ async function waitForBotReply({
   return null;
 }
 
+async function waitForThreadBotReply({
+  client,
+  channel,
+  botUserId,
+  rootTs,
+  startedAt,
+  excludeTs,
+  timeoutMs,
+  pollMs,
+}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const threadMessages = await fetchThreadMessages(client, channel, rootTs).catch(() => []);
+    const reply = threadMessages
+      .filter((message) => String(message.ts) !== rootTs)
+      .filter((message) => !excludeTs.has(String(message.ts)))
+      .filter((message) => Number(message.ts) >= startedAt)
+      .find((message) => isTargetBotMessage(message, botUserId));
+
+    if (reply) return reply;
+    await sleep(pollMs);
+  }
+  return null;
+}
+
 async function assertNoBotReply({ client, channel, botUserIds, startedAt, timeoutMs, pollMs }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -145,6 +171,64 @@ async function runMentionCase({ client, channel, name, botUserId, prompt, timeou
     id: name,
     ok: true,
     detail: `Reply ts=${reply.ts}: ${summarizeMessage(reply)}`,
+  };
+}
+
+async function runThreadCase({ client, channel, botUserId, timeoutMs, pollMs }) {
+  const rootStartedAt = nowSeconds();
+  const rootTs = await postMessage(
+    client,
+    channel,
+    `<@${botUserId}> thread routing smoke，請簡短回覆。`,
+  );
+  const firstReply = await waitForBotReply({
+    client,
+    channel,
+    botUserId,
+    rootTs,
+    startedAt: rootStartedAt,
+    timeoutMs,
+    pollMs,
+  });
+
+  if (!firstReply) {
+    return { id: "S-006 thread reply", ok: false, detail: "No initial mama reply" };
+  }
+
+  const threadStartedAt = nowSeconds();
+  const userThreadTs = await postMessage(
+    client,
+    channel,
+    "請用一句話回答：這是 thread e2e 測試",
+    rootTs,
+  );
+  const threadReply = await waitForThreadBotReply({
+    client,
+    channel,
+    botUserId,
+    rootTs,
+    startedAt: threadStartedAt,
+    excludeTs: new Set([String(firstReply.ts), userThreadTs]),
+    timeoutMs,
+    pollMs,
+  });
+
+  if (!threadReply) {
+    return { id: "S-006 thread reply", ok: false, detail: "No mama reply in thread" };
+  }
+
+  if (String(threadReply.thread_ts ?? rootTs) !== rootTs) {
+    return {
+      id: "S-006 thread reply",
+      ok: false,
+      detail: `Reply was not anchored to root thread ${rootTs}: ts=${threadReply.ts}`,
+    };
+  }
+
+  return {
+    id: "S-006 thread reply",
+    ok: true,
+    detail: `Thread reply ts=${threadReply.ts}: ${summarizeMessage(threadReply)}`,
   };
 }
 
@@ -199,6 +283,18 @@ async function main() {
         pollMs,
       }),
     );
+
+    if (env.SLACK_QA_SKIP_THREAD !== "1") {
+      results.push(
+        await runThreadCase({
+          client,
+          channel,
+          botUserId: mamaBotUserId,
+          timeoutMs,
+          pollMs,
+        }),
+      );
+    }
   }
 
   if (env.SLACK_QA_SKIP_NO_MENTION !== "1") {

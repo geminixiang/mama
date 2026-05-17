@@ -62,9 +62,10 @@ The runner currently covers:
 
 - Channel mention to question bot.
 - Channel mention to mama bot.
+- mama thread reply routing.
 - No-mention false-reply check.
 
-Use `SLACK_QA_SKIP_NO_MENTION=1` if the channel intentionally has auto-reply enabled.
+Use `SLACK_QA_SKIP_THREAD=1` to skip thread routing. Use `SLACK_QA_SKIP_NO_MENTION=1` if the channel intentionally has auto-reply enabled.
 
 The QA user token must be able to post in the test channel and read channel history/replies. The example manifest at `examples/slack-app-manifest.json` includes the required user scopes for this.
 
@@ -84,8 +85,9 @@ Required repository secrets or variables:
 - `SLACK_QA_CHANNEL_ID`
 - `SLACK_QA_MAMA_BOT_USER_ID`
 
-Optional repository secret or variable:
+Optional repository secrets or variables:
 
+- `SLACK_QA_SKIP_THREAD=1`
 - `SLACK_QA_SKIP_NO_MENTION=1`
 
 ## Smoke Test Checklist
