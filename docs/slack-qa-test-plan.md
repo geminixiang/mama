@@ -63,14 +63,16 @@ The runner currently covers:
 - Channel mention to question bot.
 - Channel mention to mama bot.
 - mama thread reply routing.
+- mama short task completion.
+- mama stop command acknowledgement.
+- mama small text-file upload handling.
+- bot-to-bot loop observation.
 - one-shot event delivery.
 - No-mention false-reply check.
 
 Only three variables are required for local E2E: `SLACK_QA_USER_TOKEN`, `SLACK_QA_CHANNEL_ID`, and `SLACK_QA_MAMA_BOT_USER_ID`. The event directory is derived from the current workspace.
 
-Use `SLACK_QA_SKIP_THREAD=1` to skip thread routing. Use `SLACK_QA_SKIP_NO_MENTION=1` if the channel intentionally has auto-reply enabled.
-
-The QA user token must be able to post in the test channel and read channel history/replies. The example manifest at `examples/slack-app-manifest.json` includes the required user scopes for this.
+The QA user token must be able to post in the test channel, read channel history/replies, and upload files for S-009. The example manifest at `examples/slack-app-manifest.json` includes the required user scopes for this.
 
 ### GitHub Actions
 
@@ -87,11 +89,6 @@ Required repository secrets or variables:
 
 - `SLACK_QA_CHANNEL_ID`
 - `SLACK_QA_MAMA_BOT_USER_ID`
-
-Optional repository secrets or variables:
-
-- `SLACK_QA_SKIP_THREAD=1`
-- `SLACK_QA_SKIP_NO_MENTION=1`
 
 ## Smoke Test Checklist
 

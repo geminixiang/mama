@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
-import { mkdir, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
 import { join } from "path";
 import { WebClient } from "@slack/web-api";
 
@@ -25,8 +26,6 @@ Optional env:
   SLACK_QA_MAMA_TEXT               mama prompt. Default: hello，請簡短回答。
   SLACK_QA_TIMEOUT_MS              Per-case timeout. Default: ${DEFAULT_TIMEOUT_MS}
   SLACK_QA_POLL_MS                 Poll interval. Default: ${DEFAULT_POLL_MS}
-  SLACK_QA_SKIP_NO_MENTION=1       Skip no-mention false-reply check
-  SLACK_QA_SKIP_THREAD=1           Skip mama thread reply check
 
 Example:
   SLACK_QA_USER_TOKEN=xoxp-... \\
@@ -70,6 +69,24 @@ async function postMessage(client, channel, text, threadTs) {
   return String(res.ts);
 }
 
+async function uploadTextFile(client, channel, filename, content, initialComment) {
+  const tempDir = await mkdtemp(join(tmpdir(), "mama-slack-e2e-"));
+  const filePath = join(tempDir, filename);
+  try {
+    await writeFile(filePath, content);
+    const res = await client.files.uploadV2({
+      channel_id: channel,
+      file: await readFile(filePath),
+      filename,
+      title: filename,
+      initial_comment: initialComment,
+    });
+    if (!res.ok) throw new Error(`files.uploadV2 failed: ${res.error ?? "unknown"}`);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function fetchThreadMessages(client, channel, threadTs) {
   const res = await client.conversations.replies({ channel, ts: threadTs, limit: 50 });
   if (!res.ok) throw new Error(`conversations.replies failed: ${res.error ?? "unknown"}`);
@@ -95,6 +112,8 @@ async function waitForBotReply({
   startedAt,
   timeoutMs,
   pollMs,
+  textIncludes,
+  textMatches,
 }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -105,7 +124,13 @@ async function waitForBotReply({
 
     const candidates = [...threadMessages, ...recentMessages]
       .filter((message) => String(message.ts) !== rootTs)
-      .filter((message) => isTargetBotMessage(message, botUserId));
+      .filter((message) => isTargetBotMessage(message, botUserId))
+      .filter((message) => {
+        const text = messageText(message);
+        if (textIncludes && !text.includes(textIncludes)) return false;
+        if (textMatches && !textMatches.test(text)) return false;
+        return true;
+      });
 
     if (candidates.length > 0) return candidates[0];
     await sleep(pollMs);
@@ -146,13 +171,19 @@ async function waitForRecentBotReply({
   timeoutMs,
   pollMs,
   textIncludes,
+  textMatches,
 }) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const recentMessages = await fetchRecentMessages(client, channel, startedAt).catch(() => []);
     const reply = recentMessages
       .filter((message) => isTargetBotMessage(message, botUserId))
-      .find((message) => !textIncludes || messageText(message).includes(textIncludes));
+      .find((message) => {
+        const text = messageText(message);
+        if (textIncludes && !text.includes(textIncludes)) return false;
+        if (textMatches && !textMatches.test(text)) return false;
+        return true;
+      });
 
     if (reply) return reply;
     await sleep(pollMs);
@@ -167,6 +198,33 @@ async function assertNoBotReply({ client, channel, botUserIds, startedAt, timeou
     const unexpected = recentMessages.find((message) =>
       botUserIds.some((botUserId) => isTargetBotMessage(message, botUserId)),
     );
+    if (unexpected) return unexpected;
+    await sleep(pollMs);
+  }
+  return null;
+}
+
+async function assertNoAdditionalBotReply({
+  client,
+  channel,
+  rootTs,
+  botUserIds,
+  afterTs,
+  timeoutMs,
+  pollMs,
+}) {
+  const after = Number(afterTs);
+  const seen = new Set([String(rootTs), String(afterTs)]);
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const [threadMessages, recentMessages] = await Promise.all([
+      fetchThreadMessages(client, channel, rootTs).catch(() => []),
+      fetchRecentMessages(client, channel, after).catch(() => []),
+    ]);
+    const unexpected = [...threadMessages, ...recentMessages]
+      .filter((message) => !seen.has(String(message.ts)))
+      .filter((message) => Number(message.ts) > after)
+      .find((message) => botUserIds.some((botUserId) => isTargetBotMessage(message, botUserId)));
     if (unexpected) return unexpected;
     await sleep(pollMs);
   }
@@ -304,6 +362,135 @@ async function runThreadCase({ client, channel, botUserId, timeoutMs, pollMs }) 
   };
 }
 
+async function runMamaTaskCase({ client, channel, botUserId, timeoutMs, pollMs }) {
+  const token = `QA_TASK_${Date.now()}`;
+  const startedAt = nowSeconds();
+  const rootTs = await postMessage(
+    client,
+    channel,
+    `<@${botUserId}> 短任務 e2e：請直接回覆這個 token：${token}`,
+  );
+  const reply = await waitForBotReply({
+    client,
+    channel,
+    botUserId,
+    rootTs,
+    startedAt,
+    timeoutMs: Math.max(timeoutMs, 45_000),
+    pollMs,
+    textIncludes: token,
+  });
+
+  if (!reply) {
+    return { id: "S-007 short task", ok: false, detail: `No mama task reply containing ${token}` };
+  }
+  return { id: "S-007 short task", ok: true, detail: `Task reply ts=${reply.ts}` };
+}
+
+async function runStopCase({ client, channel, botUserId, timeoutMs, pollMs }) {
+  const startedAt = nowSeconds();
+  await postMessage(
+    client,
+    channel,
+    `<@${botUserId}> e2e stop 測試：請使用 bash 執行 sleep 60，在等待期間不要先回覆完成。`,
+  );
+  await sleep(Math.min(8_000, Math.max(2_000, pollMs * 2)));
+  await postMessage(client, channel, `<@${botUserId}> stop`);
+  const reply = await waitForRecentBotReply({
+    client,
+    channel,
+    botUserId,
+    startedAt,
+    timeoutMs: Math.max(timeoutMs, 45_000),
+    pollMs,
+    textMatches: /Stopped|Nothing running|Force stopped|Stopping/i,
+  });
+
+  if (!reply) {
+    return { id: "S-008 stop", ok: false, detail: "No stop acknowledgement from mama" };
+  }
+  return {
+    id: "S-008 stop",
+    ok: true,
+    detail: `Stop reply ts=${reply.ts}: ${summarizeMessage(reply)}`,
+  };
+}
+
+async function runFileUploadCase({ client, channel, botUserId, timeoutMs, pollMs }) {
+  const token = `QA_FILE_${Date.now()}`;
+  const startedAt = nowSeconds();
+  await uploadTextFile(
+    client,
+    channel,
+    `mama-slack-e2e-${token}.txt`,
+    `Slack E2E file content. Token: ${token}\n請摘要這個檔案並原樣包含 token。\n`,
+    `<@${botUserId}> 請摘要這個小文字檔，並在回覆中原樣包含 token ${token}`,
+  );
+  const reply = await waitForRecentBotReply({
+    client,
+    channel,
+    botUserId,
+    startedAt,
+    timeoutMs: Math.max(timeoutMs, 45_000),
+    pollMs,
+    textIncludes: token,
+  });
+
+  if (!reply) {
+    return {
+      id: "S-009 file upload",
+      ok: false,
+      detail: `No file summary reply containing ${token}`,
+    };
+  }
+  return {
+    id: "S-009 file upload",
+    ok: true,
+    detail: `File reply ts=${reply.ts}: ${summarizeMessage(reply)}`,
+  };
+}
+
+async function runNoLoopCase({ client, channel, botUserIds, primaryBotUserId, timeoutMs, pollMs }) {
+  const startedAt = nowSeconds();
+  const rootTs = await postMessage(
+    client,
+    channel,
+    `<@${primaryBotUserId}> no-loop e2e，請只用一句話回覆。`,
+  );
+  const firstReply = await waitForBotReply({
+    client,
+    channel,
+    botUserId: primaryBotUserId,
+    rootTs,
+    startedAt,
+    timeoutMs,
+    pollMs,
+  });
+
+  if (!firstReply)
+    return { id: "S-010 bot-to-bot loop", ok: false, detail: "No initial reply to observe" };
+
+  const unexpected = await assertNoAdditionalBotReply({
+    client,
+    channel,
+    rootTs,
+    botUserIds,
+    afterTs: String(firstReply.ts),
+    timeoutMs: Math.min(timeoutMs, 10_000),
+    pollMs,
+  });
+
+  if (unexpected) {
+    return {
+      id: "S-010 bot-to-bot loop",
+      ok: false,
+      detail: `Unexpected additional bot reply from ${unexpected.user ?? unexpected.bot_id}: ${summarizeMessage(unexpected)}`,
+    };
+  }
+
+  return { id: "S-010 bot-to-bot loop", ok: true, detail: "No additional bot reply observed" };
+}
+
 async function main() {
   if (env.SLACK_QA_HELP === "1" || process.argv.includes("--help")) {
     console.log(usage());
@@ -357,17 +544,57 @@ async function main() {
       }),
     );
 
-    if (env.SLACK_QA_SKIP_THREAD !== "1") {
-      results.push(
-        await runThreadCase({
-          client,
-          channel,
-          botUserId: mamaBotUserId,
-          timeoutMs,
-          pollMs,
-        }),
-      );
-    }
+    results.push(
+      await runThreadCase({
+        client,
+        channel,
+        botUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+      }),
+    );
+
+    results.push(
+      await runMamaTaskCase({
+        client,
+        channel,
+        botUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+      }),
+    );
+
+    results.push(
+      await runStopCase({
+        client,
+        channel,
+        botUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+      }),
+    );
+
+    results.push(
+      await runFileUploadCase({
+        client,
+        channel,
+        botUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+      }),
+    );
+
+    const botUserIds = [questionBotUserId, mamaBotUserId].filter(Boolean);
+    results.push(
+      await runNoLoopCase({
+        client,
+        channel,
+        botUserIds,
+        primaryBotUserId: mamaBotUserId,
+        timeoutMs,
+        pollMs,
+      }),
+    );
 
     results.push(
       await runOneShotEventCase({
@@ -381,28 +608,26 @@ async function main() {
     );
   }
 
-  if (env.SLACK_QA_SKIP_NO_MENTION !== "1") {
-    const botUserIds = [questionBotUserId, mamaBotUserId].filter(Boolean);
-    const startedAt = nowSeconds();
-    await postMessage(client, channel, `QA no-mention smoke ${new Date().toISOString()}`);
-    const unexpected = await assertNoBotReply({
-      client,
-      channel,
-      botUserIds,
-      startedAt,
-      timeoutMs: Math.min(timeoutMs, 10_000),
-      pollMs,
-    });
-    results.push(
-      unexpected
-        ? {
-            id: "S-005 no mention",
-            ok: false,
-            detail: `Unexpected bot reply from ${unexpected.user ?? unexpected.bot_id}: ${summarizeMessage(unexpected)}`,
-          }
-        : { id: "S-005 no mention", ok: true, detail: "No bot replied" },
-    );
-  }
+  const botUserIds = [questionBotUserId, mamaBotUserId].filter(Boolean);
+  const startedAt = nowSeconds();
+  await postMessage(client, channel, `QA no-mention smoke ${new Date().toISOString()}`);
+  const unexpected = await assertNoBotReply({
+    client,
+    channel,
+    botUserIds,
+    startedAt,
+    timeoutMs: Math.min(timeoutMs, 10_000),
+    pollMs,
+  });
+  results.push(
+    unexpected
+      ? {
+          id: "S-005 no mention",
+          ok: false,
+          detail: `Unexpected bot reply from ${unexpected.user ?? unexpected.bot_id}: ${summarizeMessage(unexpected)}`,
+        }
+      : { id: "S-005 no mention", ok: true, detail: "No bot replied" },
+  );
 
   let failed = 0;
   for (const result of results) {
