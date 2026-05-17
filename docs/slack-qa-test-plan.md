@@ -72,7 +72,7 @@ The runner currently covers:
 
 Only three variables are required for local E2E: `SLACK_QA_USER_TOKEN`, `SLACK_QA_CHANNEL_ID`, and `SLACK_QA_MAMA_BOT_USER_ID`. The event directory is derived from the current workspace.
 
-The QA user token must be able to post in the test channel, read channel history/replies, and upload files for S-009. The example manifest at `examples/slack-app-manifest.json` includes the required user scopes for this.
+The QA user token must be able to post in the test channel, read channel history/replies, and upload files for S-009. The E2E manifest at `examples/slack-app-manifest.e2e.json` includes the required user scopes for this; the general `examples/slack-app-manifest.json` does not.
 
 ### GitHub Actions
 

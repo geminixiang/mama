@@ -1,7 +1,7 @@
 {
   "display_information": {
-    "name": "mama",
-    "description": "mama Slack assistant",
+    "name": "Pi",
+    "description": "mama",
     "background_color": "#4d5673"
   },
   "features": {
@@ -11,7 +11,7 @@
       "messages_tab_read_only_enabled": false
     },
     "bot_user": {
-      "display_name": "mama",
+      "display_name": "Pi",
       "always_online": true
     },
     "assistant_view": {
@@ -31,17 +31,17 @@
       },
       {
         "command": "/pi-new",
-        "description": "start a new session",
+        "description": "new",
         "should_escape": false
       },
       {
         "command": "/pi-model",
-        "description": "switch this conversation's LLM",
+        "description": "model",
         "should_escape": false
       },
       {
         "command": "/pi-session",
-        "description": "session viewer",
+        "description": "session",
         "should_escape": false
       },
       {
@@ -74,6 +74,18 @@
         "im:read",
         "users:read",
         "commands"
+      ],
+      "user": [
+        "channels:history",
+        "channels:read",
+        "chat:write",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "im:write",
+        "users:read"
       ]
     },
     "pkce_enabled": false
