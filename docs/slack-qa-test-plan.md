@@ -78,10 +78,13 @@ Required repository secrets:
 - `MAMA_SLACK_APP_TOKEN`
 - `MAMA_SLACK_BOT_TOKEN`
 - `SLACK_QA_USER_TOKEN`
+
+Required repository secrets or variables:
+
 - `SLACK_QA_CHANNEL_ID`
 - `SLACK_QA_MAMA_BOT_USER_ID`
 
-Optional repository variable:
+Optional repository secret or variable:
 
 - `SLACK_QA_SKIP_NO_MENTION=1`
 

@@ -28,15 +28,16 @@ jobs:
           MAMA_SLACK_APP_TOKEN: ${{ secrets.MAMA_SLACK_APP_TOKEN }}
           MAMA_SLACK_BOT_TOKEN: ${{ secrets.MAMA_SLACK_BOT_TOKEN }}
           SLACK_QA_USER_TOKEN: ${{ secrets.SLACK_QA_USER_TOKEN }}
-          SLACK_QA_CHANNEL_ID: ${{ secrets.SLACK_QA_CHANNEL_ID }}
-          SLACK_QA_MAMA_BOT_USER_ID: ${{ secrets.SLACK_QA_MAMA_BOT_USER_ID }}
-          SLACK_QA_SKIP_NO_MENTION: ${{ vars.SLACK_QA_SKIP_NO_MENTION }}
+          SLACK_QA_CHANNEL_ID: ${{ secrets.SLACK_QA_CHANNEL_ID || vars.SLACK_QA_CHANNEL_ID }}
+          SLACK_QA_MAMA_BOT_USER_ID: ${{ secrets.SLACK_QA_MAMA_BOT_USER_ID || vars.SLACK_QA_MAMA_BOT_USER_ID }}
+          SLACK_QA_SKIP_NO_MENTION: ${{ secrets.SLACK_QA_SKIP_NO_MENTION || vars.SLACK_QA_SKIP_NO_MENTION }}
         run: |
           set -euo pipefail
 
           LOG_FILE="$RUNNER_TEMP/mama-slack-e2e.log"
           STATE_DIR="$RUNNER_TEMP/mama-state"
 
+          node dist/main.js --onboard --state-dir "$STATE_DIR"
           node dist/main.js --state-dir "$STATE_DIR" "$GITHUB_WORKSPACE" >"$LOG_FILE" 2>&1 &
           MAMA_PID=$!
 
