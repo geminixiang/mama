@@ -199,7 +199,7 @@ async function runThreadCase({ client, channel, botUserId, timeoutMs, pollMs }) 
   const userThreadTs = await postMessage(
     client,
     channel,
-    "請用一句話回答：這是 thread e2e 測試",
+    `<@${botUserId}> 請用一句話回答：這是 thread e2e 測試`,
     rootTs,
   );
   const threadReply = await waitForThreadBotReply({
