@@ -3,7 +3,7 @@ import { createAttachTool } from "../adapters/slack/tools/attach.js";
 import type { Executor } from "../sandbox.js";
 import { createBashTool } from "./bash.js";
 import { createEditTool } from "./edit.js";
-import { createEventTool } from "./event.js";
+import { createEventTool, HostEventStore } from "./event.js";
 import { createReadTool } from "./read.js";
 import { createWriteTool } from "./write.js";
 
@@ -21,7 +21,9 @@ export function createMamaTools(
   }) => void;
 } {
   const { tool: attachTool, setUploadFunction } = createAttachTool();
-  const { tool: eventTool, setEventContext } = createEventTool(workspaceDir);
+  const { tool: eventTool, setEventContext } = createEventTool(
+    HostEventStore.fromWorkspaceDir(workspaceDir),
+  );
   return {
     tools: [
       createReadTool(executor),

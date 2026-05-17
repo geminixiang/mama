@@ -52,7 +52,7 @@ type EventToolParams = {
   filenamePrefix?: string;
 };
 
-type EventPayload =
+export type EventPayload =
   | {
       type: "immediate";
       platform: string;
@@ -81,7 +81,27 @@ type EventPayload =
       timezone: string;
     };
 
-export function createEventTool(workspaceDir: string): {
+export interface EventStore {
+  write(filename: string, payload: EventPayload): Promise<{ path: string; size: number }>;
+}
+
+export class HostEventStore implements EventStore {
+  constructor(private readonly eventsDir: string) {}
+
+  static fromWorkspaceDir(workspaceDir: string): HostEventStore {
+    return new HostEventStore(join(workspaceDir, "events"));
+  }
+
+  async write(filename: string, payload: EventPayload): Promise<{ path: string; size: number }> {
+    await mkdir(this.eventsDir, { recursive: true });
+    const filePath = join(this.eventsDir, filename);
+    await writeFile(filePath, JSON.stringify(payload) + "\n", "utf-8");
+    const fileStat = await stat(filePath);
+    return { path: filePath, size: fileStat.size };
+  }
+}
+
+export function createEventTool(eventStore: EventStore): {
   tool: AgentTool<typeof eventSchema>;
   setEventContext: (context: EventToolContext) => void;
 } {
@@ -103,26 +123,24 @@ export function createEventTool(workspaceDir: string): {
       }
 
       const payload = buildEventPayload(params, eventContext);
-      const eventsDir = join(workspaceDir, "events");
-      await mkdir(eventsDir, { recursive: true });
-
       const prefix = sanitizeFileSegment(params.filenamePrefix || payload.type || "event");
       const filename = `${prefix}-${Date.now()}.json`;
-      const filePath = join(eventsDir, filename);
-      const content = JSON.stringify(payload) + "\n";
 
       log.logInfo(
-        `Writing event file: ${filePath} (type=${payload.type}, platform=${payload.platform}, conversation=${payload.conversationId})`,
+        `Writing event file via control plane store: ${filename} (type=${payload.type}, platform=${payload.platform}, conversation=${payload.conversationId})`,
       );
-      await writeFile(filePath, content, "utf-8");
 
       try {
-        const fileStat = await stat(filePath);
+        const result = await eventStore.write(filename, payload);
         log.logInfo(
-          `Wrote event file: ${filePath} (${fileStat.size} bytes, mtime=${fileStat.mtime.toISOString()})`,
+          `Wrote event file via control plane store: ${result.path} (${result.size} bytes)`,
         );
       } catch (err) {
-        log.logWarning(`Event file missing immediately after write: ${filePath}`, String(err));
+        log.logWarning(
+          `Failed to write event file via control plane store: ${filename}`,
+          String(err),
+        );
+        throw err;
       }
 
       return {

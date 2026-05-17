@@ -4,6 +4,7 @@ import type {
   ExecResult,
   Executor,
   FirecrackerSandboxConfig,
+  RuntimePathContext,
   SandboxAdapter,
 } from "./types.js";
 import { SandboxError } from "./errors.js";
@@ -203,6 +204,13 @@ export class FirecrackerExecutor implements Executor {
 
   getWorkspacePath(_hostPath: string): string {
     return "/workspace";
+  }
+
+  getPathContext(hostWorkspaceRoot: string): RuntimePathContext {
+    return {
+      hostWorkspaceRoot,
+      runtimeWorkspaceRoot: "/workspace",
+    };
   }
 
   getSandboxConfig(): FirecrackerSandboxConfig {

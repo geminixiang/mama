@@ -28,7 +28,13 @@ import { loadAgentConfigForConversation } from "./config.js";
 import { ActorExecutionResolver } from "./execution-resolver.js";
 import * as log from "./log.js";
 import type { DockerContainerManager } from "./provisioner.js";
-import { createExecutor, type Executor, type SandboxConfig } from "./sandbox.js";
+import {
+  createExecutor,
+  type Executor,
+  type RuntimePathContext,
+  type SandboxConfig,
+} from "./sandbox.js";
+import { createMountedRuntimePathContext } from "./sandbox/path-context.js";
 import { addLifecycleBreadcrumb, metricAttributes } from "./sentry.js";
 import type { VaultManager } from "./vault.js";
 import {
@@ -143,8 +149,8 @@ function loadMamaSkills(conversationDir: string, workspacePath: string): Skill[]
   return Array.from(skillMap.values());
 }
 
-function buildRuntimePaths(workspacePath: string, conversationId: string) {
-  const workspaceRoot = workspacePath.replace(/\/+$/, "") || "/";
+function buildRuntimePaths(runtimeWorkspaceRoot: string, conversationId: string) {
+  const workspaceRoot = runtimeWorkspaceRoot.replace(/\/+$/, "") || "/";
   const conversationPath = posix.join(workspaceRoot, conversationId);
   return {
     workspaceRoot,
@@ -187,6 +193,36 @@ function buildEnvDescription(sandboxType: SandboxConfig["type"], workspaceRoot: 
   }
 }
 
+export function buildEventFilesystemInstructions(
+  sandboxType: SandboxConfig["type"],
+  workspaceRoot: string,
+): string {
+  if (sandboxType === "host" || sandboxType === "container" || sandboxType === "image") {
+    return `Events live in the host-side mama control plane and are mounted at \`${workspaceRoot}/events/\` in this runtime.
+
+Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`conversationId\`, \`conversationKind\`, and \`userId\` for the current conversation automatically.
+
+### Creating Events Manually
+Only do this when you need to create events from a script. Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
+\`\`\`bash
+cat > ${workspaceRoot}/events/dentist-reminder-$(date +%s).json << 'EOF'
+{"type": "one-shot", "platform": "<platform>", "conversationId": "<conversationId>", "conversationKind": "<direct|shared>", "userId": "<requester userId>", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
+EOF
+\`\`\`
+
+### Managing Events
+- List: \`ls ${workspaceRoot}/events/\`
+- View: \`cat ${workspaceRoot}/events/foo.json\`
+- Delete/cancel: \`rm ${workspaceRoot}/events/foo.json\``;
+  }
+
+  return `Events live in the host-side mama control plane, not necessarily in this runtime filesystem.
+
+Use the \`event\` tool to create events. It writes to the correct host-side events directory and fills \`platform\`, \`conversationId\`, \`conversationKind\`, and \`userId\` for the current conversation automatically.
+
+Do not create event files with bash in \`${workspaceRoot}/events/\` from this sandbox unless you have explicitly verified that path is mounted back to the host-side mama events directory.`;
+}
+
 function buildSystemPrompt(
   workspacePath: string,
   conversationId: string,
@@ -219,6 +255,7 @@ function buildSystemPrompt(
       : "(no users loaded)";
 
   const envDescription = buildEnvDescription(sandboxType, workspaceRoot);
+  const eventFilesystemInstructions = buildEventFilesystemInstructions(sandboxType, workspaceRoot);
   const syntheticEventInstructions = isSyntheticEvent
     ? `
 ## Synthetic Event Mode
@@ -295,7 +332,8 @@ Scripts are in: {baseDir}/
 ${skills.length > 0 ? formatSkillsForPrompt(skills) : "(no skills installed yet)"}
 
 ## Events
-You can schedule events that wake you up at specific times or when external things happen. Events are JSON files in \`${workspaceRoot}/events/\`.
+You can schedule events that wake you up at specific times or when external things happen.
+${eventFilesystemInstructions}
 
 ### Event Types
 
@@ -329,23 +367,7 @@ Set \`platform\` to the target bot platform (\`${platform.name}\` for this conve
 
 Set \`userId\` to the platform userId of whoever asked for the event. When the event fires, tool execution routes using that user's vault selection in per-user modes. In \`container:<name>\`, events use the container's single shared vault.
 
-Prefer the \`event\` tool over manually writing JSON files; it fills \`platform\`, \`conversationId\`, \`conversationKind\`, and \`userId\` for the current conversation automatically.
-
 When scheduling an event, write \`text\` as a self-contained task for your future self. Include the minimum necessary context, tone, and constraints in the text itself because events do not inherit normal conversation history. Good: \`Please remind the user that break time is over and it is time to return to class. Keep it brief, in Traditional Chinese, and do not ask follow-up questions.\` Bad: \`back to class\`.
-
-### Creating Events
-Use unique filenames to avoid overwriting existing events. Include a timestamp or random suffix:
-\`\`\`bash
-cat > ${workspaceRoot}/events/dentist-reminder-$(date +%s).json << 'EOF'
-{"type": "one-shot", "platform": "${platform.name}", "conversationId": "${conversationId}", "conversationKind": "${conversationKind}", "userId": "${currentUserId ?? "<requester userId>"}", "text": "Dentist tomorrow", "at": "2025-12-14T09:00:00+01:00"}
-EOF
-\`\`\`
-Or check if file exists first before creating.
-
-### Managing Events
-- List: \`ls ${workspaceRoot}/events/\`
-- View: \`cat ${workspaceRoot}/events/foo.json\`
-- Delete/cancel: \`rm ${workspaceRoot}/events/foo.json\`
 
 ### When Events Trigger
 You receive a message like:
@@ -418,14 +440,21 @@ function truncate(text: string, maxLen: number): string {
   return `${text.substring(0, maxLen - 3)}...`;
 }
 
-function initialWorkspacePath(sandboxConfig: SandboxConfig, hostWorkspacePath: string): string {
-  return sandboxConfig.type === "host" ? hostWorkspacePath : "/workspace";
+export function getUnresolvedSandboxPathContext(
+  sandboxConfig: SandboxConfig,
+  hostWorkspaceRoot: string,
+): RuntimePathContext {
+  if (sandboxConfig.type === "image") {
+    return createMountedRuntimePathContext(hostWorkspaceRoot, "/workspace");
+  }
+
+  return createExecutor(sandboxConfig).getPathContext(hostWorkspaceRoot);
 }
 
 interface RunnerExecutionContext {
   executionResolver?: ActorExecutionResolver;
   executor: Executor;
-  getWorkspacePath: () => string;
+  getPathContext: () => RuntimePathContext;
   resolveExecutorForRun(context: {
     platform: string;
     userId: string;
@@ -503,12 +532,15 @@ function createRunnerExecutionContext(
     getSandboxConfig() {
       return activeExecutor.getSandboxConfig();
     },
+    getPathContext(hostWorkspaceRoot) {
+      return activeExecutor.getPathContext(hostWorkspaceRoot);
+    },
   };
 
   return {
     executionResolver,
     executor,
-    getWorkspacePath: () => executor.getWorkspacePath(hostWorkspacePath),
+    getPathContext: () => executor.getPathContext(hostWorkspacePath),
     async resolveExecutorForRun(context): Promise<void> {
       if (!executionResolver) return;
       activeExecutor = await executionResolver.resolve(context);
@@ -519,7 +551,7 @@ function createRunnerExecutionContext(
 async function createConfiguredAgentSession(params: {
   conversationId: string;
   workspaceDir: string;
-  workspacePath: string;
+  runtimeWorkspaceRoot: string;
   systemPrompt: string;
   model: ReturnType<typeof getModel>;
   thinkingLevel: ThinkingLevel;
@@ -530,7 +562,7 @@ async function createConfiguredAgentSession(params: {
   const {
     conversationId,
     workspaceDir,
-    workspacePath,
+    runtimeWorkspaceRoot,
     systemPrompt,
     model,
     thinkingLevel,
@@ -593,7 +625,7 @@ async function createConfiguredAgentSession(params: {
     agent,
     sessionManager,
     settingsManager,
-    cwd: workspacePath,
+    cwd: runtimeWorkspaceRoot,
     modelRegistry,
     resourceLoader,
     baseToolsOverride,
@@ -914,7 +946,7 @@ async function prepareRunContext(params: {
   executor: Executor;
   executionResolver?: ActorExecutionResolver;
   resolveExecutorForRun: RunnerExecutionContext["resolveExecutorForRun"];
-  getWorkspacePath: () => string;
+  getPathContext: () => RuntimePathContext;
   sessionManager: SessionManager;
   session: AgentSession;
   agent: Agent;
@@ -925,8 +957,8 @@ async function prepareRunContext(params: {
     userId: string;
   }) => void;
   setUploadFunction: (fn: (filePath: string, title?: string) => Promise<void>) => void;
-  workspacePath: string;
-}): Promise<PreparedRunContext & { workspacePath: string }> {
+  pathContext: RuntimePathContext;
+}): Promise<PreparedRunContext & { pathContext: RuntimePathContext }> {
   const {
     message,
     responseCtx,
@@ -938,14 +970,14 @@ async function prepareRunContext(params: {
     executor,
     executionResolver,
     resolveExecutorForRun,
-    getWorkspacePath,
+    getPathContext,
     sessionManager,
     session,
     agent,
     setEventContext,
     setUploadFunction,
   } = params;
-  let workspacePath = params.workspacePath;
+  let pathContext = params.pathContext;
   const sessionConversation = message.sessionKey.split(":")[0];
 
   await mkdir(join(conversationDir, "scratch"), { recursive: true });
@@ -956,15 +988,15 @@ async function prepareRunContext(params: {
       userId: message.userId,
       conversationId,
     });
-    workspacePath = getWorkspacePath();
+    pathContext = getPathContext();
   }
 
   reloadSessionMessages(sessionManager, conversationId, agent);
 
   const memory = await getMemory(conversationDir);
-  const skills = loadMamaSkills(conversationDir, workspacePath);
+  const skills = loadMamaSkills(conversationDir, pathContext.runtimeWorkspaceRoot);
   const systemPrompt = buildSystemPrompt(
-    workspacePath,
+    pathContext.runtimeWorkspaceRoot,
     conversationId,
     message.conversationKind,
     message.userId,
@@ -984,7 +1016,7 @@ async function prepareRunContext(params: {
   });
 
   setUploadFunction(async (filePath: string, title?: string) => {
-    const hostPath = translateToHostPath(filePath, conversationDir, workspacePath, conversationId);
+    const hostPath = translateRuntimePathToHost(filePath, pathContext);
     await responseCtx.uploadFile(hostPath, title);
   });
 
@@ -997,7 +1029,10 @@ async function prepareRunContext(params: {
   );
   log.logInfo(`Channels: ${platform.channels.length}, Users: ${platform.users.length}`);
 
-  const { userMessage, imageAttachments } = buildPromptPayload(message, workspacePath);
+  const { userMessage, imageAttachments } = buildPromptPayload(
+    message,
+    pathContext.runtimeWorkspaceRoot,
+  );
   await writePromptDebugContext(
     conversationDir,
     systemPrompt,
@@ -1011,7 +1046,7 @@ async function prepareRunContext(params: {
     runQueue,
     userMessage,
     imageAttachments,
-    workspacePath,
+    pathContext,
   };
 }
 
@@ -1289,7 +1324,7 @@ export async function createRunner(
   });
 
   const workspaceBase = join(conversationDir, "..");
-  const { executionResolver, executor, getWorkspacePath, resolveExecutorForRun } =
+  const { executionResolver, executor, getPathContext, resolveExecutorForRun } =
     createRunnerExecutionContext(
       sandboxConfig,
       vaultManager,
@@ -1297,7 +1332,7 @@ export async function createRunner(
       workspaceDir,
       workspaceBase,
     );
-  let workspacePath = initialWorkspacePath(sandboxConfig, workspaceBase);
+  let pathContext = getUnresolvedSandboxPathContext(sandboxConfig, workspaceBase);
 
   // Create tools (per-runner, with per-runner upload function setter)
   const { tools, setUploadFunction, setEventContext } = createMamaTools(executor, workspaceDir);
@@ -1310,7 +1345,7 @@ export async function createRunner(
 
   // Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
   const memory = await getMemory(conversationDir);
-  const skills = loadMamaSkills(conversationDir, workspacePath);
+  const skills = loadMamaSkills(conversationDir, pathContext.runtimeWorkspaceRoot);
   const emptyPlatform: PlatformInfo = {
     name: "chat",
     formattingGuide: "",
@@ -1318,7 +1353,7 @@ export async function createRunner(
     users: [],
   };
   const systemPrompt = buildSystemPrompt(
-    workspacePath,
+    pathContext.runtimeWorkspaceRoot,
     conversationId,
     "shared",
     undefined,
@@ -1333,7 +1368,11 @@ export async function createRunner(
   // Platform-specific branch/fork behavior is resolved before runner creation.
   const isThread = sessionKey.includes(":");
   const { sessionDir, contextFile, threadRootMessage } = sessionScope;
-  const sessionManager = openManagedSession(contextFile, sessionDir, workspacePath);
+  const sessionManager = openManagedSession(
+    contextFile,
+    sessionDir,
+    pathContext.runtimeWorkspaceRoot,
+  );
   const threadSessionName = buildThreadSessionName(threadRootMessage);
   if (isThread && threadSessionName && sessionManager.getSessionName() !== threadSessionName) {
     sessionManager.appendSessionInfo(threadSessionName);
@@ -1344,7 +1383,7 @@ export async function createRunner(
   const { agent, session } = await createConfiguredAgentSession({
     conversationId,
     workspaceDir,
-    workspacePath,
+    runtimeWorkspaceRoot: pathContext.runtimeWorkspaceRoot,
     systemPrompt,
     model,
     thinkingLevel: agentConfig.thinkingLevel,
@@ -1374,15 +1413,15 @@ export async function createRunner(
         executor,
         executionResolver,
         resolveExecutorForRun,
-        getWorkspacePath,
+        getPathContext,
         sessionManager,
         session,
         agent,
         setEventContext,
         setUploadFunction,
-        workspacePath,
+        pathContext,
       });
-      workspacePath = prepared.workspacePath;
+      pathContext = prepared.pathContext;
 
       addLifecycleBreadcrumb("agent.prompt.sent", {
         provider: model.provider,
@@ -1441,23 +1480,16 @@ export async function createRunner(
   };
 }
 
-/**
- * Translate container path back to host path for file operations
- */
-function translateToHostPath(
-  containerPath: string,
-  conversationDir: string,
-  workspacePath: string,
-  conversationId: string,
+export function translateRuntimePathToHost(
+  runtimePath: string,
+  pathContext: RuntimePathContext,
 ): string {
-  if (workspacePath === "/workspace") {
-    const prefix = `/workspace/${conversationId}/`;
-    if (containerPath.startsWith(prefix)) {
-      return join(conversationDir, containerPath.slice(prefix.length));
-    }
-    if (containerPath.startsWith("/workspace/")) {
-      return join(conversationDir, "..", containerPath.slice("/workspace/".length));
-    }
-  }
-  return containerPath;
+  return pathContext.runtimeToHostPath?.(runtimePath) ?? runtimePath;
+}
+
+export function buildInitialPathContextForTest(
+  sandboxConfig: SandboxConfig,
+  hostWorkspaceRoot: string,
+): RuntimePathContext {
+  return getUnresolvedSandboxPathContext(sandboxConfig, hostWorkspaceRoot);
 }

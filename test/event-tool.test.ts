@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { createEventTool } from "../src/tools/event.js";
+import { createEventTool, HostEventStore, type EventPayload } from "../src/tools/event.js";
 
 describe("createEventTool", () => {
   const tempDirs: string[] = [];
@@ -23,10 +23,14 @@ describe("createEventTool", () => {
     return dir;
   }
 
+  function createWorkspaceEventTool(workspaceDir: string) {
+    return createEventTool(HostEventStore.fromWorkspaceDir(workspaceDir));
+  }
+
   test("writes top-level Slack event payload without threadTs", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000000);
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "C123",
@@ -58,10 +62,70 @@ describe("createEventTool", () => {
     );
   });
 
+  test("writes through the injected control-plane event store", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000002);
+    const writes: Array<{ filename: string; payload: EventPayload }> = [];
+    const { tool, setEventContext } = createEventTool({
+      async write(filename, payload) {
+        writes.push({ filename, payload });
+        return { path: `/control/events/${filename}`, size: 123 };
+      },
+    });
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+    });
+
+    await tool.execute("call-1", {
+      label: "deploy",
+      type: "immediate",
+      text: "Check deployment status",
+      filenamePrefix: "deploy",
+    });
+
+    expect(writes).toEqual([
+      {
+        filename: "deploy-1700000000002.json",
+        payload: {
+          type: "immediate",
+          platform: "slack",
+          conversationId: "C123",
+          conversationKind: "shared",
+          userId: "U123",
+          text: "Check deployment status",
+        },
+      },
+    ]);
+  });
+
+  test("surfaces control-plane event store write failures", async () => {
+    const { tool, setEventContext } = createEventTool({
+      async write() {
+        throw new Error("control plane unavailable");
+      },
+    });
+    setEventContext({
+      platform: "slack",
+      conversationId: "C123",
+      conversationKind: "shared",
+      userId: "U123",
+    });
+
+    await expect(
+      tool.execute("call-1", {
+        label: "deploy",
+        type: "immediate",
+        text: "Check deployment status",
+      }),
+    ).rejects.toThrow("control plane unavailable");
+  });
+
   test("writes immediate event payload without thread state even when scheduled from a thread", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000001);
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "C123",
@@ -90,7 +154,7 @@ describe("createEventTool", () => {
 
   test("requires event context before execution", async () => {
     const workspaceDir = makeWorkspace();
-    const { tool } = createEventTool(workspaceDir);
+    const { tool } = createWorkspaceEventTool(workspaceDir);
 
     await expect(
       tool.execute("call-1", {
@@ -104,7 +168,7 @@ describe("createEventTool", () => {
   test("one-shot event strips thread state even when set in context", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000200);
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "C123",
@@ -135,7 +199,7 @@ describe("createEventTool", () => {
   test("periodic event strips thread state when in a thread", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000300);
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "C123",
@@ -167,7 +231,7 @@ describe("createEventTool", () => {
 
   test("one-shot events require at", async () => {
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "C123",
@@ -186,7 +250,7 @@ describe("createEventTool", () => {
 
   test("one-shot events reject invalid timestamps", async () => {
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "D123",
@@ -207,7 +271,7 @@ describe("createEventTool", () => {
   test("one-shot events reject past timestamps", async () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-05-14T11:00:50.000Z"));
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "slack",
       conversationId: "D123",
@@ -227,7 +291,7 @@ describe("createEventTool", () => {
 
   test("periodic events require schedule and timezone", async () => {
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "discord",
       conversationId: "D123",
@@ -257,7 +321,7 @@ describe("createEventTool", () => {
   test("writes periodic event payload with context", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1700000000100);
     const workspaceDir = makeWorkspace();
-    const { tool, setEventContext } = createEventTool(workspaceDir);
+    const { tool, setEventContext } = createWorkspaceEventTool(workspaceDir);
     setEventContext({
       platform: "telegram",
       conversationId: "999",

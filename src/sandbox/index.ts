@@ -15,6 +15,7 @@ export type {
   FirecrackerSandboxConfig,
   HostSandboxConfig,
   ImageSandboxConfig,
+  RuntimePathContext,
   SandboxAdapter,
   SandboxConfig,
 } from "./types.js";

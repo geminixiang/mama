@@ -6,11 +6,13 @@ import type {
   ExecOptions,
   ExecResult,
   Executor,
+  RuntimePathContext,
   SandboxAdapter,
 } from "./types.js";
 import { SandboxError } from "./errors.js";
 import { execSimple, shellEscape } from "./utils.js";
 import { HostExecutor } from "./host.js";
+import { createMountedRuntimePathContext } from "./path-context.js";
 
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -95,6 +97,10 @@ export class ContainerExecutor implements Executor {
 
   getWorkspacePath(_hostPath: string): string {
     return "/workspace";
+  }
+
+  getPathContext(hostWorkspaceRoot: string): RuntimePathContext {
+    return createMountedRuntimePathContext(hostWorkspaceRoot, "/workspace");
   }
 
   getSandboxConfig(): ContainerSandboxConfig {

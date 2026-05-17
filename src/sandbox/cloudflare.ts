@@ -3,6 +3,7 @@ import type {
   ExecOptions,
   ExecResult,
   Executor,
+  RuntimePathContext,
   SandboxAdapter,
 } from "./types.js";
 import { SandboxError } from "./errors.js";
@@ -142,7 +143,14 @@ export class CloudflareSandboxExecutor implements Executor {
   }
 
   getWorkspacePath(_hostPath: string): string {
-    return DEFAULT_CLOUDFLARE_CWD;
+    return this.cwd;
+  }
+
+  getPathContext(hostWorkspaceRoot: string): RuntimePathContext {
+    return {
+      hostWorkspaceRoot,
+      runtimeWorkspaceRoot: this.cwd,
+    };
   }
 
   getSandboxConfig(): CloudflareSandboxConfig {

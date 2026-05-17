@@ -19,6 +19,7 @@ import {
 } from "./conversation-orchestrator.js";
 import * as Sentry from "@sentry/node";
 import { join } from "path";
+import { getUnresolvedSandboxPathContext } from "../agent.js";
 
 type ConversationState = ConversationRuntimeState;
 
@@ -51,10 +52,15 @@ const MAX_SESSIONS = 500;
 const IDLE_TIMEOUT_MS = 3_600_000;
 
 function runtimeCwdForSandbox(
-  type: SessionRuntimeOptions["sandbox"]["type"],
-  hostCwd: string,
+  sandbox: SessionRuntimeOptions["sandbox"],
+  hostWorkspaceRoot: string,
+  conversationId: string,
 ): string {
-  return type === "host" ? hostCwd : "/workspace";
+  const runtimeWorkspaceRoot = getUnresolvedSandboxPathContext(
+    sandbox,
+    hostWorkspaceRoot,
+  ).runtimeWorkspaceRoot;
+  return `${runtimeWorkspaceRoot.replace(/\/+$/, "")}/${conversationId}`;
 }
 
 export function createSessionRuntime(options: SessionRuntimeOptions): SessionRuntime {
@@ -144,7 +150,11 @@ class MamaSessionRuntime implements SessionRuntime {
     }
 
     const conversationDir = join(this.options.workingDir, conversationId);
-    const runtimeCwd = runtimeCwdForSandbox(this.options.sandbox.type, conversationDir);
+    const runtimeCwd = runtimeCwdForSandbox(
+      this.options.sandbox,
+      this.options.workingDir,
+      conversationId,
+    );
     if (sessionKey.includes(":")) {
       createManagedSessionFileAtPath(getThreadSessionFile(conversationDir, sessionKey), runtimeCwd);
     } else {
@@ -219,7 +229,11 @@ class MamaSessionRuntime implements SessionRuntime {
     }
 
     const conversationDir = join(this.options.workingDir, conversationId);
-    const runtimeCwd = runtimeCwdForSandbox(this.options.sandbox.type, conversationDir);
+    const runtimeCwd = runtimeCwdForSandbox(
+      this.options.sandbox,
+      this.options.workingDir,
+      conversationId,
+    );
     const sessionScope = await this.resolveSessionScope(
       platformName,
       conversationDir,
