@@ -337,7 +337,12 @@ describe("SlackBot slash commands", () => {
       expect.objectContaining({
         channel: "C123",
         user: "U123",
-        text: expect.stringContaining("Status: `on`"),
+        text: expect.stringContaining("Auto-reply is enabled"),
+      }),
+    );
+    expect(postEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Edit rules at:"),
       }),
     );
     expect(postEphemeral).not.toHaveBeenCalledWith(
@@ -345,9 +350,8 @@ describe("SlackBot slash commands", () => {
         text: expect.stringContaining("只能在 group/channel"),
       }),
     );
-    expect(JSON.parse(readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"))).toEqual({
-      autoReply: { enabled: true, rules: [] },
-    });
+    expect(readFileSync(join(workingDir, "C123", "auto-reply"), "utf-8")).toBe("");
+    expect(existsSync(join(workingDir, "C123", "settings.json"))).toBe(false);
   });
 
   test("/pi-session in a shared channel returns the link ephemerally", async () => {

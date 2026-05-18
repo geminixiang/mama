@@ -100,14 +100,14 @@ describe("evaluateAutoReplyPolicy", () => {
     ).resolves.toEqual({ trigger: false, reason: "auto-reply-judge-failed" });
   });
 
-  test("does not throw when settings.json is malformed", async () => {
+  test("ignores settings.json auto-reply state and uses marker files", async () => {
     const conversationDir = join(workingDir, "C123");
     mkdirSync(conversationDir, { recursive: true });
     writeFileSync(join(conversationDir, "settings.json"), "{ not valid json", "utf-8");
 
     await expect(evaluateAutoReplyPolicy({ event, workingDir })).resolves.toEqual({
       trigger: false,
-      reason: "auto-reply-judge-failed",
+      reason: "auto-reply-disabled",
     });
   });
 

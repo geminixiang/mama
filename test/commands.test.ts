@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -241,28 +241,40 @@ describe("AutoReplyCommandHandler", () => {
     expect(ctx.responseCtx.responses[0]).toContain("只能在 group/channel");
   });
 
-  test("enables auto-reply and appends natural language rules", async () => {
+  test("enables and disables auto-reply using mom-compatible marker files", async () => {
     const enableCtx = buildContext({
       commandText: "/pi-auto-reply on",
       services: { workingDir },
     });
     expect(await handler.tryHandle(enableCtx)).toBe(true);
-    expect(enableCtx.responseCtx.responses[0]).toContain("Status: `on`");
+    expect(enableCtx.responseCtx.responses[0]).toContain("Auto-reply is enabled");
+    expect(enableCtx.responseCtx.responses[0]).toContain("Edit rules at:");
 
-    const ruleCtx = buildContext({
+    const enabledPath = join(workingDir, "C123", "auto-reply");
+    expect(readFileSync(enabledPath, "utf-8")).toBe("");
+
+    writeFileSync(enabledPath, "Reply when someone asks about deployments.", "utf-8");
+
+    const disableCtx = buildContext({
+      commandText: "/pi-auto-reply off",
+      services: { workingDir },
+    });
+    expect(await handler.tryHandle(disableCtx)).toBe(true);
+    expect(disableCtx.responseCtx.responses[0]).toContain("Auto-reply is disabled");
+    expect(existsSync(enabledPath)).toBe(false);
+    expect(readFileSync(join(workingDir, "C123", "auto-reply.disabled"), "utf-8")).toBe(
+      "Reply when someone asks about deployments.",
+    );
+  });
+
+  test("rejects rule management to match mom-compatible slash command surface", async () => {
+    const ctx = buildContext({
       commandText: "/pi-auto-reply rule Reply when someone asks about deployments.",
       services: { workingDir },
     });
-    expect(await handler.tryHandle(ruleCtx)).toBe(true);
-    expect(ruleCtx.responseCtx.responses[0]).toContain(
-      "`Reply when someone asks about deployments.`",
-    );
-
-    const saved = JSON.parse(readFileSync(join(workingDir, "C123", "settings.json"), "utf-8"));
-    expect(saved.autoReply).toEqual({
-      enabled: true,
-      rules: ["Reply when someone asks about deployments."],
-    });
+    expect(await handler.tryHandle(ctx)).toBe(true);
+    expect(ctx.responseCtx.responses[0]).toContain("/pi-auto-reply on|off|status");
+    expect(existsSync(join(workingDir, "C123", "settings.json"))).toBe(false);
   });
 });
 

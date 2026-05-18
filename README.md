@@ -116,7 +116,7 @@ For local testing you can set just `MAMA_LINK_PORT`; mama will use `http://local
 - `session` / `/session` (DM only) returns a read-only link showing the current session timeline.
 - `new` / `/new` (DM only) resets the current session and starts fresh.
 - `model` / `/model` / `/pi-model provider/model[:thinking]` switches the LLM for the current conversation, e.g. `/pi-model anthropic/claude-sonnet-4-6:off`.
-- `auto-reply` / `/pi-auto-reply on|off|status|rule <natural language rule>|clear` controls group/channel auto-reply rules for the current conversation.
+- `auto-reply` / `/pi-auto-reply on|off|status` controls group/channel auto-reply for the current conversation. Rules live in the conversation's `auto-reply` marker file.
 - `stop` / `/stop` stops the current run. On Slack, use text commands so thread-local stop routing remains accurate.
 - On Slack you can also register native commands like `/pi-login`, `/pi-session`, `/pi-model`, `/pi-auto-reply`, and `/pi-new`.
 
@@ -197,6 +197,7 @@ For GCP Cloud Logging, set `log.format: "json"`, give the VM service account `ro
 ├── events/                    # scheduled events
 └── <conversation-id>/
     ├── MEMORY.md
+    ├── auto-reply[.disabled]    # optional channel auto-reply rules
     ├── log.jsonl
     ├── attachments/
     ├── scratch/

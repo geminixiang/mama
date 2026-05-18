@@ -7,12 +7,7 @@ import {
 import type { CommandContext, CommandHandler } from "./types.js";
 import { replyDiagnosticWithContext } from "./utils.js";
 
-type AutoReplyAction =
-  | { type: "status" }
-  | { type: "on" }
-  | { type: "off" }
-  | { type: "clear" }
-  | { type: "rule"; rule: string };
+type AutoReplyAction = { type: "status" } | { type: "on" } | { type: "off" } | { type: "invalid" };
 
 export function parseAutoReplyCommand(text: string): AutoReplyAction | null {
   const trimmed = text.trim().replace(/@\w+$/i, "");
@@ -26,38 +21,27 @@ export function parseAutoReplyCommand(text: string): AutoReplyAction | null {
   if (lower === "status") return { type: "status" };
   if (lower === "on" || lower === "enable" || lower === "enabled") return { type: "on" };
   if (lower === "off" || lower === "disable" || lower === "disabled") return { type: "off" };
-  if (lower === "clear") return { type: "clear" };
 
-  const ruleMatch = /^rule\s+(.+)$/i.exec(rest);
-  if (ruleMatch?.[1]?.trim()) return { type: "rule", rule: ruleMatch[1].trim() };
-
-  return null;
+  return { type: "invalid" };
 }
 
 function formatAutoReplyStatus(config: AutoReplyConfig): string {
-  return [
-    "_Auto Reply_",
-    `Status: \`${config.enabled ? "on" : "off"}\``,
-    `Rules: ${config.rules.length === 0 ? "`any message`" : config.rules.map((rule) => `\`${rule}\``).join(", ")}`,
-    "",
-    "Usage: `/pi-auto-reply on`, `/pi-auto-reply off`, `/pi-auto-reply rule <natural language rule>`, `/pi-auto-reply clear`",
-  ].join("\n");
+  return `_Auto-reply is ${config.enabled ? "enabled" : "disabled"} for this channel._`;
+}
+
+function formatAutoReplyUsage(): string {
+  return "_Usage: `/pi-auto-reply on|off|status`_";
 }
 
 function applyAction(current: AutoReplyConfig, action: AutoReplyAction): AutoReplyConfig {
   switch (action.type) {
     case "status":
+    case "invalid":
       return current;
     case "on":
       return { ...current, enabled: true };
     case "off":
       return { ...current, enabled: false };
-    case "clear":
-      return { ...current, rules: [] };
-    case "rule":
-      return current.rules.includes(action.rule)
-        ? current
-        : { ...current, rules: [...current.rules, action.rule] };
   }
 }
 
@@ -75,12 +59,26 @@ export class AutoReplyCommandHandler implements CommandHandler {
       return true;
     }
 
+    if (action.type === "invalid") {
+      await replyDiagnosticWithContext(context.responseCtx, formatAutoReplyUsage(), {
+        style: "muted",
+      });
+      return true;
+    }
+
     const conversationDir = join(context.services.workingDir, context.conversationId);
     const current = loadConversationAutoReplyConfig(conversationDir);
     const next = applyAction(current, action);
-    if (next !== current) saveConversationAutoReplyConfig(conversationDir, next);
+    if (action.type === "on" || (action.type === "off" && current.enabled)) {
+      saveConversationAutoReplyConfig(conversationDir, next);
+    }
 
-    await replyDiagnosticWithContext(context.responseCtx, formatAutoReplyStatus(next), {
+    const status = formatAutoReplyStatus(next);
+    const text =
+      action.type === "on"
+        ? `${status}\nEdit rules at: \`${join(conversationDir, "auto-reply")}\``
+        : status;
+    await replyDiagnosticWithContext(context.responseCtx, text, {
       style: "muted",
     });
     return true;

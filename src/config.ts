@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { existsSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
 import { ensureDirExists, isRecord, readJsonFileIfExists } from "./file-guards.js";
@@ -259,34 +259,54 @@ export function loadAutoReplyJudgeModel(conversationDir?: string): JudgeModelCon
   return { provider, model };
 }
 
-export function loadConversationAutoReplyConfig(conversationDir: string): AutoReplyConfig {
-  const settings = loadSettingsFile(join(conversationDir, "settings.json")) ?? {};
-  const rules = Array.isArray(settings.autoReply?.rules)
-    ? settings.autoReply.rules.filter((rule): rule is string => typeof rule === "string")
-    : [];
-  return {
-    enabled: settings.autoReply?.enabled === true,
-    rules,
-  };
+const AUTO_REPLY_FILE = "auto-reply";
+const AUTO_REPLY_DISABLED_FILE = "auto-reply.disabled";
+
+function readAutoReplyRulesFile(path: string): string[] {
+  const text = readFileSync(path, "utf-8").trim();
+  return text ? [text] : [];
 }
 
+/**
+ * Load the mom-compatible auto-reply marker file state for a conversation.
+ *
+ * - `auto-reply` exists: enabled; empty file means reply to any top-level message.
+ * - `auto-reply.disabled` exists: disabled, preserving any rules text for re-enable.
+ * - neither exists: disabled.
+ */
+export function loadConversationAutoReplyConfig(conversationDir: string): AutoReplyConfig {
+  const enabledPath = join(conversationDir, AUTO_REPLY_FILE);
+  if (existsSync(enabledPath)) {
+    return { enabled: true, rules: readAutoReplyRulesFile(enabledPath) };
+  }
+
+  const disabledPath = join(conversationDir, AUTO_REPLY_DISABLED_FILE);
+  if (existsSync(disabledPath)) {
+    return { enabled: false, rules: readAutoReplyRulesFile(disabledPath) };
+  }
+
+  return { enabled: false, rules: [] };
+}
+
+/** Save auto-reply state using mom-compatible marker files. */
 export function saveConversationAutoReplyConfig(
   conversationDir: string,
   config: AutoReplyConfig,
 ): void {
   if (!existsSync(conversationDir)) {
-    ensureDirExists(conversationDir);
+    mkdirSync(conversationDir, { recursive: true });
   }
-  const settingsPath = join(conversationDir, "settings.json");
-  const existing = loadSettingsFile(settingsPath) ?? {};
-  const scopedConfig: SettingsFileConfig = {
-    ...existing,
-    autoReply: {
-      enabled: config.enabled,
-      rules: config.rules,
-    },
-  };
-  atomicWritePrivateFile(settingsPath, JSON.stringify(scopedConfig, null, 2));
+
+  const enabledPath = join(conversationDir, AUTO_REPLY_FILE);
+  const disabledPath = join(conversationDir, AUTO_REPLY_DISABLED_FILE);
+  const targetPath = config.enabled ? enabledPath : disabledPath;
+  const otherPath = config.enabled ? disabledPath : enabledPath;
+
+  if (existsSync(otherPath)) {
+    renameSync(otherPath, targetPath);
+  }
+
+  writeFileSync(targetPath, config.rules.join("\n"), "utf-8");
 }
 
 export function resolveWorkspaceDirFromArgv(args = process.argv.slice(2)): string | undefined {
